@@ -50,9 +50,9 @@ workflows:
 
         # APPLE_BUNDLE_ID_NAME: Apple Developer 后台 Bundle ID 资源名称。
         # 这只是后台备注名，不影响 Bundle ID，也不影响用户看到的 App 中文名。
-        # 为避免 Apple API 拒绝中文 name，这里直接用 Bundle ID 字符串。
+        # Apple API 只接受英文字母、数字和空格，不能用中文，也不能用点号。
         # 这不影响用户手机上看到的 App 名称。
-        APPLE_BUNDLE_ID_NAME: com.wendatongqiye.app
+        APPLE_BUNDLE_ID_NAME: Wen Da Tong
 
         # XCODE_PROJECT: Xcode 工程文件名。当前工程是 BlueStoneIM.xcodeproj。
         XCODE_PROJECT: BlueStoneIM.xcodeproj
