@@ -1,0 +1,47 @@
+{
+  "artifact_key": "bootstrap-v1/b3d04714748aff950dc028a297fb13fe29b99a79a6698efb43cb87adbbd91ec1/fence-1/version-7-713836eb06cc7d7b42cdd3ff8a2d6b3139610cdf4bd6fee72929e12a78e3f8ce.json",
+  "artifact_raw": "{\"payload\":{\"audience\":{\"app_id\":\"app-ios\",\"bundle_id\":\"com.example.app\",\"channel\":\"appstore\",\"platform\":\"ios\",\"product_id\":\"wenxintong\"},\"canonicalization_version\":1,\"config_version\":7,\"content_hash\":\"9dcaa94d86f0298457e0dbedf6a2da3a03929f1fb649261db96cd4996c0092ca\",\"contract_version\":1,\"endpoints\":[{\"host\":\"api.example.test\",\"id\":\"platform-primary\",\"path\":\"/v1\",\"port\":443,\"priority\":10,\"protocol\":\"https\",\"url\":\"https://api.example.test/v1\",\"usage\":\"platform_api\"}],\"environment\":\"production\",\"expires_at\":\"2026-07-24T13:00:00Z\",\"fencing_generation\":1,\"issued_at\":\"2026-07-24T11:59:00Z\",\"key_id\":\"config-key\",\"purpose\":\"prelogin_bootstrap\"},\"signature\":\"j/EOqu6Szt+bjc0LJb/fzvlDlx6ikA7zfh3/PkjJUzLUvM0vrYkKkXIKIEJelENfA/3FrEcYncufu8ECEVISDA==\",\"signature_alg\":\"Ed25519\"}",
+  "canonical_payload": "{\"audience\":{\"app_id\":\"app-ios\",\"bundle_id\":\"com.example.app\",\"channel\":\"appstore\",\"platform\":\"ios\",\"product_id\":\"wenxintong\"},\"canonicalization_version\":1,\"config_version\":7,\"content_hash\":\"9dcaa94d86f0298457e0dbedf6a2da3a03929f1fb649261db96cd4996c0092ca\",\"contract_version\":1,\"endpoints\":[{\"host\":\"api.example.test\",\"id\":\"platform-primary\",\"path\":\"/v1\",\"port\":443,\"priority\":10,\"protocol\":\"https\",\"url\":\"https://api.example.test/v1\",\"usage\":\"platform_api\"}],\"environment\":\"production\",\"expires_at\":\"2026-07-24T13:00:00Z\",\"fencing_generation\":1,\"issued_at\":\"2026-07-24T11:59:00Z\",\"key_id\":\"config-key\",\"purpose\":\"prelogin_bootstrap\"}",
+  "canonicalization_version": 1,
+  "config_key_id": "config-key",
+  "config_public_key_base64": "qfML/G8CbrIy/FU62hCuT5P5l3mov0ZCBj5Y21N5E68=",
+  "current_key": "bootstrap-v1/b3d04714748aff950dc028a297fb13fe29b99a79a6698efb43cb87adbbd91ec1/current.json",
+  "current_pointer_raw": "{\"key_id\":\"config-key\",\"payload\":{\"artifact_hash\":\"713836eb06cc7d7b42cdd3ff8a2d6b3139610cdf4bd6fee72929e12a78e3f8ce\",\"artifact_key\":\"bootstrap-v1/b3d04714748aff950dc028a297fb13fe29b99a79a6698efb43cb87adbbd91ec1/fence-1/version-7-713836eb06cc7d7b42cdd3ff8a2d6b3139610cdf4bd6fee72929e12a78e3f8ce.json\",\"artifact_payload_hash\":\"fec7a226b52d1a78eb1d3c8b07e2df10c964e776bf5ced520f5707804b8d1a45\",\"config_version\":7,\"expires_at\":\"2026-07-24T13:00:00Z\",\"fencing_generation\":1,\"issued_at\":\"2026-07-24T11:59:00Z\",\"key_state_hash\":\"b246a49b6c094d3ba8e011e8f2fb0964d32aae53997c9a29854141c4249b40c2\",\"key_state_key\":\"bootstrap-v1/b3d04714748aff950dc028a297fb13fe29b99a79a6698efb43cb87adbbd91ec1/key-states/b246a49b6c094d3ba8e011e8f2fb0964d32aae53997c9a29854141c4249b40c2.json\",\"purpose\":\"prelogin_bootstrap_current\",\"scope_hash\":\"b3d04714748aff950dc028a297fb13fe29b99a79a6698efb43cb87adbbd91ec1\"},\"signature\":\"0E3ddaXIqzJ1vlq9EIuxWlmPot/EYIcowE1lba08tEeYncW8hnZwFR1nHLPKTrAJVTlnDpJ6F1MnHuLtD1/ODg==\",\"signature_alg\":\"Ed25519\"}",
+  "description": "Portable Go/iOS/Android Ed25519 fixture with versioned immutable key-state and scope-local current.",
+  "generated_at": "2026-07-24T00:00:00Z",
+  "key_state_key": "bootstrap-v1/b3d04714748aff950dc028a297fb13fe29b99a79a6698efb43cb87adbbd91ec1/key-states/b246a49b6c094d3ba8e011e8f2fb0964d32aae53997c9a29854141c4249b40c2.json",
+  "key_state_raw": "{\"payload\":{\"contract_version\":1,\"current_fencing_generation\":1,\"expires_at\":\"2026-07-24T13:00:00Z\",\"issued_at\":\"2026-07-24T11:59:00Z\",\"keys\":[{\"algorithm\":\"Ed25519\",\"app_id\":\"app-ios\",\"bundle_id\":\"com.example.app\",\"channel\":\"appstore\",\"environment\":\"production\",\"key_id\":\"config-key\",\"max_fencing_generation\":1,\"min_fencing_generation\":1,\"platform\":\"ios\",\"product_id\":\"wenxintong\",\"status\":\"active\"}],\"purpose\":\"prelogin_key_state\",\"recovery_generation\":1},\"root_key_id\":\"recovery-root\",\"signature\":\"9rbGitTw8Q1E/CfJmkRp0jrkrJqh2c8jS4Ctq6OC4ETF0XUreYW2Ufe1Z+c92pXIT5FUuze4+qdq1rHpqU+vCg==\",\"signature_alg\":\"Ed25519\"}",
+  "layout_scopes": [
+    {
+      "current_key": "bootstrap-v1/b3d04714748aff950dc028a297fb13fe29b99a79a6698efb43cb87adbbd91ec1/current.json",
+      "scope_hash": "b3d04714748aff950dc028a297fb13fe29b99a79a6698efb43cb87adbbd91ec1"
+    },
+    {
+      "current_key": "bootstrap-v1/d569a140ce1cb76bb4567d4234cfea574905c307e9dcd62a8258b8eb7b87b0f1/current.json",
+      "scope_hash": "d569a140ce1cb76bb4567d4234cfea574905c307e9dcd62a8258b8eb7b87b0f1"
+    }
+  ],
+  "maximum_uint64": "18446744073709551615",
+  "maximum_uint64_json": "{\"value\":18446744073709551615}",
+  "portable_strings": [
+    "\u003c\u003e\u0026",
+    "消息/مرحبا/🙂",
+    "quote:\" slash:\\\\ line:\\n"
+  ],
+  "portable_strings_canonical": "[\"\\u003c\\u003e\\u0026\",\"消息/مرحبا/🙂\",\"quote:\\\" slash:\\\\\\\\ line:\\\\n\"]",
+  "portable_timestamps": [
+    "2026-07-24T11:58:00Z",
+    "2026-07-24T13:00:00Z"
+  ],
+  "root_key_id": "recovery-root",
+  "root_public_key_base64": "IlPot/6x01GRILEOn6ShIpXtd5bHN3Uh6tBsKbhHLPY=",
+  "scope": {
+    "environment": "production",
+    "product_id": "wenxintong",
+    "app_id": "app-ios",
+    "bundle_id": "com.example.app",
+    "channel": "appstore",
+    "platform": "ios"
+  },
+  "scope_hash": "b3d04714748aff950dc028a297fb13fe29b99a79a6698efb43cb87adbbd91ec1"
+}

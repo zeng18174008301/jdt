@@ -1,0 +1,31 @@
+.DS_Store
+
+# Xcode local state
+xcuserdata/
+*.xcuserstate
+*.xcscmblueprint
+
+# Build outputs
+build/
+DerivedData/
+*.xcarchive
+*.ipa
+*.dSYM
+
+# Swift Package Manager
+.build/
+Package.resolved
+
+# Local secrets and Apple signing files
+.env
+*.p8
+*.p12
+*.cer
+*.key
+*.pem
+*.mobileprovision
+ExportOptions.plist
+
+# Temporary files
+.tmp/
+*.log

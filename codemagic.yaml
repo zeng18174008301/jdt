@@ -1,0 +1,200 @@
+# Codemagic 自动打包配置说明
+# 这个文件提交到 GitHub 后，Codemagic 绑定仓库时会自动读取。
+# 你主要需要在 Codemagic 后台配置环境变量组 appstore_credentials；
+# 本文件里的项目名、scheme、bundle id 已按当前工程预填好。
+
+# workflows: Codemagic 的构建流程列表。一个文件里可以放多个 workflow。
+workflows:
+  # ios-bluestoneim-release: workflow 的内部 ID。
+  # Codemagic 页面里选择 workflow 时会看到它；一般不用改。
+  ios-bluestoneim-release:
+    # name: Codemagic 页面展示的构建名称，只影响显示，不影响打包。
+    name: BlueStoneIM iOS Release
+
+    # instance_type: Codemagic 使用的云端 Mac 机型。
+    # mac_mini_m2 适合正常 iOS 打包；如果项目以后更大，可在 Codemagic 后台支持的机型里升级。
+    instance_type: mac_mini_m2
+
+    # max_build_duration: 单次构建最长运行分钟数，超时会自动停止。
+    max_build_duration: 120
+
+    # environment: 构建环境配置，包括密钥组、项目变量和云端 Xcode 版本。
+    environment:
+      # groups: 引用 Codemagic 后台创建的环境变量组。
+      # 需要在 Codemagic UI 里创建同名 group: appstore_credentials。
+      #
+      # appstore_credentials 至少放这些 App Store Connect API Key 变量：
+      # - APP_STORE_CONNECT_PRIVATE_KEY
+      #   App Store Connect API Key 的 .p8 私钥内容。
+      # - APP_STORE_CONNECT_KEY_IDENTIFIER
+      #   App Store Connect API Key 页面里的 Key ID。
+      # - APP_STORE_CONNECT_ISSUER_ID
+      #   App Store Connect Users and Access -> Integrations 里的 Issuer ID。
+      # - APPLE_TEAM_ID
+      #   正式提交用的 Apple Developer Team ID。不要填测试 Team ID A3PN7W63G3。
+      #
+      # 如果你的 Codemagic 账号要求手动提供证书私钥，再在同一个 group 里放：
+      # - CERTIFICATE_PRIVATE_KEY
+      #   用于生成/匹配 Apple Distribution 证书的私钥内容。
+      #
+      # 注意：这些密钥不要写进本文件，统一放 Codemagic 后台。
+      groups:
+        # 这里的名字必须和 Codemagic 后台环境变量组名称完全一致。
+        - appstore_credentials
+
+      # vars: 可以提交到仓库里的普通变量，不放敏感密钥。
+      vars:
+        # APP_NAME: App 名称。脚本创建 Apple Bundle ID 时会用它作为名称。
+        # 产品/App 展示名：问达通。
+        APP_NAME: 问达通
+
+        # XCODE_PROJECT: Xcode 工程文件名。当前工程是 BlueStoneIM.xcodeproj。
+        XCODE_PROJECT: BlueStoneIM.xcodeproj
+
+        # XCODE_SCHEME: 要打包的 scheme。
+        # 你截图里选择的是第一个 BlueStoneIM，所以这里填 BlueStoneIM。
+        XCODE_SCHEME: BlueStoneIM
+
+        # XCODE_CONFIG: 构建配置。发布包使用 Release。
+        XCODE_CONFIG: Release
+
+        # BUNDLE_ID: App 的 Bundle Identifier。
+        # 已按你给的 bid 设置为 com.wendatongqiye.app。
+        # Apple Developer 后台、项目签名、Codemagic 拉取描述文件都会用这个值。
+        BUNDLE_ID: com.wendatongqiye.app
+
+        # APPLE_BUNDLE_ID_RESOURCE_ID: Apple Developer 里的 Bundle ID 资源 ID。
+        # 一般留空即可，脚本会按 BUNDLE_ID 自动查找；找不到时会尝试创建。
+        # 只有当自动查找失败，或你想强制指定已有 Bundle ID 资源时才填写。
+        # 注意它不是 Team ID，也不是 Bundle ID 字符串。
+        APPLE_BUNDLE_ID_RESOURCE_ID: ""
+
+      # xcode: Codemagic 云端使用的 Xcode 版本。
+      # latest 表示使用 Codemagic 当前最新稳定 Xcode；不需要你本机安装 Xcode。
+      xcode: latest
+
+    # triggering: 自动触发构建规则。
+    triggering:
+      # events: push 表示 GitHub 有代码推送时自动构建。
+      events:
+        - push
+
+      # branch_patterns: 只有匹配的分支会触发自动构建。
+      # 如果你的 GitHub 默认分支不是 main/master，把下面 pattern 改成你的分支名。
+      branch_patterns:
+        # main 分支推送时触发。
+        - pattern: main
+          include: true
+          source: true
+        # master 分支推送时触发。
+        - pattern: master
+          include: true
+          source: true
+
+    # scripts: Codemagic 按顺序执行的命令。
+    scripts:
+      # 第 0 步：检查 Codemagic 后台必须填写的变量。
+      # 作用：避免没有填正式 Apple Team ID，或误用测试 Team ID A3PN7W63G3。
+      - name: Validate Codemagic variables
+        script: |
+          test -n "${APP_STORE_CONNECT_PRIVATE_KEY:-}" || { echo "Missing APP_STORE_CONNECT_PRIVATE_KEY"; exit 1; }
+          test -n "${APP_STORE_CONNECT_KEY_IDENTIFIER:-}" || { echo "Missing APP_STORE_CONNECT_KEY_IDENTIFIER"; exit 1; }
+          test -n "${APP_STORE_CONNECT_ISSUER_ID:-}" || { echo "Missing APP_STORE_CONNECT_ISSUER_ID"; exit 1; }
+          test -n "${APPLE_TEAM_ID:-}" || { echo "Missing APPLE_TEAM_ID. Fill the official Apple Developer Team ID in Codemagic."; exit 1; }
+          test "$APPLE_TEAM_ID" != "A3PN7W63G3" || { echo "APPLE_TEAM_ID is the test Team ID A3PN7W63G3. Use the official submission Team ID."; exit 1; }
+
+      # 第 1 步：解析 Swift Package 依赖。
+      # 作用：提前下载/解析 Package.swift 或 Xcode 工程里配置的 Swift Package。
+      - name: Resolve Swift Package dependencies
+        script: |
+          xcodebuild -resolvePackageDependencies \
+            -project "$CM_BUILD_DIR/$XCODE_PROJECT" \
+            -scheme "$XCODE_SCHEME"
+
+      # 第 2 步：初始化临时 keychain。
+      # 作用：给本次云端构建临时存放 Apple Distribution 证书。
+      - name: Set up temporary keychain
+        script: |
+          keychain initialize
+
+      # 第 3 步：开启 APNs 推送能力。
+      # 作用：调用 scripts/codemagic-enable-apns.sh，在 Apple Developer 的 Bundle ID 上启用 Push Notifications。
+      # 前提：App Store Connect API Key 有权限管理 Identifiers/Certificates/Profiles。
+      - name: Enable APNs capability
+        script: |
+          bash "$CM_BUILD_DIR/scripts/codemagic-enable-apns.sh"
+
+      # 第 4 步：获取签名文件。
+      # 作用：为 BUNDLE_ID 获取或创建 iOS App Store 类型的 provisioning profile。
+      # 参数对应：
+      # - --platform IOS: 指定 iOS 平台。
+      # - --type IOS_APP_STORE: 打 App Store/TestFlight 发布包。
+      # - --strict-match-identifier: 必须精确匹配 BUNDLE_ID，避免拿错描述文件。
+      # - --delete-stale-profiles: 清理旧的失效 profile，减少签名冲突。
+      # - --create: 找不到可用 profile 时自动创建。
+      - name: Fetch signing files
+        script: |
+          app-store-connect fetch-signing-files "$BUNDLE_ID" \
+            --platform IOS \
+            --type IOS_APP_STORE \
+            --strict-match-identifier \
+            --delete-stale-profiles \
+            --create
+
+      # 第 5 步：安装签名证书。
+      # 作用：把 Codemagic 获取/生成的 Apple Distribution 证书导入临时 keychain。
+      - name: Set up signing certificate
+        script: |
+          keychain add-certificates
+
+      # 第 6 步：把签名配置写入 Xcode 工程。
+      # 作用：让工程使用上一步获取到的 provisioning profile。
+      - name: Apply code signing settings
+        script: |
+          xcode-project use-profiles \
+            --project "$CM_BUILD_DIR/$XCODE_PROJECT"
+
+      # 第 7 步：构建签名 IPA。
+      # 作用：用 BlueStoneIM scheme + Release 配置打出可上传/安装的 .ipa。
+      # 参数对应：
+      # - --project: 指定 Xcode 工程路径。
+      # - --scheme: 指定打包 scheme，也就是上面的 XCODE_SCHEME。
+      # - --config: 指定 Release 配置。
+      # - --clean: 构建前清理，减少缓存导致的问题。
+      # - --archive-xcargs: 把 Codemagic 的 BUILD_NUMBER 写入构建号。
+      #   同时用 APPLE_TEAM_ID 覆盖 Xcode 工程里的测试 Team ID。
+      - name: Build signed IPA
+        script: |
+          xcode-project build-ipa \
+            --project "$CM_BUILD_DIR/$XCODE_PROJECT" \
+            --scheme "$XCODE_SCHEME" \
+            --config "$XCODE_CONFIG" \
+            --clean \
+            --archive-xcargs "CURRENT_PROJECT_VERSION=$BUILD_NUMBER DEVELOPMENT_TEAM=$APPLE_TEAM_ID"
+
+    # artifacts: 构建完成后在 Codemagic 页面可下载的产物。
+    artifacts:
+      # 最重要：最终 IPA 文件。
+      - build/ios/ipa/*.ipa
+      # Xcode archive，排查签名/导出问题时有用。
+      - build/ios/xcarchive/*.xcarchive
+      # xcodebuild 日志，构建失败时优先看这里。
+      - /tmp/xcodebuild_logs/*.log
+      # dSYM 符号文件，线上崩溃分析时用。
+      - $HOME/Library/Developer/Xcode/DerivedData/**/Build/**/*.dSYM
+
+    # publishing: 可选上传配置。
+    # 当前先注释掉，第一次 GitHub/Codemagic 绑定时只打包生成 IPA，不自动上传。
+    # 等 App Store Connect 里已经创建好 com.wendatongqiye.app 对应的 App 记录后，
+    # 再取消下面整段注释，就可以自动上传到 App Store Connect/TestFlight。
+    #
+    # publishing:
+    #   app_store_connect:
+    #     # api_key: 对应环境变量 APP_STORE_CONNECT_PRIVATE_KEY。
+    #     api_key: $APP_STORE_CONNECT_PRIVATE_KEY
+    #     # key_id: 对应环境变量 APP_STORE_CONNECT_KEY_IDENTIFIER。
+    #     key_id: $APP_STORE_CONNECT_KEY_IDENTIFIER
+    #     # issuer_id: 对应环境变量 APP_STORE_CONNECT_ISSUER_ID。
+    #     issuer_id: $APP_STORE_CONNECT_ISSUER_ID
+    #     # submit_to_testflight: false 表示只上传，不自动提交外部 TestFlight 审核。
+    #     submit_to_testflight: false

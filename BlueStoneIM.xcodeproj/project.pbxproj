@@ -1,0 +1,1466 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 60;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		A00000000000000000000001 /* BlueStoneIMApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000001 /* BlueStoneIMApp.swift */; };
+		A00000000000000000000002 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000002 /* Models.swift */; };
+		A00000000000000000000003 /* MockData.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000003 /* MockData.swift */; };
+		A00000000000000000000004 /* AppState.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000004 /* AppState.swift */; };
+		A00000000000000000000005 /* DesignSystem.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000005 /* DesignSystem.swift */; };
+		A00000000000000000000006 /* AuthViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000006 /* AuthViews.swift */; };
+		A00000000000000000000007 /* ConversationViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000007 /* ConversationViews.swift */; };
+		A00000000000000000000008 /* ChatViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000008 /* ChatViews.swift */; };
+		A00000000000000000000009 /* ContactsViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000009 /* ContactsViews.swift */; };
+		A00000000000000000000010 /* FilesRTCViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000010 /* FilesRTCViews.swift */; };
+		A00000000000000000000011 /* MeSettingsViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000011 /* MeSettingsViews.swift */; };
+		A00000000000000000000012 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000013 /* Assets.xcassets */; };
+		A00000000000000000000014 /* AuthBackground.metal in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000014 /* AuthBackground.metal */; };
+		A00000000000000000000015 /* MediaPipeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000015 /* MediaPipeline.swift */; };
+		A00000000000000000000016 /* CachedRemoteSnapshot.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000016 /* CachedRemoteSnapshot.swift */; };
+		A00000000000000000000017 /* RemoteAPIModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000017 /* RemoteAPIModels.swift */; };
+		A00000000000000000000018 /* IMAPIProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000018 /* IMAPIProtocol.swift */; };
+		A00000000000000000000019 /* RealtimeClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000019 /* RealtimeClient.swift */; };
+		A00000000000000000000020 /* SnapshotCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000020 /* SnapshotCache.swift */; };
+		A00000000000000000000021 /* FileStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000021 /* FileStore.swift */; };
+		A00000000000000000000022 /* CallStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000022 /* CallStore.swift */; };
+		A00000000000000000000023 /* ContactStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000023 /* ContactStore.swift */; };
+		A00000000000000000000024 /* ConversationStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000024 /* ConversationStore.swift */; };
+		A00000000000000000000025 /* RealtimeTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000025 /* RealtimeTransport.swift */; };
+		A00000000000000000000026 /* HTTPTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000026 /* HTTPTransport.swift */; };
+		A00000000000000000000027 /* DeviceRevocationDetector.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000027 /* DeviceRevocationDetector.swift */; };
+		A00000000000000000000028 /* WireCodec.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000028 /* WireCodec.swift */; };
+		A00000000000000000000029 /* SyncEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000029 /* SyncEngine.swift */; };
+		A00000000000000000000030 /* VoiceMediaClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000030 /* VoiceMediaClient.swift */; };
+		A00000000000000000000031 /* StickerStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000031 /* StickerStore.swift */; };
+		A00000000000000000000033 /* StickerGIFRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000032 /* StickerGIFRenderer.swift */; };
+		A00000000000000000000034 /* AccessDiscovery.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000033 /* AccessDiscovery.swift */; };
+		A00000000000000000000035 /* RealtimeQUICTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000034 /* RealtimeQUICTransport.swift */; };
+		A00000000000000000000036 /* AccessDiagnostics.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000035 /* AccessDiagnostics.swift */; };
+		A00000000000000000000037 /* IOSRiskTelemetry.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000036 /* IOSRiskTelemetry.swift */; };
+		A00000000000000000000038 /* PreloginBootstrap.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000037 /* PreloginBootstrap.swift */; };
+		A00000000000000000000039 /* PreloginBootstrapResolver.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000038 /* PreloginBootstrapResolver.swift */; };
+		A00000000000000000000040 /* PreloginBootstrapStartup.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000039 /* PreloginBootstrapStartup.swift */; };
+		A00000000000000000000041 /* VideoMediaClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000040 /* VideoMediaClient.swift */; };
+		A00000000000000000000042 /* VideoCallViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000041 /* VideoCallViews.swift */; };
+		A00000000000000000000043 /* BlueStoneIM/IdentityPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000042 /* BlueStoneIM/IdentityPresentation.swift */; };
+		A00000000000000000000044 /* BlueStoneIM/ScopedResponseFence.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000043 /* BlueStoneIM/ScopedResponseFence.swift */; };
+		A00000000000000000000045 /* BatchForwardState.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000044 /* BatchForwardState.swift */; };
+		A00000000000000000000101 /* RemoteAPIModelsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000101 /* RemoteAPIModelsTests.swift */; };
+		A00000000000000000000102 /* SnapshotCacheTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000103 /* SnapshotCacheTests.swift */; };
+		A00000000000000000000103 /* DomainStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000104 /* DomainStoreTests.swift */; };
+		A00000000000000000000104 /* RealtimeTransportTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000105 /* RealtimeTransportTests.swift */; };
+		A00000000000000000000105 /* HTTPTransportTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000106 /* HTTPTransportTests.swift */; };
+		A00000000000000000000106 /* DeviceRevocationDetectorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000107 /* DeviceRevocationDetectorTests.swift */; };
+		A00000000000000000000107 /* WireCodecTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000108 /* WireCodecTests.swift */; };
+		A00000000000000000000108 /* SyncEngineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000109 /* SyncEngineTests.swift */; };
+		A00000000000000000000109 /* DesignSystemTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000110 /* DesignSystemTests.swift */; };
+		A00000000000000000000110 /* FilePreviewTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000111 /* FilePreviewTests.swift */; };
+		A00000000000000000000111 /* MediaPipelineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000112 /* MediaPipelineTests.swift */; };
+		A00000000000000000000112 /* AttachmentDownloadTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000113 /* AttachmentDownloadTests.swift */; };
+		A00000000000000000000113 /* AccessDiscoveryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000114 /* AccessDiscoveryTests.swift */; };
+		A00000000000000000000114 /* AccessDiagnosticsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000115 /* AccessDiagnosticsTests.swift */; };
+		A00000000000000000000115 /* IOSRiskTelemetryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000116 /* IOSRiskTelemetryTests.swift */; };
+		A00000000000000000000116 /* PreloginBootstrapTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000117 /* PreloginBootstrapTests.swift */; };
+		A00000000000000000000117 /* Resources/prelogin-bootstrap-v1-test-vectors.json in Resources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000118 /* Resources/prelogin-bootstrap-v1-test-vectors.json */; };
+		A00000000000000000000118 /* PreloginBootstrapStartupTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000119 /* PreloginBootstrapStartupTests.swift */; };
+		A00000000000000000000119 /* BlueStoneIMTests/IdentityPresentationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000120 /* BlueStoneIMTests/IdentityPresentationTests.swift */; };
+		A00000000000000000000120 /* BlueStoneIMTests/ScopedResponseFenceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000121 /* BlueStoneIMTests/ScopedResponseFenceTests.swift */; };
+		A00000000000000000000121 /* BatchForwardStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000122 /* BatchForwardStateTests.swift */; };
+		A02100000000000000000001 /* GroupMuteMode.swift in Sources */ = {isa = PBXBuildFile; fileRef = B02100000000000000000001 /* GroupMuteMode.swift */; };
+		A02100000000000000000002 /* GroupMuteModeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B02100000000000000000002 /* GroupMuteModeTests.swift */; };
+		A02300000000000000000001 /* CertificationPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = B02300000000000000000001 /* CertificationPresentation.swift */; };
+		A02300000000000000000002 /* CertificationPresentationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B02300000000000000000002 /* CertificationPresentationTests.swift */; };
+		A02300000000000000000003 /* CertificationIdentityRootTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B02300000000000000000003 /* CertificationIdentityRootTests.swift */; };
+		A02400000000000000000001 /* EmojiPickerCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B02400000000000000000001 /* EmojiPickerCore.swift */; };
+		A02400000000000000000002 /* EmojiPickerPreferences.swift in Sources */ = {isa = PBXBuildFile; fileRef = B02400000000000000000002 /* EmojiPickerPreferences.swift */; };
+		A02400000000000000000003 /* EmojiPickerStoreAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = B02400000000000000000003 /* EmojiPickerStoreAdapter.swift */; };
+		A02400000000000000000004 /* EmojiPickerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B02400000000000000000004 /* EmojiPickerView.swift */; };
+		A02600000000000000000001 /* AvatarRealtimeProjection.swift in Sources */ = {isa = PBXBuildFile; fileRef = B02600000000000000000001 /* AvatarRealtimeProjection.swift */; };
+		A02600000000000000000002 /* AvatarRealtimeProjectionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B02600000000000000000002 /* AvatarRealtimeProjectionTests.swift */; };
+		A02700000000000000000001 /* CallLifecycle.swift in Sources */ = {isa = PBXBuildFile; fileRef = B02700000000000000000001 /* CallLifecycle.swift */; };
+		A02700000000000000000002 /* RegistrationFlowPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = B02700000000000000000002 /* RegistrationFlowPolicy.swift */; };
+		A02700000000000000000003 /* CallLifecycleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B02700000000000000000003 /* CallLifecycleTests.swift */; };
+		A02700000000000000000004 /* RegistrationFlowPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B02700000000000000000004 /* RegistrationFlowPolicyTests.swift */; };
+		A02800000000000000000001 /* PresenceConnectivityProjection.swift in Sources */ = {isa = PBXBuildFile; fileRef = B02800000000000000000001 /* PresenceConnectivityProjection.swift */; };
+		A02800000000000000000002 /* PresenceConnectivityProjectionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B02800000000000000000002 /* PresenceConnectivityProjectionTests.swift */; };
+		A03000000000000000000001 /* MessageDatabasePaths.swift in Sources */ = {isa = PBXBuildFile; fileRef = B03000000000000000000001 /* MessageDatabasePaths.swift */; };
+		A03000000000000000000002 /* MessageDatabaseSchema.swift in Sources */ = {isa = PBXBuildFile; fileRef = B03000000000000000000002 /* MessageDatabaseSchema.swift */; };
+		A03000000000000000000003 /* MessageDatabaseMigrations.swift in Sources */ = {isa = PBXBuildFile; fileRef = B03000000000000000000003 /* MessageDatabaseMigrations.swift */; };
+		A03000000000000000000004 /* LocalMessageRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = B03000000000000000000004 /* LocalMessageRepository.swift */; };
+		A03000000000000000000005 /* AttachmentTransferRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = B03000000000000000000005 /* AttachmentTransferRepository.swift */; };
+		A03000000000000000000006 /* SQLiteMessageRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = B03000000000000000000006 /* SQLiteMessageRepository.swift */; };
+		A03000000000000000000007 /* MessagePersistenceCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = B03000000000000000000007 /* MessagePersistenceCoordinator.swift */; };
+		A03000000000000000000008 /* LegacySnapshotImporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = B03000000000000000000008 /* LegacySnapshotImporter.swift */; };
+		A03000000000000000000009 /* GRDB in Frameworks */ = {isa = PBXBuildFile; productRef = L03000000000000000000002 /* GRDB */; };
+		A03000000000000000000101 /* MessageDatabaseTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B03000000000000000000101 /* MessageDatabaseTests.swift */; };
+		A04000000000000000000001 /* RTCCallRecordMessage.swift in Sources */ = {isa = PBXBuildFile; fileRef = B04000000000000000000001 /* RTCCallRecordMessage.swift */; };
+		A04000000000000000000002 /* RTCCallRecordCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = B04000000000000000000002 /* RTCCallRecordCard.swift */; };
+		A04000000000000000000003 /* RTCCallRecordRedial.swift in Sources */ = {isa = PBXBuildFile; fileRef = B04000000000000000000003 /* RTCCallRecordRedial.swift */; };
+		A04000000000000000000101 /* RTCCallRecordMessageTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B04000000000000000000101 /* RTCCallRecordMessageTests.swift */; };
+		A04700000000000000000001 /* GIFFallbackDecoder.c in Sources */ = {isa = PBXBuildFile; fileRef = B04700000000000000000001 /* GIFFallbackDecoder.c */; };
+		A04700000000000000000002 /* ThirdParty/Wuffs/LICENSE in Resources */ = {isa = PBXBuildFile; fileRef = B04700000000000000000003 /* ThirdParty/Wuffs/LICENSE */; };
+		A11000000000000000000001 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = B11000000000000000000001 /* PrivacyInfo.xcprivacy */; };
+		A05000000000000000000001 /* NetworkSupportTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = B05000000000000000000001 /* NetworkSupportTypes.swift */; };
+		A05100000000000000000001 /* IMAPIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = B05100000000000000000001 /* IMAPIClient.swift */; };
+		A05200000000000000000001 /* IMAPIClient+Auth.swift in Sources */ = {isa = PBXBuildFile; fileRef = B05200000000000000000001 /* IMAPIClient+Auth.swift */; };
+		A05300000000000000000001 /* IMAPIClient+Bootstrap.swift in Sources */ = {isa = PBXBuildFile; fileRef = B05300000000000000000001 /* IMAPIClient+Bootstrap.swift */; };
+		A05400000000000000000001 /* IMAPIClient+Workspaces.swift in Sources */ = {isa = PBXBuildFile; fileRef = B05400000000000000000001 /* IMAPIClient+Workspaces.swift */; };
+		A05500000000000000000001 /* IMAPIClient+Account.swift in Sources */ = {isa = PBXBuildFile; fileRef = B05500000000000000000001 /* IMAPIClient+Account.swift */; };
+		A05600000000000000000001 /* IMAPIClient+Files.swift in Sources */ = {isa = PBXBuildFile; fileRef = B05600000000000000000001 /* IMAPIClient+Files.swift */; };
+		A05700000000000000000001 /* IMAPIClient+RTC.swift in Sources */ = {isa = PBXBuildFile; fileRef = B05700000000000000000001 /* IMAPIClient+RTC.swift */; };
+		A05800000000000000000001 /* IMAPIClient+Contacts.swift in Sources */ = {isa = PBXBuildFile; fileRef = B05800000000000000000001 /* IMAPIClient+Contacts.swift */; };
+		A05900000000000000000001 /* IMAPIClient+Groups.swift in Sources */ = {isa = PBXBuildFile; fileRef = B05900000000000000000001 /* IMAPIClient+Groups.swift */; };
+		A06000000000000000000001 /* IMAPIClient+Messages.swift in Sources */ = {isa = PBXBuildFile; fileRef = B06000000000000000000001 /* IMAPIClient+Messages.swift */; };
+		A06100000000000000000001 /* IMAPIClient+Stickers.swift in Sources */ = {isa = PBXBuildFile; fileRef = B06100000000000000000001 /* IMAPIClient+Stickers.swift */; };
+		A06200000000000000000001 /* IMAPIErrorSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = B06200000000000000000001 /* IMAPIErrorSupport.swift */; };
+		A06300000000000000000001 /* IMAppBootstrapSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = B06300000000000000000001 /* IMAppBootstrapSupport.swift */; };
+		A07000000000000000000001 /* IMProtectedSessionStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B07000000000000000000001 /* IMProtectedSessionStore.swift */; };
+		A07000000000000000000002 /* IMAPIContext.swift in Sources */ = {isa = PBXBuildFile; fileRef = B07000000000000000000002 /* IMAPIContext.swift */; };
+		A08000000000000000000001 /* AppStatePolicies.swift in Sources */ = {isa = PBXBuildFile; fileRef = B08000000000000000000001 /* AppStatePolicies.swift */; };
+		A08000000000000000000002 /* AppStateRTCSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = B08000000000000000000002 /* AppStateRTCSupport.swift */; };
+		A08000000000000000000003 /* AppStateLocalSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = B08000000000000000000003 /* AppStateLocalSupport.swift */; };
+		A08000000000000000000004 /* AppStatePolicySupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = B08000000000000000000004 /* AppStatePolicySupport.swift */; };
+		A08000000000000000000005 /* AppStateDiagnosticsSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = B08000000000000000000005 /* AppStateDiagnosticsSupport.swift */; };
+		A08100000000000000000001 /* AppState+GroupsAnnouncements.swift in Sources */ = {isa = PBXBuildFile; fileRef = B08100000000000000000001 /* AppState+GroupsAnnouncements.swift */; };
+		A08200000000000000000001 /* AppState+SearchConversationSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = B08200000000000000000001 /* AppState+SearchConversationSettings.swift */; };
+		A08300000000000000000001 /* AppState+RemoteErrorHandling.swift in Sources */ = {isa = PBXBuildFile; fileRef = B08300000000000000000001 /* AppState+RemoteErrorHandling.swift */; };
+		A08400000000000000000001 /* AppState+GroupAdministration.swift in Sources */ = {isa = PBXBuildFile; fileRef = B08400000000000000000001 /* AppState+GroupAdministration.swift */; };
+		A08500000000000000000001 /* AppState+StickerLibrary.swift in Sources */ = {isa = PBXBuildFile; fileRef = B08500000000000000000001 /* AppState+StickerLibrary.swift */; };
+		A08600000000000000000001 /* AppState+FilesAttachments.swift in Sources */ = {isa = PBXBuildFile; fileRef = B08600000000000000000001 /* AppState+FilesAttachments.swift */; };
+		A08700000000000000000001 /* AppState+ConversationsHistory.swift in Sources */ = {isa = PBXBuildFile; fileRef = B08700000000000000000001 /* AppState+ConversationsHistory.swift */; };
+		A08800000000000000000001 /* AppState+MessageActions.swift in Sources */ = {isa = PBXBuildFile; fileRef = B08800000000000000000001 /* AppState+MessageActions.swift */; };
+		A08900000000000000000001 /* AppState+MessageSendingAttachments.swift in Sources */ = {isa = PBXBuildFile; fileRef = B08900000000000000000001 /* AppState+MessageSendingAttachments.swift */; };
+		A09000000000000000000001 /* AppState+ContactsInboxDevices.swift in Sources */ = {isa = PBXBuildFile; fileRef = B09000000000000000000001 /* AppState+ContactsInboxDevices.swift */; };
+		A09100000000000000000001 /* AppState+Realtime.swift in Sources */ = {isa = PBXBuildFile; fileRef = B09100000000000000000001 /* AppState+Realtime.swift */; };
+		A09200000000000000000001 /* AppState+IdentityPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = B09200000000000000000001 /* AppState+IdentityPresentation.swift */; };
+		A09300000000000000000001 /* AppStateSlideCaptchaSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = B09300000000000000000001 /* AppStateSlideCaptchaSupport.swift */; };
+		A09400000000000000000001 /* AppState+GroupSystemMessagePresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = B09400000000000000000001 /* AppState+GroupSystemMessagePresentation.swift */; };
+		A09500000000000000000001 /* AppState+RemoteMessagePayloadMapping.swift in Sources */ = {isa = PBXBuildFile; fileRef = B09500000000000000000001 /* AppState+RemoteMessagePayloadMapping.swift */; };
+		A09600000000000000000001 /* AppState+TenantSwitchingRemoteMapping.swift in Sources */ = {isa = PBXBuildFile; fileRef = B09600000000000000000001 /* AppState+TenantSwitchingRemoteMapping.swift */; };
+		A09700000000000000000001 /* AppState+RemoteGroupFileMapping.swift in Sources */ = {isa = PBXBuildFile; fileRef = B09700000000000000000001 /* AppState+RemoteGroupFileMapping.swift */; };
+		A09800000000000000000001 /* AppState+RemoteMessageStateMapping.swift in Sources */ = {isa = PBXBuildFile; fileRef = B09800000000000000000001 /* AppState+RemoteMessageStateMapping.swift */; };
+		A09900000000000000000001 /* AppState+RemoteRegistrationSnapshotSync.swift in Sources */ = {isa = PBXBuildFile; fileRef = B09900000000000000000001 /* AppState+RemoteRegistrationSnapshotSync.swift */; };
+		A10000000000000000000001 /* AppState+VoiceCalls.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000001 /* AppState+VoiceCalls.swift */; };
+		A10100000000000000000001 /* AppState+AuthenticationProfileWorkspace.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10100000000000000000001 /* AppState+AuthenticationProfileWorkspace.swift */; };
+		AD0376B830372BD500BFDE97 /* WebRTC in Frameworks */ = {isa = PBXBuildFile; productRef = L00000000000000000000002 /* WebRTC */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		K00000000000000000000001 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = G00000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = E00000000000000000000001;
+			remoteInfo = BlueStoneIM;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		AD0376BC30372F2A00BFDE97 /* BlueStoneIMRelease.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = BlueStoneIMRelease.entitlements; sourceTree = "<group>"; };
+		AD0376BD30372F4D00BFDE97 /* BlueStoneIMDebug.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = BlueStoneIMDebug.entitlements; sourceTree = "<group>"; };
+		B00000000000000000000001 /* BlueStoneIMApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BlueStoneIMApp.swift; sourceTree = "<group>"; };
+		B00000000000000000000002 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
+		B00000000000000000000003 /* MockData.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MockData.swift; sourceTree = "<group>"; };
+		B00000000000000000000004 /* AppState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppState.swift; sourceTree = "<group>"; };
+		B00000000000000000000005 /* DesignSystem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignSystem.swift; sourceTree = "<group>"; };
+		B00000000000000000000006 /* AuthViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthViews.swift; sourceTree = "<group>"; };
+		B00000000000000000000007 /* ConversationViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationViews.swift; sourceTree = "<group>"; };
+		B00000000000000000000008 /* ChatViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatViews.swift; sourceTree = "<group>"; };
+		B00000000000000000000009 /* ContactsViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContactsViews.swift; sourceTree = "<group>"; };
+		B00000000000000000000010 /* FilesRTCViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilesRTCViews.swift; sourceTree = "<group>"; };
+		B00000000000000000000011 /* MeSettingsViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeSettingsViews.swift; sourceTree = "<group>"; };
+		B00000000000000000000012 /* BlueStoneIM.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = BlueStoneIM.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		B00000000000000000000013 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		B00000000000000000000014 /* AuthBackground.metal */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.metal; path = AuthBackground.metal; sourceTree = "<group>"; };
+		B00000000000000000000015 /* MediaPipeline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaPipeline.swift; sourceTree = "<group>"; };
+		B00000000000000000000016 /* CachedRemoteSnapshot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CachedRemoteSnapshot.swift; sourceTree = "<group>"; };
+		B00000000000000000000017 /* RemoteAPIModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteAPIModels.swift; sourceTree = "<group>"; };
+		B00000000000000000000018 /* IMAPIProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IMAPIProtocol.swift; sourceTree = "<group>"; };
+		B00000000000000000000019 /* RealtimeClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RealtimeClient.swift; sourceTree = "<group>"; };
+		B00000000000000000000020 /* SnapshotCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnapshotCache.swift; sourceTree = "<group>"; };
+		B00000000000000000000021 /* FileStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileStore.swift; sourceTree = "<group>"; };
+		B00000000000000000000022 /* CallStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CallStore.swift; sourceTree = "<group>"; };
+		B00000000000000000000023 /* ContactStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContactStore.swift; sourceTree = "<group>"; };
+		B00000000000000000000024 /* ConversationStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationStore.swift; sourceTree = "<group>"; };
+		B00000000000000000000025 /* RealtimeTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RealtimeTransport.swift; sourceTree = "<group>"; };
+		B00000000000000000000026 /* HTTPTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HTTPTransport.swift; sourceTree = "<group>"; };
+		B00000000000000000000027 /* DeviceRevocationDetector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceRevocationDetector.swift; sourceTree = "<group>"; };
+		B00000000000000000000028 /* WireCodec.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WireCodec.swift; sourceTree = "<group>"; };
+		B00000000000000000000029 /* SyncEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncEngine.swift; sourceTree = "<group>"; };
+		B00000000000000000000030 /* VoiceMediaClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceMediaClient.swift; sourceTree = "<group>"; };
+		B00000000000000000000031 /* StickerStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StickerStore.swift; sourceTree = "<group>"; };
+		B00000000000000000000032 /* StickerGIFRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StickerGIFRenderer.swift; sourceTree = "<group>"; };
+		B00000000000000000000033 /* AccessDiscovery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccessDiscovery.swift; sourceTree = "<group>"; };
+		B00000000000000000000034 /* RealtimeQUICTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RealtimeQUICTransport.swift; sourceTree = "<group>"; };
+		B00000000000000000000035 /* AccessDiagnostics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccessDiagnostics.swift; sourceTree = "<group>"; };
+		B00000000000000000000036 /* IOSRiskTelemetry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOSRiskTelemetry.swift; sourceTree = "<group>"; };
+		B00000000000000000000037 /* PreloginBootstrap.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreloginBootstrap.swift; sourceTree = "<group>"; };
+		B00000000000000000000038 /* PreloginBootstrapResolver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreloginBootstrapResolver.swift; sourceTree = "<group>"; };
+		B00000000000000000000039 /* PreloginBootstrapStartup.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreloginBootstrapStartup.swift; sourceTree = "<group>"; };
+		B00000000000000000000040 /* VideoMediaClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoMediaClient.swift; sourceTree = "<group>"; };
+		B00000000000000000000041 /* VideoCallViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoCallViews.swift; sourceTree = "<group>"; };
+		B00000000000000000000042 /* BlueStoneIM/IdentityPresentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BlueStoneIM/IdentityPresentation.swift; sourceTree = SOURCE_ROOT; };
+		B00000000000000000000043 /* BlueStoneIM/ScopedResponseFence.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BlueStoneIM/ScopedResponseFence.swift; sourceTree = SOURCE_ROOT; };
+		B00000000000000000000044 /* BatchForwardState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BatchForwardState.swift; sourceTree = "<group>"; };
+		B00000000000000000000101 /* RemoteAPIModelsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteAPIModelsTests.swift; sourceTree = "<group>"; };
+		B00000000000000000000102 /* BlueStoneIMTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = BlueStoneIMTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		B00000000000000000000103 /* SnapshotCacheTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnapshotCacheTests.swift; sourceTree = "<group>"; };
+		B00000000000000000000104 /* DomainStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DomainStoreTests.swift; sourceTree = "<group>"; };
+		B00000000000000000000105 /* RealtimeTransportTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RealtimeTransportTests.swift; sourceTree = "<group>"; };
+		B00000000000000000000106 /* HTTPTransportTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HTTPTransportTests.swift; sourceTree = "<group>"; };
+		B00000000000000000000107 /* DeviceRevocationDetectorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceRevocationDetectorTests.swift; sourceTree = "<group>"; };
+		B00000000000000000000108 /* WireCodecTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WireCodecTests.swift; sourceTree = "<group>"; };
+		B00000000000000000000109 /* SyncEngineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncEngineTests.swift; sourceTree = "<group>"; };
+		B00000000000000000000110 /* DesignSystemTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignSystemTests.swift; sourceTree = "<group>"; };
+		B00000000000000000000111 /* FilePreviewTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilePreviewTests.swift; sourceTree = "<group>"; };
+		B00000000000000000000112 /* MediaPipelineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaPipelineTests.swift; sourceTree = "<group>"; };
+		B00000000000000000000113 /* AttachmentDownloadTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AttachmentDownloadTests.swift; sourceTree = "<group>"; };
+		B00000000000000000000114 /* AccessDiscoveryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccessDiscoveryTests.swift; sourceTree = "<group>"; };
+		B00000000000000000000115 /* AccessDiagnosticsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccessDiagnosticsTests.swift; sourceTree = "<group>"; };
+		B00000000000000000000116 /* IOSRiskTelemetryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOSRiskTelemetryTests.swift; sourceTree = "<group>"; };
+		B00000000000000000000117 /* PreloginBootstrapTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreloginBootstrapTests.swift; sourceTree = "<group>"; };
+		B00000000000000000000118 /* Resources/prelogin-bootstrap-v1-test-vectors.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "Resources/prelogin-bootstrap-v1-test-vectors.json"; sourceTree = "<group>"; };
+		B00000000000000000000119 /* PreloginBootstrapStartupTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreloginBootstrapStartupTests.swift; sourceTree = "<group>"; };
+		B00000000000000000000120 /* BlueStoneIMTests/IdentityPresentationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BlueStoneIMTests/IdentityPresentationTests.swift; sourceTree = SOURCE_ROOT; };
+		B00000000000000000000121 /* BlueStoneIMTests/ScopedResponseFenceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BlueStoneIMTests/ScopedResponseFenceTests.swift; sourceTree = SOURCE_ROOT; };
+		B00000000000000000000122 /* BatchForwardStateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BatchForwardStateTests.swift; sourceTree = "<group>"; };
+		B02100000000000000000001 /* GroupMuteMode.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GroupMuteMode.swift; sourceTree = "<group>"; };
+		B02100000000000000000002 /* GroupMuteModeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GroupMuteModeTests.swift; sourceTree = "<group>"; };
+		B02300000000000000000001 /* CertificationPresentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CertificationPresentation.swift; sourceTree = "<group>"; };
+		B02300000000000000000002 /* CertificationPresentationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CertificationPresentationTests.swift; sourceTree = "<group>"; };
+		B02300000000000000000003 /* CertificationIdentityRootTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CertificationIdentityRootTests.swift; sourceTree = "<group>"; };
+		B02400000000000000000001 /* EmojiPickerCore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EmojiPickerCore.swift; sourceTree = "<group>"; };
+		B02400000000000000000002 /* EmojiPickerPreferences.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EmojiPickerPreferences.swift; sourceTree = "<group>"; };
+		B02400000000000000000003 /* EmojiPickerStoreAdapter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EmojiPickerStoreAdapter.swift; sourceTree = "<group>"; };
+		B02400000000000000000004 /* EmojiPickerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EmojiPickerView.swift; sourceTree = "<group>"; };
+		B02600000000000000000001 /* AvatarRealtimeProjection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AvatarRealtimeProjection.swift; sourceTree = "<group>"; };
+		B02600000000000000000002 /* AvatarRealtimeProjectionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AvatarRealtimeProjectionTests.swift; sourceTree = "<group>"; };
+		B02700000000000000000001 /* CallLifecycle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CallLifecycle.swift; sourceTree = "<group>"; };
+		B02700000000000000000002 /* RegistrationFlowPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RegistrationFlowPolicy.swift; sourceTree = "<group>"; };
+		B02700000000000000000003 /* CallLifecycleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CallLifecycleTests.swift; sourceTree = "<group>"; };
+		B02700000000000000000004 /* RegistrationFlowPolicyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RegistrationFlowPolicyTests.swift; sourceTree = "<group>"; };
+		B02800000000000000000001 /* PresenceConnectivityProjection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PresenceConnectivityProjection.swift; sourceTree = "<group>"; };
+		B02800000000000000000002 /* PresenceConnectivityProjectionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PresenceConnectivityProjectionTests.swift; sourceTree = "<group>"; };
+		B03000000000000000000001 /* MessageDatabasePaths.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageDatabasePaths.swift; sourceTree = "<group>"; };
+		B03000000000000000000002 /* MessageDatabaseSchema.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageDatabaseSchema.swift; sourceTree = "<group>"; };
+		B03000000000000000000003 /* MessageDatabaseMigrations.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageDatabaseMigrations.swift; sourceTree = "<group>"; };
+		B03000000000000000000004 /* LocalMessageRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalMessageRepository.swift; sourceTree = "<group>"; };
+		B03000000000000000000005 /* AttachmentTransferRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AttachmentTransferRepository.swift; sourceTree = "<group>"; };
+		B03000000000000000000006 /* SQLiteMessageRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SQLiteMessageRepository.swift; sourceTree = "<group>"; };
+		B03000000000000000000007 /* MessagePersistenceCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessagePersistenceCoordinator.swift; sourceTree = "<group>"; };
+		B03000000000000000000008 /* LegacySnapshotImporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LegacySnapshotImporter.swift; sourceTree = "<group>"; };
+		B03000000000000000000101 /* MessageDatabaseTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageDatabaseTests.swift; sourceTree = "<group>"; };
+		B04000000000000000000001 /* RTCCallRecordMessage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RTCCallRecordMessage.swift; sourceTree = "<group>"; };
+		B04000000000000000000002 /* RTCCallRecordCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RTCCallRecordCard.swift; sourceTree = "<group>"; };
+		B04000000000000000000003 /* RTCCallRecordRedial.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RTCCallRecordRedial.swift; sourceTree = "<group>"; };
+		B04000000000000000000101 /* RTCCallRecordMessageTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RTCCallRecordMessageTests.swift; sourceTree = "<group>"; };
+		B04700000000000000000001 /* GIFFallbackDecoder.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = GIFFallbackDecoder.c; sourceTree = "<group>"; };
+		B04700000000000000000002 /* GIFFallbackDecoder.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = GIFFallbackDecoder.h; sourceTree = "<group>"; };
+		B04700000000000000000003 /* ThirdParty/Wuffs/LICENSE */ = {isa = PBXFileReference; lastKnownFileType = text; path = ThirdParty/Wuffs/LICENSE; sourceTree = "<group>"; };
+		B11000000000000000000001 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
+		B05000000000000000000001 /* NetworkSupportTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetworkSupportTypes.swift; sourceTree = "<group>"; };
+		B05100000000000000000001 /* IMAPIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IMAPIClient.swift; sourceTree = "<group>"; };
+		B05200000000000000000001 /* IMAPIClient+Auth.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "IMAPIClient+Auth.swift"; sourceTree = "<group>"; };
+		B05300000000000000000001 /* IMAPIClient+Bootstrap.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "IMAPIClient+Bootstrap.swift"; sourceTree = "<group>"; };
+		B05400000000000000000001 /* IMAPIClient+Workspaces.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "IMAPIClient+Workspaces.swift"; sourceTree = "<group>"; };
+		B05500000000000000000001 /* IMAPIClient+Account.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "IMAPIClient+Account.swift"; sourceTree = "<group>"; };
+		B05600000000000000000001 /* IMAPIClient+Files.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "IMAPIClient+Files.swift"; sourceTree = "<group>"; };
+		B05700000000000000000001 /* IMAPIClient+RTC.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "IMAPIClient+RTC.swift"; sourceTree = "<group>"; };
+		B05800000000000000000001 /* IMAPIClient+Contacts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "IMAPIClient+Contacts.swift"; sourceTree = "<group>"; };
+		B05900000000000000000001 /* IMAPIClient+Groups.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "IMAPIClient+Groups.swift"; sourceTree = "<group>"; };
+		B06000000000000000000001 /* IMAPIClient+Messages.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "IMAPIClient+Messages.swift"; sourceTree = "<group>"; };
+		B06100000000000000000001 /* IMAPIClient+Stickers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "IMAPIClient+Stickers.swift"; sourceTree = "<group>"; };
+		B06200000000000000000001 /* IMAPIErrorSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IMAPIErrorSupport.swift; sourceTree = "<group>"; };
+		B06300000000000000000001 /* IMAppBootstrapSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IMAppBootstrapSupport.swift; sourceTree = "<group>"; };
+		B07000000000000000000001 /* IMProtectedSessionStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IMProtectedSessionStore.swift; sourceTree = "<group>"; };
+		B07000000000000000000002 /* IMAPIContext.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IMAPIContext.swift; sourceTree = "<group>"; };
+		B08000000000000000000001 /* AppStatePolicies.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStatePolicies.swift; sourceTree = "<group>"; };
+		B08000000000000000000002 /* AppStateRTCSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStateRTCSupport.swift; sourceTree = "<group>"; };
+		B08000000000000000000003 /* AppStateLocalSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStateLocalSupport.swift; sourceTree = "<group>"; };
+		B08000000000000000000004 /* AppStatePolicySupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStatePolicySupport.swift; sourceTree = "<group>"; };
+		B08000000000000000000005 /* AppStateDiagnosticsSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStateDiagnosticsSupport.swift; sourceTree = "<group>"; };
+		B08100000000000000000001 /* AppState+GroupsAnnouncements.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "AppState+GroupsAnnouncements.swift"; sourceTree = "<group>"; };
+		B08200000000000000000001 /* AppState+SearchConversationSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "AppState+SearchConversationSettings.swift"; sourceTree = "<group>"; };
+		B08300000000000000000001 /* AppState+RemoteErrorHandling.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "AppState+RemoteErrorHandling.swift"; sourceTree = "<group>"; };
+		B08400000000000000000001 /* AppState+GroupAdministration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "AppState+GroupAdministration.swift"; sourceTree = "<group>"; };
+		B08500000000000000000001 /* AppState+StickerLibrary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "AppState+StickerLibrary.swift"; sourceTree = "<group>"; };
+		B08600000000000000000001 /* AppState+FilesAttachments.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "AppState+FilesAttachments.swift"; sourceTree = "<group>"; };
+		B08700000000000000000001 /* AppState+ConversationsHistory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "AppState+ConversationsHistory.swift"; sourceTree = "<group>"; };
+		B08800000000000000000001 /* AppState+MessageActions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "AppState+MessageActions.swift"; sourceTree = "<group>"; };
+		B08900000000000000000001 /* AppState+MessageSendingAttachments.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "AppState+MessageSendingAttachments.swift"; sourceTree = "<group>"; };
+		B09000000000000000000001 /* AppState+ContactsInboxDevices.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "AppState+ContactsInboxDevices.swift"; sourceTree = "<group>"; };
+		B09100000000000000000001 /* AppState+Realtime.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "AppState+Realtime.swift"; sourceTree = "<group>"; };
+		B09200000000000000000001 /* AppState+IdentityPresentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "AppState+IdentityPresentation.swift"; sourceTree = "<group>"; };
+		B09300000000000000000001 /* AppStateSlideCaptchaSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStateSlideCaptchaSupport.swift; sourceTree = "<group>"; };
+		B09400000000000000000001 /* AppState+GroupSystemMessagePresentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "AppState+GroupSystemMessagePresentation.swift"; sourceTree = "<group>"; };
+		B09500000000000000000001 /* AppState+RemoteMessagePayloadMapping.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "AppState+RemoteMessagePayloadMapping.swift"; sourceTree = "<group>"; };
+		B09600000000000000000001 /* AppState+TenantSwitchingRemoteMapping.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "AppState+TenantSwitchingRemoteMapping.swift"; sourceTree = "<group>"; };
+		B09700000000000000000001 /* AppState+RemoteGroupFileMapping.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "AppState+RemoteGroupFileMapping.swift"; sourceTree = "<group>"; };
+		B09800000000000000000001 /* AppState+RemoteMessageStateMapping.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "AppState+RemoteMessageStateMapping.swift"; sourceTree = "<group>"; };
+		B09900000000000000000001 /* AppState+RemoteRegistrationSnapshotSync.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "AppState+RemoteRegistrationSnapshotSync.swift"; sourceTree = "<group>"; };
+		B10000000000000000000001 /* AppState+VoiceCalls.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "AppState+VoiceCalls.swift"; sourceTree = "<group>"; };
+		B10100000000000000000001 /* AppState+AuthenticationProfileWorkspace.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "AppState+AuthenticationProfileWorkspace.swift"; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		C00000000000000000000001 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A03000000000000000000009 /* GRDB in Frameworks */,
+				AD0376B830372BD500BFDE97 /* WebRTC in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		C00000000000000000000002 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		AD0376B930372BD500BFDE97 /* Recovered References */ = {
+			isa = PBXGroup;
+			children = (
+				B00000000000000000000042 /* BlueStoneIM/IdentityPresentation.swift */,
+				B00000000000000000000043 /* BlueStoneIM/ScopedResponseFence.swift */,
+				B00000000000000000000120 /* BlueStoneIMTests/IdentityPresentationTests.swift */,
+				B00000000000000000000121 /* BlueStoneIMTests/ScopedResponseFenceTests.swift */,
+			);
+			name = "Recovered References";
+			sourceTree = "<group>";
+		};
+		D00000000000000000000001 = {
+			isa = PBXGroup;
+			children = (
+				D00000000000000000000003 /* BlueStoneIM */,
+				D00000000000000000000004 /* BlueStoneIMTests */,
+				D00000000000000000000002 /* Products */,
+				AD0376B930372BD500BFDE97 /* Recovered References */,
+			);
+			sourceTree = "<group>";
+		};
+		D00000000000000000000002 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				B00000000000000000000012 /* BlueStoneIM.app */,
+				B00000000000000000000102 /* BlueStoneIMTests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		D00000000000000000000003 /* BlueStoneIM */ = {
+			isa = PBXGroup;
+			children = (
+				AD0376BD30372F4D00BFDE97 /* BlueStoneIMDebug.entitlements */,
+				AD0376BC30372F2A00BFDE97 /* BlueStoneIMRelease.entitlements */,
+				B11000000000000000000001 /* PrivacyInfo.xcprivacy */,
+				D05000000000000000000001 /* Core */,
+				B00000000000000000000001 /* BlueStoneIMApp.swift */,
+				B00000000000000000000002 /* Models.swift */,
+				B04000000000000000000001 /* RTCCallRecordMessage.swift */,
+				B04000000000000000000002 /* RTCCallRecordCard.swift */,
+				B04000000000000000000003 /* RTCCallRecordRedial.swift */,
+				B02100000000000000000001 /* GroupMuteMode.swift */,
+				B00000000000000000000044 /* BatchForwardState.swift */,
+				B02400000000000000000001 /* EmojiPickerCore.swift */,
+				B02400000000000000000002 /* EmojiPickerPreferences.swift */,
+				B02400000000000000000003 /* EmojiPickerStoreAdapter.swift */,
+				B02400000000000000000004 /* EmojiPickerView.swift */,
+				B02300000000000000000001 /* CertificationPresentation.swift */,
+				B02600000000000000000001 /* AvatarRealtimeProjection.swift */,
+				B02800000000000000000001 /* PresenceConnectivityProjection.swift */,
+				B02700000000000000000001 /* CallLifecycle.swift */,
+				B02700000000000000000002 /* RegistrationFlowPolicy.swift */,
+				B00000000000000000000003 /* MockData.swift */,
+				B00000000000000000000004 /* AppState.swift */,
+				B00000000000000000000018 /* IMAPIProtocol.swift */,
+				B00000000000000000000019 /* RealtimeClient.swift */,
+				B00000000000000000000025 /* RealtimeTransport.swift */,
+				B00000000000000000000034 /* RealtimeQUICTransport.swift */,
+				B00000000000000000000026 /* HTTPTransport.swift */,
+				B00000000000000000000027 /* DeviceRevocationDetector.swift */,
+				B00000000000000000000028 /* WireCodec.swift */,
+				B00000000000000000000029 /* SyncEngine.swift */,
+				B00000000000000000000030 /* VoiceMediaClient.swift */,
+				B00000000000000000000040 /* VideoMediaClient.swift */,
+				B00000000000000000000041 /* VideoCallViews.swift */,
+				B00000000000000000000033 /* AccessDiscovery.swift */,
+				B00000000000000000000035 /* AccessDiagnostics.swift */,
+				B00000000000000000000036 /* IOSRiskTelemetry.swift */,
+				B00000000000000000000037 /* PreloginBootstrap.swift */,
+				B00000000000000000000038 /* PreloginBootstrapResolver.swift */,
+				B00000000000000000000039 /* PreloginBootstrapStartup.swift */,
+				B00000000000000000000020 /* SnapshotCache.swift */,
+				B03000000000000000000001 /* MessageDatabasePaths.swift */,
+				B03000000000000000000002 /* MessageDatabaseSchema.swift */,
+				B03000000000000000000003 /* MessageDatabaseMigrations.swift */,
+				B03000000000000000000004 /* LocalMessageRepository.swift */,
+				B03000000000000000000005 /* AttachmentTransferRepository.swift */,
+				B03000000000000000000006 /* SQLiteMessageRepository.swift */,
+				B03000000000000000000007 /* MessagePersistenceCoordinator.swift */,
+				B03000000000000000000008 /* LegacySnapshotImporter.swift */,
+				B00000000000000000000023 /* ContactStore.swift */,
+				B00000000000000000000024 /* ConversationStore.swift */,
+				B00000000000000000000021 /* FileStore.swift */,
+				B00000000000000000000022 /* CallStore.swift */,
+				B00000000000000000000031 /* StickerStore.swift */,
+				B00000000000000000000032 /* StickerGIFRenderer.swift */,
+				B04700000000000000000001 /* GIFFallbackDecoder.c */,
+				B04700000000000000000002 /* GIFFallbackDecoder.h */,
+				B04700000000000000000003 /* ThirdParty/Wuffs/LICENSE */,
+				B00000000000000000000016 /* CachedRemoteSnapshot.swift */,
+				B00000000000000000000017 /* RemoteAPIModels.swift */,
+				B00000000000000000000015 /* MediaPipeline.swift */,
+				B00000000000000000000005 /* DesignSystem.swift */,
+				B00000000000000000000006 /* AuthViews.swift */,
+				B00000000000000000000007 /* ConversationViews.swift */,
+				B00000000000000000000008 /* ChatViews.swift */,
+				B00000000000000000000009 /* ContactsViews.swift */,
+				B00000000000000000000010 /* FilesRTCViews.swift */,
+				B00000000000000000000011 /* MeSettingsViews.swift */,
+				B00000000000000000000013 /* Assets.xcassets */,
+				B00000000000000000000014 /* AuthBackground.metal */,
+			);
+			path = BlueStoneIM;
+			sourceTree = "<group>";
+		};
+		D00000000000000000000004 /* BlueStoneIMTests */ = {
+			isa = PBXGroup;
+			children = (
+				B03000000000000000000101 /* MessageDatabaseTests.swift */,
+				B04000000000000000000101 /* RTCCallRecordMessageTests.swift */,
+				B00000000000000000000101 /* RemoteAPIModelsTests.swift */,
+				B02100000000000000000002 /* GroupMuteModeTests.swift */,
+				B00000000000000000000122 /* BatchForwardStateTests.swift */,
+				B00000000000000000000103 /* SnapshotCacheTests.swift */,
+				B00000000000000000000104 /* DomainStoreTests.swift */,
+				B00000000000000000000105 /* RealtimeTransportTests.swift */,
+				B00000000000000000000106 /* HTTPTransportTests.swift */,
+				B00000000000000000000107 /* DeviceRevocationDetectorTests.swift */,
+				B00000000000000000000108 /* WireCodecTests.swift */,
+				B00000000000000000000109 /* SyncEngineTests.swift */,
+				B00000000000000000000110 /* DesignSystemTests.swift */,
+				B00000000000000000000111 /* FilePreviewTests.swift */,
+				B00000000000000000000112 /* MediaPipelineTests.swift */,
+				B00000000000000000000113 /* AttachmentDownloadTests.swift */,
+				B00000000000000000000114 /* AccessDiscoveryTests.swift */,
+				B00000000000000000000115 /* AccessDiagnosticsTests.swift */,
+				B00000000000000000000116 /* IOSRiskTelemetryTests.swift */,
+				B00000000000000000000117 /* PreloginBootstrapTests.swift */,
+				B00000000000000000000119 /* PreloginBootstrapStartupTests.swift */,
+				B00000000000000000000118 /* Resources/prelogin-bootstrap-v1-test-vectors.json */,
+				B02300000000000000000002 /* CertificationPresentationTests.swift */,
+				B02300000000000000000003 /* CertificationIdentityRootTests.swift */,
+				B02600000000000000000002 /* AvatarRealtimeProjectionTests.swift */,
+				B02800000000000000000002 /* PresenceConnectivityProjectionTests.swift */,
+				B02700000000000000000003 /* CallLifecycleTests.swift */,
+				B02700000000000000000004 /* RegistrationFlowPolicyTests.swift */,
+			);
+			path = BlueStoneIMTests;
+			sourceTree = "<group>";
+		};
+		D05000000000000000000001 /* Core */ = {
+			isa = PBXGroup;
+			children = (
+				D05100000000000000000001 /* Networking */,
+				D07000000000000000000001 /* Storage */,
+				D08000000000000000000001 /* AppSupport */,
+				D05000000000000000000002 /* NetworkSupport */,
+			);
+			path = Core;
+			sourceTree = "<group>";
+		};
+		D05000000000000000000002 /* NetworkSupport */ = {
+			isa = PBXGroup;
+			children = (
+				B05000000000000000000001 /* NetworkSupportTypes.swift */,
+			);
+			path = NetworkSupport;
+			sourceTree = "<group>";
+		};
+		D05100000000000000000001 /* Networking */ = {
+			isa = PBXGroup;
+			children = (
+				B05100000000000000000001 /* IMAPIClient.swift */,
+				B06200000000000000000001 /* IMAPIErrorSupport.swift */,
+				B06300000000000000000001 /* IMAppBootstrapSupport.swift */,
+				B05200000000000000000001 /* IMAPIClient+Auth.swift */,
+				B05300000000000000000001 /* IMAPIClient+Bootstrap.swift */,
+				B05400000000000000000001 /* IMAPIClient+Workspaces.swift */,
+				B05500000000000000000001 /* IMAPIClient+Account.swift */,
+				B05600000000000000000001 /* IMAPIClient+Files.swift */,
+				B05700000000000000000001 /* IMAPIClient+RTC.swift */,
+				B05800000000000000000001 /* IMAPIClient+Contacts.swift */,
+				B05900000000000000000001 /* IMAPIClient+Groups.swift */,
+				B06000000000000000000001 /* IMAPIClient+Messages.swift */,
+				B06100000000000000000001 /* IMAPIClient+Stickers.swift */,
+			);
+			path = Networking;
+			sourceTree = "<group>";
+		};
+		D07000000000000000000001 /* Storage */ = {
+			isa = PBXGroup;
+			children = (
+				B07000000000000000000001 /* IMProtectedSessionStore.swift */,
+				B07000000000000000000002 /* IMAPIContext.swift */,
+			);
+			path = Storage;
+			sourceTree = "<group>";
+		};
+		D08000000000000000000001 /* AppSupport */ = {
+			isa = PBXGroup;
+			children = (
+				B08000000000000000000001 /* AppStatePolicies.swift */,
+				B08000000000000000000002 /* AppStateRTCSupport.swift */,
+				B08000000000000000000003 /* AppStateLocalSupport.swift */,
+				B08000000000000000000004 /* AppStatePolicySupport.swift */,
+				B08000000000000000000005 /* AppStateDiagnosticsSupport.swift */,
+				B08100000000000000000001 /* AppState+GroupsAnnouncements.swift */,
+				B08200000000000000000001 /* AppState+SearchConversationSettings.swift */,
+				B08300000000000000000001 /* AppState+RemoteErrorHandling.swift */,
+				B08400000000000000000001 /* AppState+GroupAdministration.swift */,
+				B08500000000000000000001 /* AppState+StickerLibrary.swift */,
+				B08600000000000000000001 /* AppState+FilesAttachments.swift */,
+				B08700000000000000000001 /* AppState+ConversationsHistory.swift */,
+				B08800000000000000000001 /* AppState+MessageActions.swift */,
+				B08900000000000000000001 /* AppState+MessageSendingAttachments.swift */,
+				B09000000000000000000001 /* AppState+ContactsInboxDevices.swift */,
+				B09100000000000000000001 /* AppState+Realtime.swift */,
+				B09300000000000000000001 /* AppStateSlideCaptchaSupport.swift */,
+				D09400000000000000000001 /* MessageMapping */,
+				D09600000000000000000001 /* TenantSession */,
+				D09700000000000000000001 /* GroupFileMapping */,
+				D09900000000000000000001 /* RemoteSync */,
+				D10000000000000000000001 /* Calls */,
+				D10100000000000000000001 /* AccountSession */,
+			);
+			path = AppSupport;
+			sourceTree = "<group>";
+		};
+		D09400000000000000000001 /* MessageMapping */ = {
+			isa = PBXGroup;
+			children = (
+				B09200000000000000000001 /* AppState+IdentityPresentation.swift */,
+				B09400000000000000000001 /* AppState+GroupSystemMessagePresentation.swift */,
+				B09500000000000000000001 /* AppState+RemoteMessagePayloadMapping.swift */,
+				B09800000000000000000001 /* AppState+RemoteMessageStateMapping.swift */,
+			);
+			path = MessageMapping;
+			sourceTree = "<group>";
+		};
+		D09600000000000000000001 /* TenantSession */ = {
+			isa = PBXGroup;
+			children = (
+				B09600000000000000000001 /* AppState+TenantSwitchingRemoteMapping.swift */,
+			);
+			path = TenantSession;
+			sourceTree = "<group>";
+		};
+		D09700000000000000000001 /* GroupFileMapping */ = {
+			isa = PBXGroup;
+			children = (
+				B09700000000000000000001 /* AppState+RemoteGroupFileMapping.swift */,
+			);
+			path = GroupFileMapping;
+			sourceTree = "<group>";
+		};
+		D09900000000000000000001 /* RemoteSync */ = {
+			isa = PBXGroup;
+			children = (
+				B09900000000000000000001 /* AppState+RemoteRegistrationSnapshotSync.swift */,
+			);
+			path = RemoteSync;
+			sourceTree = "<group>";
+		};
+		D10000000000000000000001 /* Calls */ = {
+			isa = PBXGroup;
+			children = (
+				B10000000000000000000001 /* AppState+VoiceCalls.swift */,
+			);
+			path = Calls;
+			sourceTree = "<group>";
+		};
+		D10100000000000000000001 /* AccountSession */ = {
+			isa = PBXGroup;
+			children = (
+				B10100000000000000000001 /* AppState+AuthenticationProfileWorkspace.swift */,
+			);
+			path = AccountSession;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		E00000000000000000000001 /* BlueStoneIM */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = H00000000000000000000002 /* Build configuration list for PBXNativeTarget "BlueStoneIM" */;
+			buildPhases = (
+				F00000000000000000000005 /* APP2 Release Configuration Gate */,
+				F00000000000000000000001 /* Sources */,
+				C00000000000000000000001 /* Frameworks */,
+				F00000000000000000000002 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = BlueStoneIM;
+			packageProductDependencies = (
+				L03000000000000000000002 /* GRDB */,
+				L00000000000000000000002 /* WebRTC */,
+			);
+			productName = BlueStoneIM;
+			productReference = B00000000000000000000012 /* BlueStoneIM.app */;
+			productType = "com.apple.product-type.application";
+		};
+		E00000000000000000000002 /* BlueStoneIMTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = H00000000000000000000003 /* Build configuration list for PBXNativeTarget "BlueStoneIMTests" */;
+			buildPhases = (
+				F00000000000000000000004 /* Sources */,
+				C00000000000000000000002 /* Frameworks */,
+				F00000000000000000000003 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				J00000000000000000000001 /* PBXTargetDependency */,
+			);
+			name = BlueStoneIMTests;
+			productName = BlueStoneIMTests;
+			productReference = B00000000000000000000102 /* BlueStoneIMTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		G00000000000000000000001 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 2650;
+				LastUpgradeCheck = 2650;
+				TargetAttributes = {
+					E00000000000000000000001 = {
+						CreatedOnToolsVersion = 26.5;
+						SystemCapabilities = {
+							com.apple.BackgroundModes = {
+								enabled = 1;
+							};
+							com.apple.Push = {
+								enabled = 1;
+							};
+						};
+					};
+					E00000000000000000000002 = {
+						CreatedOnToolsVersion = 26.5;
+						TestTargetID = E00000000000000000000001;
+					};
+				};
+			};
+			buildConfigurationList = H00000000000000000000001 /* Build configuration list for PBXProject "BlueStoneIM" */;
+			compatibilityVersion = "Xcode 15.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+				"zh-Hans",
+			);
+			mainGroup = D00000000000000000000001;
+			packageReferences = (
+				L03000000000000000000001 /* XCRemoteSwiftPackageReference "GRDB.swift" */,
+				L00000000000000000000001 /* XCRemoteSwiftPackageReference "WebRTC" */,
+			);
+			productRefGroup = D00000000000000000000002 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				E00000000000000000000001 /* BlueStoneIM */,
+				E00000000000000000000002 /* BlueStoneIMTests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		F00000000000000000000002 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A04700000000000000000002 /* ThirdParty/Wuffs/LICENSE in Resources */,
+				A00000000000000000000012 /* Assets.xcassets in Resources */,
+				A11000000000000000000001 /* PrivacyInfo.xcprivacy in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		F00000000000000000000003 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A00000000000000000000117 /* Resources/prelogin-bootstrap-v1-test-vectors.json in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		F00000000000000000000005 /* APP2 Release Configuration Gate */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"$(SRCROOT)/scripts/check-app2-release-configuration.sh",
+			);
+			name = "APP2 Release Configuration Gate";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "/usr/bin/env bash \"${SRCROOT}/scripts/check-app2-release-configuration.sh\"\n";
+		};
+/* End PBXShellScriptBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		F00000000000000000000001 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A00000000000000000000001 /* BlueStoneIMApp.swift in Sources */,
+				A00000000000000000000002 /* Models.swift in Sources */,
+				A04000000000000000000001 /* RTCCallRecordMessage.swift in Sources */,
+				A04000000000000000000002 /* RTCCallRecordCard.swift in Sources */,
+				A04000000000000000000003 /* RTCCallRecordRedial.swift in Sources */,
+				A02100000000000000000001 /* GroupMuteMode.swift in Sources */,
+				A00000000000000000000045 /* BatchForwardState.swift in Sources */,
+				A02400000000000000000001 /* EmojiPickerCore.swift in Sources */,
+				A02400000000000000000002 /* EmojiPickerPreferences.swift in Sources */,
+				A02400000000000000000003 /* EmojiPickerStoreAdapter.swift in Sources */,
+				A02400000000000000000004 /* EmojiPickerView.swift in Sources */,
+				A02300000000000000000001 /* CertificationPresentation.swift in Sources */,
+				A02600000000000000000001 /* AvatarRealtimeProjection.swift in Sources */,
+				A02800000000000000000001 /* PresenceConnectivityProjection.swift in Sources */,
+				A02700000000000000000001 /* CallLifecycle.swift in Sources */,
+				A02700000000000000000002 /* RegistrationFlowPolicy.swift in Sources */,
+				A00000000000000000000003 /* MockData.swift in Sources */,
+				A00000000000000000000004 /* AppState.swift in Sources */,
+				A00000000000000000000005 /* DesignSystem.swift in Sources */,
+				A00000000000000000000006 /* AuthViews.swift in Sources */,
+				A00000000000000000000007 /* ConversationViews.swift in Sources */,
+				A00000000000000000000008 /* ChatViews.swift in Sources */,
+				A00000000000000000000009 /* ContactsViews.swift in Sources */,
+				A00000000000000000000010 /* FilesRTCViews.swift in Sources */,
+				A00000000000000000000011 /* MeSettingsViews.swift in Sources */,
+				A00000000000000000000018 /* IMAPIProtocol.swift in Sources */,
+				A00000000000000000000019 /* RealtimeClient.swift in Sources */,
+				A00000000000000000000025 /* RealtimeTransport.swift in Sources */,
+				A00000000000000000000035 /* RealtimeQUICTransport.swift in Sources */,
+				A00000000000000000000026 /* HTTPTransport.swift in Sources */,
+				A05000000000000000000001 /* NetworkSupportTypes.swift in Sources */,
+				A05100000000000000000001 /* IMAPIClient.swift in Sources */,
+				A06200000000000000000001 /* IMAPIErrorSupport.swift in Sources */,
+				A06300000000000000000001 /* IMAppBootstrapSupport.swift in Sources */,
+				A07000000000000000000001 /* IMProtectedSessionStore.swift in Sources */,
+				A07000000000000000000002 /* IMAPIContext.swift in Sources */,
+				A08000000000000000000001 /* AppStatePolicies.swift in Sources */,
+				A08000000000000000000002 /* AppStateRTCSupport.swift in Sources */,
+				A08000000000000000000003 /* AppStateLocalSupport.swift in Sources */,
+				A08000000000000000000004 /* AppStatePolicySupport.swift in Sources */,
+				A08000000000000000000005 /* AppStateDiagnosticsSupport.swift in Sources */,
+				A08100000000000000000001 /* AppState+GroupsAnnouncements.swift in Sources */,
+				A08200000000000000000001 /* AppState+SearchConversationSettings.swift in Sources */,
+				A08300000000000000000001 /* AppState+RemoteErrorHandling.swift in Sources */,
+				A08400000000000000000001 /* AppState+GroupAdministration.swift in Sources */,
+				A08500000000000000000001 /* AppState+StickerLibrary.swift in Sources */,
+				A08600000000000000000001 /* AppState+FilesAttachments.swift in Sources */,
+				A08700000000000000000001 /* AppState+ConversationsHistory.swift in Sources */,
+				A08800000000000000000001 /* AppState+MessageActions.swift in Sources */,
+				A08900000000000000000001 /* AppState+MessageSendingAttachments.swift in Sources */,
+				A09000000000000000000001 /* AppState+ContactsInboxDevices.swift in Sources */,
+				A09100000000000000000001 /* AppState+Realtime.swift in Sources */,
+				A09200000000000000000001 /* AppState+IdentityPresentation.swift in Sources */,
+				A09300000000000000000001 /* AppStateSlideCaptchaSupport.swift in Sources */,
+				A09400000000000000000001 /* AppState+GroupSystemMessagePresentation.swift in Sources */,
+				A09500000000000000000001 /* AppState+RemoteMessagePayloadMapping.swift in Sources */,
+				A09600000000000000000001 /* AppState+TenantSwitchingRemoteMapping.swift in Sources */,
+				A09700000000000000000001 /* AppState+RemoteGroupFileMapping.swift in Sources */,
+				A09800000000000000000001 /* AppState+RemoteMessageStateMapping.swift in Sources */,
+				A09900000000000000000001 /* AppState+RemoteRegistrationSnapshotSync.swift in Sources */,
+				A10000000000000000000001 /* AppState+VoiceCalls.swift in Sources */,
+				A10100000000000000000001 /* AppState+AuthenticationProfileWorkspace.swift in Sources */,
+				A05200000000000000000001 /* IMAPIClient+Auth.swift in Sources */,
+				A05300000000000000000001 /* IMAPIClient+Bootstrap.swift in Sources */,
+				A05400000000000000000001 /* IMAPIClient+Workspaces.swift in Sources */,
+				A05500000000000000000001 /* IMAPIClient+Account.swift in Sources */,
+				A05600000000000000000001 /* IMAPIClient+Files.swift in Sources */,
+				A05700000000000000000001 /* IMAPIClient+RTC.swift in Sources */,
+				A05800000000000000000001 /* IMAPIClient+Contacts.swift in Sources */,
+				A05900000000000000000001 /* IMAPIClient+Groups.swift in Sources */,
+				A06000000000000000000001 /* IMAPIClient+Messages.swift in Sources */,
+				A06100000000000000000001 /* IMAPIClient+Stickers.swift in Sources */,
+				A00000000000000000000027 /* DeviceRevocationDetector.swift in Sources */,
+				A00000000000000000000028 /* WireCodec.swift in Sources */,
+				A00000000000000000000029 /* SyncEngine.swift in Sources */,
+				A00000000000000000000030 /* VoiceMediaClient.swift in Sources */,
+				A00000000000000000000041 /* VideoMediaClient.swift in Sources */,
+				A00000000000000000000042 /* VideoCallViews.swift in Sources */,
+				A00000000000000000000043 /* BlueStoneIM/IdentityPresentation.swift in Sources */,
+				A00000000000000000000044 /* BlueStoneIM/ScopedResponseFence.swift in Sources */,
+				A00000000000000000000034 /* AccessDiscovery.swift in Sources */,
+				A00000000000000000000036 /* AccessDiagnostics.swift in Sources */,
+				A00000000000000000000037 /* IOSRiskTelemetry.swift in Sources */,
+				A00000000000000000000038 /* PreloginBootstrap.swift in Sources */,
+				A00000000000000000000039 /* PreloginBootstrapResolver.swift in Sources */,
+				A00000000000000000000040 /* PreloginBootstrapStartup.swift in Sources */,
+				A00000000000000000000020 /* SnapshotCache.swift in Sources */,
+				A03000000000000000000001 /* MessageDatabasePaths.swift in Sources */,
+				A03000000000000000000002 /* MessageDatabaseSchema.swift in Sources */,
+				A03000000000000000000003 /* MessageDatabaseMigrations.swift in Sources */,
+				A03000000000000000000004 /* LocalMessageRepository.swift in Sources */,
+				A03000000000000000000005 /* AttachmentTransferRepository.swift in Sources */,
+				A03000000000000000000006 /* SQLiteMessageRepository.swift in Sources */,
+				A03000000000000000000007 /* MessagePersistenceCoordinator.swift in Sources */,
+				A03000000000000000000008 /* LegacySnapshotImporter.swift in Sources */,
+				A00000000000000000000023 /* ContactStore.swift in Sources */,
+				A00000000000000000000024 /* ConversationStore.swift in Sources */,
+				A00000000000000000000021 /* FileStore.swift in Sources */,
+				A00000000000000000000022 /* CallStore.swift in Sources */,
+				A00000000000000000000031 /* StickerStore.swift in Sources */,
+				A00000000000000000000033 /* StickerGIFRenderer.swift in Sources */,
+				A04700000000000000000001 /* GIFFallbackDecoder.c in Sources */,
+				A00000000000000000000016 /* CachedRemoteSnapshot.swift in Sources */,
+				A00000000000000000000017 /* RemoteAPIModels.swift in Sources */,
+				A00000000000000000000015 /* MediaPipeline.swift in Sources */,
+				A00000000000000000000014 /* AuthBackground.metal in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		F00000000000000000000004 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A03000000000000000000101 /* MessageDatabaseTests.swift in Sources */,
+				A04000000000000000000101 /* RTCCallRecordMessageTests.swift in Sources */,
+				A00000000000000000000101 /* RemoteAPIModelsTests.swift in Sources */,
+				A02100000000000000000002 /* GroupMuteModeTests.swift in Sources */,
+				A00000000000000000000121 /* BatchForwardStateTests.swift in Sources */,
+				A00000000000000000000102 /* SnapshotCacheTests.swift in Sources */,
+				A00000000000000000000103 /* DomainStoreTests.swift in Sources */,
+				A00000000000000000000104 /* RealtimeTransportTests.swift in Sources */,
+				A00000000000000000000105 /* HTTPTransportTests.swift in Sources */,
+				A00000000000000000000106 /* DeviceRevocationDetectorTests.swift in Sources */,
+				A00000000000000000000107 /* WireCodecTests.swift in Sources */,
+				A00000000000000000000108 /* SyncEngineTests.swift in Sources */,
+				A00000000000000000000109 /* DesignSystemTests.swift in Sources */,
+				A00000000000000000000110 /* FilePreviewTests.swift in Sources */,
+				A00000000000000000000111 /* MediaPipelineTests.swift in Sources */,
+				A00000000000000000000112 /* AttachmentDownloadTests.swift in Sources */,
+				A00000000000000000000113 /* AccessDiscoveryTests.swift in Sources */,
+				A00000000000000000000114 /* AccessDiagnosticsTests.swift in Sources */,
+				A00000000000000000000115 /* IOSRiskTelemetryTests.swift in Sources */,
+				A00000000000000000000116 /* PreloginBootstrapTests.swift in Sources */,
+				A00000000000000000000118 /* PreloginBootstrapStartupTests.swift in Sources */,
+				A00000000000000000000119 /* BlueStoneIMTests/IdentityPresentationTests.swift in Sources */,
+				A00000000000000000000120 /* BlueStoneIMTests/ScopedResponseFenceTests.swift in Sources */,
+				A02300000000000000000002 /* CertificationPresentationTests.swift in Sources */,
+				A02300000000000000000003 /* CertificationIdentityRootTests.swift in Sources */,
+				A02600000000000000000002 /* AvatarRealtimeProjectionTests.swift in Sources */,
+				A02800000000000000000002 /* PresenceConnectivityProjectionTests.swift in Sources */,
+				A02700000000000000000003 /* CallLifecycleTests.swift in Sources */,
+				A02700000000000000000004 /* RegistrationFlowPolicyTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		J00000000000000000000001 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = E00000000000000000000001 /* BlueStoneIM */;
+			targetProxy = K00000000000000000000001 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		AD0376BA30372BD700BFDE97 /* Debug-App2 */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				PRODUCT_NAME = BlueStoneIMTests;
+			};
+			name = "Debug-App2";
+		};
+		AD0376BB30372BD700BFDE97 /* Release-App2 */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				PRODUCT_NAME = BlueStoneIMTests;
+			};
+			name = "Release-App2";
+		};
+		I00000000000000000000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				MTL_LANGUAGE_REVISION = Metal24;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		I00000000000000000000002 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				MTL_LANGUAGE_REVISION = Metal24;
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		I00000000000000000000003 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APS_ENVIRONMENT = development;
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = BlueStoneIM/BlueStoneIMDebug.entitlements;
+				"CODE_SIGN_IDENTITY[sdk=iphoneos*]" = "iPhone Developer";
+				CODE_SIGN_STYLE = Manual;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				"DEVELOPMENT_TEAM[sdk=iphoneos*]" = A3PN7W63G3;
+				ENABLE_DEBUG_DYLIB = NO;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = BlueStoneIM/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "问达通";
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.business";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "用于进行一对一语音和视频通话。";
+				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "用于将聊天中的图片和视频保存到相册。";
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UIRequiredDeviceCapabilities = arm64;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = UIInterfaceOrientationPortrait;
+				INFOPLIST_KEY_WXTAppBootstrapBackupBaseURL = "https://bootstrap.wdatongcf.com";
+				INFOPLIST_KEY_WXTAppBootstrapBaseURL = "https://bootstrap.wdatong.com";
+				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path",
+					"@loader_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.wendatongqiye.app;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				PROVISIONING_PROFILE_SPECIFIER = "";
+				"PROVISIONING_PROFILE_SPECIFIER[sdk=iphoneos*]" = com.wendatongqiye.app_dev;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_OBJC_BRIDGING_HEADER = BlueStoneIM/GIFFallbackDecoder.h;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = 1;
+				WXT_ACCESS_DISCOVERY_APP_ID = "jianhuitong-ios";
+				WXT_ACCESS_DISCOVERY_CHANNEL = app1;
+				WXT_ACCESS_DISCOVERY_SIGNING_REQUIRED = NO;
+				WXT_APP_BOOTSTRAP_BACKUP_BASE_URL = "https://bootstrap.wdatongcf.com";
+				WXT_APP_BOOTSTRAP_BASE_URL = "https://bootstrap.wdatong.com";
+				WXT_APP_BOOTSTRAP_BASE_URL_1 = "https://bootstrap.wdatong.com";
+				WXT_APP_BOOTSTRAP_BASE_URL_2 = "https://bootstrap.wdatongcf.com";
+				WXT_APP_CHANNEL = app1;
+				WXT_APP_DISPLAY_NAME = "问达通";
+				WXT_APP_RUNTIME_ID = "jianhuitong-ios";
+				WXT_APP_VARIANT = app1;
+				WXT_BUILD_IDENTITY = "";
+				WXT_FORMAL_BUILD = NO;
+				WXT_PRELOGIN_APP_ID = "jianhuitong-ios";
+				WXT_PRELOGIN_BOOTSTRAP_ENABLED = NO;
+				WXT_PRELOGIN_CHANNEL = app1;
+				WXT_SOURCE_COMMIT = "";
+			};
+			name = Debug;
+		};
+		I00000000000000000000004 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APS_ENVIRONMENT = production;
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = BlueStoneIM/BlueStoneIMRelease.entitlements;
+				"CODE_SIGN_IDENTITY[sdk=iphoneos*]" = "iPhone Distribution";
+				CODE_SIGN_STYLE = Manual;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				"DEVELOPMENT_TEAM[sdk=iphoneos*]" = A3PN7W63G3;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = BlueStoneIM/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "问达通";
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.business";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "用于进行一对一语音和视频通话。";
+				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "用于将聊天中的图片和视频保存到相册。";
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UIRequiredDeviceCapabilities = arm64;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = UIInterfaceOrientationPortrait;
+				INFOPLIST_KEY_WXTAppBootstrapBackupBaseURL = "https://bootstrap.wdatongcf.com";
+				INFOPLIST_KEY_WXTAppBootstrapBaseURL = "https://bootstrap.wdatong.com";
+				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path",
+					"@loader_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.wendatongqiye.app;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				PROVISIONING_PROFILE_SPECIFIER = "";
+				"PROVISIONING_PROFILE_SPECIFIER[sdk=iphoneos*]" = com.wendatongqiye.app_dis;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_OBJC_BRIDGING_HEADER = BlueStoneIM/GIFFallbackDecoder.h;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = 1;
+				WXT_ACCESS_DISCOVERY_APP_ID = "jianhuitong-ios";
+				WXT_ACCESS_DISCOVERY_CHANNEL = app1;
+				WXT_ACCESS_DISCOVERY_SIGNING_REQUIRED = NO;
+				WXT_APP_BOOTSTRAP_BACKUP_BASE_URL = "https://bootstrap.wdatongcf.com";
+				WXT_APP_BOOTSTRAP_BASE_URL = "https://bootstrap.wdatong.com";
+				WXT_APP_BOOTSTRAP_BASE_URL_1 = "https://bootstrap.wdatong.com";
+				WXT_APP_BOOTSTRAP_BASE_URL_2 = "https://bootstrap.wdatongcf.com";
+				WXT_APP_CHANNEL = app1;
+				WXT_APP_DISPLAY_NAME = "问达通";
+				WXT_APP_RUNTIME_ID = "jianhuitong-ios";
+				WXT_APP_VARIANT = app1;
+				WXT_BUILD_IDENTITY = "";
+				WXT_FORMAL_BUILD = YES;
+				WXT_PRELOGIN_APP_ID = "jianhuitong-ios";
+				WXT_PRELOGIN_BOOTSTRAP_ENABLED = NO;
+				WXT_PRELOGIN_CHANNEL = app1;
+				WXT_SOURCE_COMMIT = "";
+			};
+			name = Release;
+		};
+		I00000000000000000000005 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				"CODE_SIGN_IDENTITY[sdk=iphoneos*]" = "iPhone Developer";
+				CODE_SIGN_STYLE = Manual;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				"DEVELOPMENT_TEAM[sdk=iphoneos*]" = A3PN7W63G3;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.wendatongqiye.app.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				PROVISIONING_PROFILE_SPECIFIER = "";
+				"PROVISIONING_PROFILE_SPECIFIER[sdk=iphoneos*]" = com.wendatongqiye.app_dev;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = 1;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/BlueStoneIM.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/BlueStoneIM";
+			};
+			name = Debug;
+		};
+		I00000000000000000000006 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.jianhuitongqiyetest.app.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = 1;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/BlueStoneIM.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/BlueStoneIM";
+			};
+			name = Release;
+		};
+		I00000000000000000000007 /* Debug-App2 */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				MTL_LANGUAGE_REVISION = Metal24;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG APP_VARIANT_APP2";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = "Debug-App2";
+		};
+		I00000000000000000000008 /* Release-App2 */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_NO_COMMON_BLOCKS = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				MTL_LANGUAGE_REVISION = Metal24;
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = APP_VARIANT_APP2;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = "Release-App2";
+		};
+		I00000000000000000000009 /* Debug-App2 */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APS_ENVIRONMENT = development;
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = BlueStoneIM/BlueStoneIM.entitlements;
+				CODE_SIGN_STYLE = Manual;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				ENABLE_DEBUG_DYLIB = NO;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = BlueStoneIM/Info.plist;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.business";
+				INFOPLIST_KEY_WXTAppBootstrapBackupBaseURL = "";
+				INFOPLIST_KEY_WXTAppBootstrapBaseURL = "";
+				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path",
+					"@loader_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.wenxintong.app2.unconfigured;
+				PRODUCT_NAME = WenxintongApp2;
+				PROVISIONING_PROFILE_SPECIFIER = "";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_OBJC_BRIDGING_HEADER = BlueStoneIM/GIFFallbackDecoder.h;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = 1;
+				WXT_ACCESS_DISCOVERY_APP_ID = WXT_UNCONFIGURED_APP2;
+				WXT_ACCESS_DISCOVERY_CHANNEL = "app2-unconfigured";
+				WXT_ACCESS_DISCOVERY_SIGNING_REQUIRED = NO;
+				WXT_APP2_RELEASE_CONFIGURED = NO;
+				WXT_APP_BOOTSTRAP_BACKUP_BASE_URL = "";
+				WXT_APP_BOOTSTRAP_BASE_URL = "";
+				WXT_APP_BOOTSTRAP_BASE_URL_1 = "";
+				WXT_APP_BOOTSTRAP_BASE_URL_2 = "";
+				WXT_APP_BOOTSTRAP_BASE_URL_3 = "";
+				WXT_APP_CHANNEL = "app2-unconfigured";
+				WXT_APP_DISPLAY_NAME = "文信通备用（未配置）";
+				WXT_APP_RUNTIME_ID = WXT_UNCONFIGURED_APP2;
+				WXT_APP_VARIANT = app2;
+				WXT_BUILD_IDENTITY = "";
+				WXT_FORMAL_BUILD = NO;
+				WXT_PRELOGIN_APP_ID = WXT_UNCONFIGURED_APP2;
+				WXT_PRELOGIN_BOOTSTRAP_ENABLED = NO;
+				WXT_PRELOGIN_CHANNEL = "app2-unconfigured";
+				WXT_SOURCE_COMMIT = "";
+			};
+			name = "Debug-App2";
+		};
+		I00000000000000000000010 /* Release-App2 */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APS_ENVIRONMENT = production;
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = BlueStoneIM/BlueStoneIM.entitlements;
+				CODE_SIGN_STYLE = Manual;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = BlueStoneIM/Info.plist;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.business";
+				INFOPLIST_KEY_WXTAppBootstrapBackupBaseURL = "";
+				INFOPLIST_KEY_WXTAppBootstrapBaseURL = "";
+				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path",
+					"@loader_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.wenxintong.app2.unconfigured;
+				PRODUCT_NAME = WenxintongApp2;
+				PROVISIONING_PROFILE_SPECIFIER = "";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_OBJC_BRIDGING_HEADER = BlueStoneIM/GIFFallbackDecoder.h;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = 1;
+				WXT_ACCESS_DISCOVERY_APP_ID = WXT_UNCONFIGURED_APP2;
+				WXT_ACCESS_DISCOVERY_CHANNEL = "app2-unconfigured";
+				WXT_ACCESS_DISCOVERY_SIGNING_REQUIRED = NO;
+				WXT_APP2_RELEASE_CONFIGURED = NO;
+				WXT_APP_BOOTSTRAP_BACKUP_BASE_URL = "";
+				WXT_APP_BOOTSTRAP_BASE_URL = "";
+				WXT_APP_BOOTSTRAP_BASE_URL_1 = "";
+				WXT_APP_BOOTSTRAP_BASE_URL_2 = "";
+				WXT_APP_BOOTSTRAP_BASE_URL_3 = "";
+				WXT_APP_CHANNEL = "app2-unconfigured";
+				WXT_APP_DISPLAY_NAME = "文信通备用（未配置）";
+				WXT_APP_RUNTIME_ID = WXT_UNCONFIGURED_APP2;
+				WXT_APP_VARIANT = app2;
+				WXT_BUILD_IDENTITY = "";
+				WXT_FORMAL_BUILD = YES;
+				WXT_PRELOGIN_APP_ID = WXT_UNCONFIGURED_APP2;
+				WXT_PRELOGIN_BOOTSTRAP_ENABLED = NO;
+				WXT_PRELOGIN_CHANNEL = "app2-unconfigured";
+				WXT_SOURCE_COMMIT = "";
+			};
+			name = "Release-App2";
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		H00000000000000000000001 /* Build configuration list for PBXProject "BlueStoneIM" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				I00000000000000000000001 /* Debug */,
+				I00000000000000000000002 /* Release */,
+				I00000000000000000000007 /* Debug-App2 */,
+				I00000000000000000000008 /* Release-App2 */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		H00000000000000000000002 /* Build configuration list for PBXNativeTarget "BlueStoneIM" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				I00000000000000000000003 /* Debug */,
+				I00000000000000000000004 /* Release */,
+				I00000000000000000000009 /* Debug-App2 */,
+				I00000000000000000000010 /* Release-App2 */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		H00000000000000000000003 /* Build configuration list for PBXNativeTarget "BlueStoneIMTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				I00000000000000000000005 /* Debug */,
+				I00000000000000000000006 /* Release */,
+				AD0376BA30372BD700BFDE97 /* Debug-App2 */,
+				AD0376BB30372BD700BFDE97 /* Release-App2 */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		L00000000000000000000001 /* XCRemoteSwiftPackageReference "WebRTC" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/stasel/WebRTC.git";
+			requirement = {
+				kind = exactVersion;
+				version = 149.0.0;
+			};
+		};
+		L03000000000000000000001 /* XCRemoteSwiftPackageReference "GRDB.swift" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/groue/GRDB.swift.git";
+			requirement = {
+				kind = exactVersion;
+				version = 7.11.1;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		L00000000000000000000002 /* WebRTC */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = L00000000000000000000001 /* XCRemoteSwiftPackageReference "WebRTC" */;
+			productName = WebRTC;
+		};
+		L03000000000000000000002 /* GRDB */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = L03000000000000000000001 /* XCRemoteSwiftPackageReference "GRDB.swift" */;
+			productName = GRDB;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = G00000000000000000000001 /* Project object */;
+}
