@@ -63,11 +63,10 @@ workflows:
         # Apple Developer 后台、项目签名、Codemagic 拉取描述文件都会用这个值。
         BUNDLE_ID: com.wendatongqiye.app
 
-        # APPLE_BUNDLE_ID_RESOURCE_ID: Apple Developer 里的 Bundle ID 资源 ID。
-        # 一般留空即可，脚本会按 BUNDLE_ID 自动查找；找不到时会尝试创建。
-        # 只有当自动查找失败，或你想强制指定已有 Bundle ID 资源时才填写。
+        # APPLE_BUNDLE_ID_RESOURCE_ID 是可选高级项，不在这里写空值。
+        # 默认不配置时，脚本会按 BUNDLE_ID 自动查找；找不到时会尝试创建。
+        # 只有当自动查找失败，才在 Codemagic 后台环境变量组里额外添加这个值。
         # 注意它不是 Team ID，也不是 Bundle ID 字符串。
-        APPLE_BUNDLE_ID_RESOURCE_ID: ""
 
       # xcode: Codemagic 云端使用的 Xcode 版本。
       # latest 表示使用 Codemagic 当前最新稳定 Xcode；不需要你本机安装 Xcode。
