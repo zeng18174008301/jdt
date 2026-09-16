@@ -8,6 +8,7 @@ fail() {
 
 bundle_id="${BUNDLE_ID:-}"
 app_name="${APP_NAME:-BlueStoneIM}"
+bundle_id_name="${APPLE_BUNDLE_ID_NAME:-$app_name}"
 bundle_id_resource_id="${APPLE_BUNDLE_ID_RESOURCE_ID:-}"
 
 [[ -n "$bundle_id" ]] || fail "BUNDLE_ID is required"
@@ -78,7 +79,7 @@ if [[ -z "$bundle_id_resource_id" ]]; then
   if ! bundle_id_resource_id="$(extract_bundle_id_resource_id "$list_json")"; then
     create_json="$(mktemp)"
     app-store-connect bundle-ids create "$bundle_id" \
-      --name "$app_name" \
+      --name "$bundle_id_name" \
       --platform IOS \
       --json >"$create_json"
     bundle_id_resource_id="$(extract_bundle_id_resource_id "$create_json")"
