@@ -33,7 +33,7 @@ workflows:
       # - APPLE_TEAM_ID
       #   正式提交用的 Apple Developer Team ID。不要填测试 Team ID A3PN7W63G3。
       #
-      # 如果你的 Codemagic 账号要求手动提供证书私钥，再在同一个 group 里放：
+      # 自动创建/保存 Apple Distribution 签名证书时还需要：
       # - CERTIFICATE_PRIVATE_KEY
       #   用于生成/匹配 Apple Distribution 证书的私钥内容。
       #
@@ -106,6 +106,7 @@ workflows:
           test -n "${APP_STORE_CONNECT_KEY_IDENTIFIER:-}" || { echo "Missing APP_STORE_CONNECT_KEY_IDENTIFIER"; exit 1; }
           test -n "${APP_STORE_CONNECT_ISSUER_ID:-}" || { echo "Missing APP_STORE_CONNECT_ISSUER_ID"; exit 1; }
           test -n "${APPLE_TEAM_ID:-}" || { echo "Missing APPLE_TEAM_ID. Fill the official Apple Developer Team ID in Codemagic."; exit 1; }
+          test -n "${CERTIFICATE_PRIVATE_KEY:-}" || { echo "Missing CERTIFICATE_PRIVATE_KEY. Generate a PEM private key and add it to the appstore_credentials group."; exit 1; }
           test "$APPLE_TEAM_ID" != "A3PN7W63G3" || { echo "APPLE_TEAM_ID is the test Team ID A3PN7W63G3. Use the official submission Team ID."; exit 1; }
 
       # 第 1 步：解析 Swift Package 依赖。
@@ -139,11 +140,31 @@ workflows:
       # - --create: 找不到可用 profile 时自动创建。
       - name: Fetch signing files
         script: |
+          certificate_key_path="$CM_BUILD_DIR/certificate_private_key.pem"
+          python3 - "$certificate_key_path" <<'PY'
+          import os
+          import sys
+
+          raw_key = os.environ["CERTIFICATE_PRIVATE_KEY"]
+          normalized_key = (
+              raw_key
+              .replace("\\n", "\n")
+              .replace("\r\n", "\n")
+              .replace("\r", "\n")
+              .strip()
+              + "\n"
+          )
+          with open(sys.argv[1], "w", encoding="utf-8") as handle:
+              handle.write(normalized_key)
+          PY
+          chmod 600 "$certificate_key_path"
+
           app-store-connect fetch-signing-files "$BUNDLE_ID" \
             --platform IOS \
             --type IOS_APP_STORE \
             --strict-match-identifier \
             --delete-stale-profiles \
+            --certificate-key "@file:$certificate_key_path" \
             --create
 
       # 第 5 步：安装签名证书。
