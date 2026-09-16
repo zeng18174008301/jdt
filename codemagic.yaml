@@ -182,18 +182,18 @@ workflows:
       # dSYM 符号文件，线上崩溃分析时用。
       - $HOME/Library/Developer/Xcode/DerivedData/**/Build/**/*.dSYM
 
-    # publishing: 可选上传配置。
-    # 当前先注释掉，第一次 GitHub/Codemagic 绑定时只打包生成 IPA，不自动上传。
-    # 等 App Store Connect 里已经创建好 com.wendatongqiye.app 对应的 App 记录后，
-    # 再取消下面整段注释，就可以自动上传到 App Store Connect/TestFlight。
-    #
-    # publishing:
-    #   app_store_connect:
-    #     # api_key: 对应环境变量 APP_STORE_CONNECT_PRIVATE_KEY。
-    #     api_key: $APP_STORE_CONNECT_PRIVATE_KEY
-    #     # key_id: 对应环境变量 APP_STORE_CONNECT_KEY_IDENTIFIER。
-    #     key_id: $APP_STORE_CONNECT_KEY_IDENTIFIER
-    #     # issuer_id: 对应环境变量 APP_STORE_CONNECT_ISSUER_ID。
-    #     issuer_id: $APP_STORE_CONNECT_ISSUER_ID
-    #     # submit_to_testflight: false 表示只上传，不自动提交外部 TestFlight 审核。
-    #     submit_to_testflight: false
+    # publishing: 上传配置。
+    # 构建成功后自动把 IPA 上传到 App Store Connect/TestFlight。
+    # 前提：App Store Connect 里已经创建好 com.wendatongqiye.app 对应的 App 记录。
+    publishing:
+      app_store_connect:
+        # api_key: 对应环境变量 APP_STORE_CONNECT_PRIVATE_KEY。
+        api_key: $APP_STORE_CONNECT_PRIVATE_KEY
+        # key_id: 对应环境变量 APP_STORE_CONNECT_KEY_IDENTIFIER。
+        key_id: $APP_STORE_CONNECT_KEY_IDENTIFIER
+        # issuer_id: 对应环境变量 APP_STORE_CONNECT_ISSUER_ID。
+        issuer_id: $APP_STORE_CONNECT_ISSUER_ID
+        # false 表示只上传构建，不自动提交 TestFlight 外部测试审核。
+        submit_to_testflight: false
+        # false 表示不自动提交 App Store 审核。
+        submit_to_app_store: false
