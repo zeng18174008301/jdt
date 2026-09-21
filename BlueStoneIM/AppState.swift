@@ -1414,7 +1414,8 @@ final class AppState: ObservableObject {
         if currentAppPolicy == nil {
             return "正在读取应用策略；提交前会自动校验。"
         }
-        return "输入企业编码或邀请码加入已有企业；留空将进入演示企业，立即体验完整功能"
+//        return "输入企业编码或邀请码加入已有企业；留空将进入演示企业，立即体验完整功能"
+        return "输入企业编码或邀请码加入已有企业；未填写时将进入示例企业，可使用主要功能"
     }
 
     var isRegistrationTenantCodeRequirementEmphasized: Bool {
