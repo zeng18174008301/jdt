@@ -1,4 +1,6 @@
 import XCTest
+// WDT_IOS1_AUDIO_ROUTE_20260921: exercise real AVAudioSession notification reasons.
+import AVFoundation
 import UIKit
 import Combine
 import CryptoKit
@@ -9308,7 +9310,8 @@ final class DomainStoreTests: XCTestCase {
     }
 
     @MainActor
-    func testOutgoingV1RequiresAuthoritativeWinningDeviceAndApp() throws {
+    // WDT_RTC_ISSUE1_CONNECT_DROP_20260919_BEGIN: accepted callee appID may be missing on Android; device remains authoritative.
+    func testOutgoingV1RequiresAuthoritativeWinningDevice() throws {
         func snapshot(status: String = "accepted", app: String = "callee-app", device: String = "winner", version: Int64 = 2) -> RemoteRTCCall {
             RemoteRTCCall(id: "call", status: status, roomID: "room", callerUID: "caller", calleeUID: "callee",
                 callerDevice: RemoteRTCDevice(uid: "caller", deviceID: "self-device", appID: "caller-app"),
@@ -9322,7 +9325,7 @@ final class DomainStoreTests: XCTestCase {
         XCTAssertTrue(permits(snapshot()))
         XCTAssertFalse(permits(nil))
         for status in ["ringing", "canceled", "ended", "timed_out", "rejected"] { XCTAssertFalse(permits(snapshot(status: status))) }
-        XCTAssertFalse(permits(snapshot(app: "")))
+        XCTAssertTrue(permits(snapshot(app: "")))
         XCTAssertFalse(permits(snapshot(device: "")))
         XCTAssertFalse(permits(snapshot(version: 1)))
         XCTAssertFalse(permits(snapshot(), localApp: "another-app"))
@@ -9336,6 +9339,7 @@ final class DomainStoreTests: XCTestCase {
         XCTAssertFalse(AppState.isRTCTransportPolicyPending(IMAPIError.conflict(code: "callee_busy", message: "busy")))
         XCTAssertFalse(AppState.isRTCTransportPolicyPending(CancellationError()))
     }
+    // WDT_RTC_ISSUE1_CONNECT_DROP_20260919_END
 
     @MainActor
     func testOutgoingV1AudioAndVideoWaitWithoutJoinAndDoNotCancelPendingAcceptance() async throws {
@@ -10053,6 +10057,67 @@ final class DomainStoreTests: XCTestCase {
         XCTAssertEqual(state.directCallTrackingCountsForTesting.cleanupObligations, 0)
     }
 
+    // WDT_IOS1_CLEANUP_CREDENTIALS_20260921_BEGIN: reproduce the two review timing windows, not just an earlier refresh.
+    func testQueuedTerminalCleanupUsesRetainedCredentialAfterRefreshAndNewLogin() async throws {
+        let callID = "queued-cleanup-new-login"
+        let transport = IncomingSameCallOwnershipHTTPTransport(callID: callID, callType: "audio", peerUID: "peer", firstJoinGate: FirstJoinSuspensionGate())
+        var context = makeAuthenticatedAPIContext()
+        context.tenantAuthSession = IMStoredAuthSession(sessionID: "queued-session", refreshToken: "test-refresh", tokenType: "tenant")
+        let state = AppState(api: makeCallEndingAPI(transport: transport), apiContextOverride: context)
+        state.pendingRTCTerminalCompensations[callID] = PendingRTCTerminalCompensation(
+            callID: callID, action: .hangup, reason: "setup_failed", context: context,
+            scope: state.remoteDataScopeKey(for: context), idempotencyKey: "queued-stable-key",
+            attemptCount: 0, nextAttemptAtNanoseconds: 0, lastErrorCode: nil)
+        state.retryPendingRTCTerminalCompensationsForTesting()
+        // No await: the retry Task is enqueued but cannot run on MainActor before these two changes.
+        context.imToken = "last-owned-token"
+        context.credentialRevision += 1
+        state.overrideAPIContextForTesting(context)
+        context.sessionEpoch = "new-login"
+        context.imToken = "new-login-must-not-be-used"
+        state.overrideAPIContextForTesting(context)
+        for _ in 0..<200 where state.pendingRTCTerminalCompensationCountForTesting != 0 { try await Task.sleep(nanoseconds: 5_000_000) }
+        let path = "/api/rtc/calls/\(callID)/hangup"
+        XCTAssertEqual(transport.requestCount(path: path), 1)
+        XCTAssertEqual(transport.authorizationHeader(path: path), "Bearer last-owned-token")
+        XCTAssertEqual(transport.idempotencyKeys(path: path), ["queued-stable-key"])
+        XCTAssertEqual(state.pendingRTCTerminalCompensationCountForTesting, 0)
+    }
+
+    func testAcceptResponseAfterRefreshThenJoinAfterNewLoginKeepsOwnedCredential() async throws {
+        for (callType, mode) in [("audio", "audio"), ("video", "audio"), ("video", "video")] {
+            let acceptGate = FirstJoinSuspensionGate(), joinGate = FirstJoinSuspensionGate()
+            let callID = "accept-refresh-\(callType)-\(mode)"
+            let peer = makeUser(id: "accept-peer", name: "Peer")
+            let transport = IncomingSameCallOwnershipHTTPTransport(callID: callID, callType: callType, peerUID: peer.id, firstJoinGate: joinGate, acceptGate: acceptGate, acceptedMediaMode: mode)
+            var context = makeAuthenticatedAPIContext()
+            context.tenantAuthSession = IMStoredAuthSession(sessionID: "accept-session", refreshToken: "test-refresh", tokenType: "tenant")
+            let voice = TestVoiceMediaClient(), video = TestVideoMediaClient()
+            let state = AppState(api: makeCallEndingAPI(transport: transport), voiceMediaClient: voice, videoMediaClient: video,
+                                 microphonePermissionDecisionOverride: { true }, videoPermissionDecisionOverride: { true }, apiContextOverride: context)
+            state.voiceMediaClientAvailableOverride = true
+            state.fileUploadConfig = callLicenseFileConfig(voiceEnabled: true, videoEnabled: true)
+            state.incomingVoiceCall = IncomingVoiceCall(id: callID, callID: callID, caller: peer, startedAt: "now", source: "test", requestedMediaMode: callType)
+            if callType == "audio" { state.acceptIncomingVoiceCall() } else { state.acceptIncomingVideoCall(as: mode) }
+            for _ in 0..<200 { if await acceptGate.isWaiting() { break }; try await Task.sleep(nanoseconds: 5_000_000) }
+            let acceptWaiting = await acceptGate.isWaiting(); XCTAssertTrue(acceptWaiting, callID)
+            context.imToken = "accept-refreshed-token"; context.credentialRevision += 1
+            state.overrideAPIContextForTesting(context)
+            await acceptGate.resumeFirst()
+            for _ in 0..<200 { if await joinGate.isWaiting() { break }; try await Task.sleep(nanoseconds: 5_000_000) }
+            let joinWaiting = await joinGate.isWaiting(); XCTAssertTrue(joinWaiting, callID)
+            context.sessionEpoch = "replacement-login"; context.imToken = "replacement-must-not-be-used"
+            state.overrideAPIContextForTesting(context)
+            await joinGate.resumeFirst()
+            let path = "/api/rtc/calls/\(callID)/hangup"
+            for _ in 0..<200 where transport.requestCount(path: path) == 0 { try await Task.sleep(nanoseconds: 5_000_000) }
+            XCTAssertEqual(transport.authorizationHeader(path: path), "Bearer accept-refreshed-token", callID)
+            XCTAssertEqual(transport.requestCount(path: path), 1, callID)
+            XCTAssertTrue(voice.startedContexts.isEmpty); XCTAssertEqual(video.startCount, 0)
+        }
+    }
+    // WDT_IOS1_CLEANUP_CREDENTIALS_20260921_END
+
     @MainActor
     func testIncomingVoiceStaleJoinCannotClearOrHangupSameCallOwnedByReplacementSession() async throws {
         let joinGate = FirstJoinSuspensionGate()
@@ -10119,6 +10184,475 @@ final class DomainStoreTests: XCTestCase {
         XCTAssertEqual(state.activeVoiceCall?.callID, callID)
         XCTAssertEqual(transport.requestCount(path: "/api/rtc/calls/\(callID)/hangup"), 0)
     }
+
+    // WDT_IOS1_AUDIO_ROUTE_20260921_BEGIN: replay notification feedback and delayed work after hangup.
+    func testAudioRouteFeedbackDoesNotReconfigureAndOldTaskCannotReviveEndedCall() async throws {
+        let voice = TestVoiceMediaClient()
+        let state = AppState(voiceMediaClient: voice, apiContextOverride: makeAuthenticatedAPIContext())
+        state.activeVoiceCall = VoiceCallSession(
+            id: "route-owner",
+            callID: "route-call",
+            peer: makeUser(id: "peer", name: "Peer"),
+            direction: "来电",
+            startedAt: "now",
+            statusText: "通话中",
+            mediaState: .connected,
+            isMuted: false,
+            speakerOn: false
+        )
+        for _ in 0..<346 {
+            state.handleCallAudioRouteChange(.categoryChange)
+            state.handleCallAudioRouteChange(.override)
+            state.handleCallAudioRouteChange(.routeConfigurationChange)
+        }
+        for _ in 0..<10 {
+            await Task.yield()
+        }
+        XCTAssertTrue(voice.audioReconcileSpeakerValues.isEmpty)
+        state.handleCallAudioRouteChange(.newDeviceAvailable)
+        for _ in 0..<20 where voice.audioReconcileSpeakerValues.isEmpty {
+            await Task.yield()
+        }
+        XCTAssertEqual(voice.audioReconcileSpeakerValues, [false])
+        state.handleCallAudioRouteChange(.oldDeviceUnavailable)
+        state.activeVoiceCall = nil
+        for _ in 0..<20 {
+            await Task.yield()
+        }
+        XCTAssertEqual(
+            voice.audioReconcileSpeakerValues,
+            [false],
+            "queued work after hangup must not reconfigure shared audio"
+        )
+    }
+    // WDT_IOS1_AUDIO_ROUTE_20260921_END
+
+    // WDT_IOS1_CALLKIT_ANSWER_20260921_BEGIN: app UI must request the existing CallKit answer then wait for activation.
+    // Independent review regression: echo of in-app CXAnswerCallAction must not reject valid video-only call.
+    @MainActor
+    func testInAppVideoAnswerCallKitEchoPreservesVideoOnlyLicense() async throws {
+        for voiceEnabled in [true, false] {
+            let callID = "review-echo-video-\(voiceEnabled)", gate = FirstJoinSuspensionGate()
+            let peer = makeUser(id: "review-peer", name: "Peer")
+            let system = TestVoiceCallSystemIntegration(presentedCallIDs: [callID])
+            let video = TestVideoMediaClient()
+            let transport = IncomingSameCallOwnershipHTTPTransport(callID: callID, callType: "video", peerUID: peer.id, firstJoinGate: gate, acceptedMediaMode: "video", voiceEnabled: voiceEnabled)
+            let state = AppState(api: makeCallEndingAPI(transport: transport), voiceMediaClient: TestVoiceMediaClient(), videoMediaClient: video, voiceCallSystem: system,
+                                 microphonePermissionDecisionOverride: { true }, videoPermissionDecisionOverride: { true }, apiContextOverride: makeAuthenticatedAPIContext())
+            system.onAnswerRequest = { [weak state] callID in
+                state?.handleVoiceCallSystemEventForTesting(.answer(callID: callID))
+            }
+            state.voiceMediaClientAvailableOverride = true
+            state.fileUploadConfig = callLicenseFileConfig(voiceEnabled: voiceEnabled, videoEnabled: true)
+            state.incomingVoiceCall = IncomingVoiceCall(id: callID, callID: callID, caller: peer, startedAt: "now", source: "test", requestedMediaMode: "video")
+            state.acceptIncomingVideoCall(as: "video")
+            for _ in 0..<200 { if await gate.isWaiting() { break }; try await Task.sleep(nanoseconds: 5_000_000) }
+            let waiting = await gate.isWaiting(); XCTAssertTrue(waiting, callID)
+            XCTAssertEqual(system.requestedAnswers, [callID])
+            XCTAssertEqual(state.incomingCallAnswerMode, "video", callID)
+            XCTAssertEqual(state.fileUploadConfig.voiceCallEnabled, voiceEnabled)
+            // Real CXProviderDelegate emits this for the action requested above.
+            state.handleVoiceCallSystemEventForTesting(.answer(callID: callID))
+            XCTAssertTrue(system.endedCalls.isEmpty, "Self-generated answer must not end \(callID)")
+            XCTAssertEqual(state.incomingVoiceCall?.callID, callID, "Self-generated answer must preserve incoming owner")
+            XCTAssertEqual(state.incomingCallAnswerMode, "video")
+            await gate.resumeFirst()
+            state.handleVoiceCallSystemEventForTesting(.audioSessionActivated)
+            for _ in 0..<200 where video.startCount == 0 { try await Task.sleep(nanoseconds: 5_000_000) }
+            XCTAssertEqual(video.startCount, 1, callID)
+            XCTAssertEqual(transport.requestCount(path: "/api/rtc/calls/\(callID)/accept"), 1)
+            XCTAssertEqual(transport.requestCount(path: "/api/rtc/calls/\(callID)/reject"), 0, callID)
+            state.clearRTCTerminalCompensationsForTesting()
+        }
+    }
+
+    func testInAppCallKitAnswerWaitsForAudioActivationForAllIncomingModes() async throws {
+        for (callType, mode) in [("audio", "audio"), ("video", "audio"), ("video", "video")] {
+            let callID = "system-answer-\(callType)-\(mode)", gate = FirstJoinSuspensionGate()
+            let peer = makeUser(id: "system-peer", name: "Peer")
+            let system = TestVoiceCallSystemIntegration(presentedCallIDs: [callID])
+            let voice = TestVoiceMediaClient(), video = TestVideoMediaClient()
+            let transport = IncomingSameCallOwnershipHTTPTransport(callID: callID, callType: callType, peerUID: peer.id, firstJoinGate: gate, acceptedMediaMode: mode)
+            let state = AppState(api: makeCallEndingAPI(transport: transport), voiceMediaClient: voice, videoMediaClient: video, voiceCallSystem: system,
+                                 microphonePermissionDecisionOverride: { true }, videoPermissionDecisionOverride: { true }, apiContextOverride: makeAuthenticatedAPIContext())
+            system.onAnswerRequest = { [weak state] callID in
+                state?.handleVoiceCallSystemEventForTesting(.answer(callID: callID))
+            }
+            state.voiceMediaClientAvailableOverride = true
+            state.fileUploadConfig = callLicenseFileConfig(voiceEnabled: true, videoEnabled: true)
+            state.incomingVoiceCall = IncomingVoiceCall(id: callID, callID: callID, caller: peer, startedAt: "now", source: "test", requestedMediaMode: callType)
+            if callType == "audio" { state.acceptIncomingVoiceCall() } else { state.acceptIncomingVideoCall(as: mode) }
+            for _ in 0..<200 { if await gate.isWaiting() { break }; try await Task.sleep(nanoseconds: 5_000_000) }
+            let waiting = await gate.isWaiting(); XCTAssertTrue(waiting, callID)
+            XCTAssertEqual(system.requestedAnswers, [callID])
+            await gate.resumeFirst()
+            try await Task.sleep(nanoseconds: 150_000_000)
+            XCTAssertTrue(voice.startedContexts.isEmpty, callID); XCTAssertEqual(video.startCount, 0, callID)
+            state.handleVoiceCallSystemEventForTesting(.audioSessionActivated)
+            for _ in 0..<200 where voice.startedContexts.isEmpty && video.startCount == 0 { try await Task.sleep(nanoseconds: 5_000_000) }
+            XCTAssertEqual(voice.startedContexts.count, mode == "audio" ? 1 : 0, callID)
+            XCTAssertEqual(video.startCount, mode == "video" ? 1 : 0, callID)
+            XCTAssertEqual(transport.requestCount(path: "/api/rtc/calls/\(callID)/accept"), 1)
+        }
+    }
+    func testSystemAnswerDoesNotDeduplicateUnrelatedOrInvalidatedOperation() async throws {
+        for mismatch in ["call", "operation", "generation", "license"] {
+            let callID = "system-answer-ownership-\(mismatch)"
+            let context = makeAuthenticatedAPIContext()
+            let system = TestVoiceCallSystemIntegration(presentedCallIDs: [callID])
+            let transport = RTCSystemEndHTTPTransport()
+            let state = AppState(api: makeCallEndingAPI(transport: transport), voiceCallSystem: system,
+                                 apiContextOverride: context)
+            state.fileUploadConfig = callLicenseFileConfig(voiceEnabled: false, videoEnabled: mismatch != "license")
+            state.incomingVoiceCall = IncomingVoiceCall(id: callID, callID: callID,
+                caller: makeUser(id: "peer", name: "Peer"), startedAt: "now", source: "test", requestedMediaMode: "video")
+            let operationID = UUID()
+            state.callStore.incomingCallAnswerOperationID = operationID
+            state.incomingCallAnswerMode = "video"
+            state.directCallAttempts[.video] = DirectCallAttempt(kind: .video,
+                context: DirectCallContextBinding(context: context),
+                capabilityGeneration: state.directCallCapabilityGeneration(for: .video) + (mismatch == "generation" ? 1 : 0),
+                callID: mismatch == "call" ? "other-call" : callID, peerID: "peer", mediaMode: "video",
+                operationID: mismatch == "operation" ? UUID() : operationID)
+            state.handleVoiceCallSystemEventForTesting(.answer(callID: callID))
+            for _ in 0..<100 where transport.requestCount(path: "/api/rtc/calls/\(callID)/reject") == 0 {
+                try await Task.sleep(nanoseconds: 5_000_000)
+            }
+            XCTAssertEqual(system.endedCalls.map(\.callID), [callID], mismatch)
+            XCTAssertEqual(transport.requestCount(path: "/api/rtc/calls/\(callID)/reject"), 1, mismatch)
+            XCTAssertEqual(transport.requestCount(path: "/api/rtc/calls/\(callID)/accept"), 0, mismatch)
+            XCTAssertTrue(system.requestedAnswers.isEmpty, mismatch)
+            state.clearRTCTerminalCompensationsForTesting()
+        }
+    }
+
+    func testInAppCallKitAnswerTransactionFailureNeverAcceptsOrStartsMedia() async throws {
+        let callID = "system-answer-denied"
+        let peer = makeUser(id: "system-peer", name: "Peer")
+        let system = TestVoiceCallSystemIntegration(presentedCallIDs: [callID])
+        system.answerRequestError = NSError(domain: "com.apple.CallKit.error.requesttransaction", code: 4)
+        let voice = TestVoiceMediaClient()
+        let transport = IncomingSameCallOwnershipHTTPTransport(callID: callID, callType: "audio", peerUID: peer.id, firstJoinGate: FirstJoinSuspensionGate())
+        let state = AppState(api: makeCallEndingAPI(transport: transport), voiceMediaClient: voice, voiceCallSystem: system,
+                             microphonePermissionDecisionOverride: { true }, apiContextOverride: makeAuthenticatedAPIContext())
+        state.voiceMediaClientAvailableOverride = true
+        state.fileUploadConfig = callLicenseFileConfig(voiceEnabled: true, videoEnabled: true)
+        state.incomingVoiceCall = IncomingVoiceCall(id: callID, callID: callID, caller: peer, startedAt: "now", source: "test")
+        state.acceptIncomingVoiceCall()
+        for _ in 0..<200 where system.endedCalls.isEmpty { try await Task.sleep(nanoseconds: 5_000_000) }
+        XCTAssertEqual(system.requestedAnswers, [callID])
+        XCTAssertEqual(transport.requestCount(path: "/api/rtc/calls/\(callID)/accept"), 0)
+        XCTAssertTrue(voice.startedContexts.isEmpty)
+        XCTAssertFalse(system.hasPresentedCall(callID: callID))
+        XCTAssertEqual(system.endedCalls.count, 1)
+        state.clearRTCTerminalCompensationsForTesting()
+    }
+    // WDT_IOS1_CALLKIT_ANSWER_20260921_END
+
+    // WDT_IOS1_CLEANUP_CREDENTIALS_20260921_BEGIN: restore focused refresh/owner regression coverage on the new baseline.
+    @MainActor
+    func testRefreshedAcceptedCallFailureCleansWithOwnedLatestCredential() async throws {
+        for (callType, answerMode) in [("audio", "audio"), ("video", "audio"), ("video", "video")] {
+            for switchSession in [false, true] {
+                let gate = FirstJoinSuspensionGate()
+                let callID = "refresh-cleanup-\(callType)-\(answerMode)-\(switchSession)"
+                let peer = makeUser(id: "refresh-cleanup-peer", name: "Peer")
+                let transport = IncomingSameCallOwnershipHTTPTransport(
+                    callID: callID, callType: callType, peerUID: peer.id, firstJoinGate: gate,
+                    gateStage: switchSession ? "join" : "provider", acceptedMediaMode: answerMode,
+                    failJoin: true
+                )
+                var context = makeAuthenticatedAPIContext()
+                context.tenantAuthSession = IMStoredAuthSession(
+                    sessionID: "stable-cleanup-session", refreshToken: "test-refresh", tokenType: "tenant"
+                )
+                let state = AppState(
+                    api: makeCallEndingAPI(transport: transport), voiceMediaClient: TestVoiceMediaClient(),
+                    videoMediaClient: TestVideoMediaClient(), microphonePermissionDecisionOverride: { true },
+                    videoPermissionDecisionOverride: { true }, apiContextOverride: context
+                )
+                state.voiceMediaClientAvailableOverride = true
+                state.fileUploadConfig = callLicenseFileConfig(voiceEnabled: true, videoEnabled: true)
+                state.incomingVoiceCall = IncomingVoiceCall(
+                    id: callID, callID: callID, caller: peer, startedAt: "now", source: "test",
+                    requestedMediaMode: callType
+                )
+                if callType == "audio" { state.acceptIncomingVoiceCall() }
+                else { state.acceptIncomingVideoCall(as: answerMode) }
+                for _ in 0..<200 {
+                    if await gate.isWaiting() { break }
+                    try await Task.sleep(nanoseconds: 5_000_000)
+                }
+                let waiting = await gate.isWaiting()
+                XCTAssertTrue(waiting, callID)
+                context.imToken = "rotated-cleanup-token"
+                context.credentialRevision += 1
+                state.overrideAPIContextForTesting(context)
+                if switchSession {
+                    // A -> refresh -> B: old cleanup must keep A's last token, never B's.
+                    context.sessionEpoch = "replacement-login"
+                    context.imToken = "different-login-token"
+                    state.overrideAPIContextForTesting(context)
+                }
+                await gate.resumeFirst()
+                let hangup = "/api/rtc/calls/\(callID)/hangup"
+                for _ in 0..<200 where transport.requestCount(path: hangup) == 0 {
+                    try await Task.sleep(nanoseconds: 5_000_000)
+                }
+                XCTAssertEqual(transport.requestCount(path: hangup), 1, callID)
+                XCTAssertEqual(transport.authorizationHeader(path: hangup), "Bearer rotated-cleanup-token", callID)
+                XCTAssertEqual(transport.authorizationHeader(path: "/api/rtc/calls/\(callID)/accept"),
+                               switchSession ? "Bearer im-token" : "Bearer rotated-cleanup-token", callID)
+                XCTAssertNil(state.activeVoiceCall)
+            }
+        }
+    }
+
+    @MainActor
+    func testTerminalCleanupRetryRefreshesOwnedCredentialsAndKeepsIdempotency() async throws {
+        for switchSession in [false, true] {
+            let callID = "cleanup-retry-\(switchSession)"
+            let transport = IncomingSameCallOwnershipHTTPTransport(
+                callID: callID, callType: "audio", peerUID: "peer", firstJoinGate: FirstJoinSuspensionGate(),
+                hangupFailures: 1
+            )
+            var context = makeAuthenticatedAPIContext()
+            context.tenantAuthSession = IMStoredAuthSession(
+                sessionID: "retry-session", refreshToken: "test-refresh", tokenType: "tenant"
+            )
+            var now: UInt64 = 0
+            let state = AppState(
+                api: makeCallEndingAPI(transport: transport), rtcRequestNowNanoseconds: { now },
+                rtcTerminalCompensationFailureDelayNanoseconds: [60_000_000_000], apiContextOverride: context
+            )
+            // An already queued cleanup uses the same production retry path as setup failure.
+            state.pendingRTCTerminalCompensations[callID] = PendingRTCTerminalCompensation(
+                callID: callID, action: .hangup, reason: "setup_failed", context: context,
+                scope: state.remoteDataScopeKey(for: context), idempotencyKey: "stable-test-cleanup-key",
+                attemptCount: 0, nextAttemptAtNanoseconds: 0, lastErrorCode: nil
+            )
+            state.retryPendingRTCTerminalCompensationsForTesting()
+            for _ in 0..<200 where state.pendingRTCTerminalCompensations[callID]?.lastErrorCode == nil {
+                try await Task.sleep(nanoseconds: 5_000_000)
+            }
+            let hangup = "/api/rtc/calls/\(callID)/hangup"
+            XCTAssertEqual(transport.requestCount(path: hangup), 1)
+            XCTAssertEqual(transport.authorizationHeader(path: hangup), "Bearer im-token")
+            context.imToken = "retry-refreshed-token"
+            context.credentialRevision += 1
+            state.overrideAPIContextForTesting(context)
+            if switchSession {
+                context.sessionEpoch = "different-retry-login"
+                context.imToken = "must-not-use-new-login-token"
+                state.overrideAPIContextForTesting(context)
+            }
+            now = 120_000_000_000
+            state.retryPendingRTCTerminalCompensationsForTesting()
+            for _ in 0..<200 where state.pendingRTCTerminalCompensationCountForTesting != 0 {
+                try await Task.sleep(nanoseconds: 5_000_000)
+            }
+            XCTAssertEqual(transport.requestCount(path: hangup), 2)
+            XCTAssertEqual(transport.authorizationHeader(path: hangup), "Bearer retry-refreshed-token")
+            XCTAssertEqual(transport.idempotencyKeys(path: hangup), ["stable-test-cleanup-key", "stable-test-cleanup-key"])
+            XCTAssertEqual(state.pendingRTCTerminalCompensationCountForTesting, 0)
+            state.clearRTCTerminalCompensationsForTesting()
+        }
+    }
+
+    @MainActor
+    func testVideoPreviewAndDowngradeRefreshUseLatestCredentialsWithoutRevivingStaleWork() async throws {
+        for action in ["preview", "downgrade"] {
+            for stage in ["files", "provider"] {
+                for change in ["refresh", "session", "license"] {
+                    let gate = FirstJoinSuspensionGate()
+                    let callID = "video-\(action)-\(stage)-\(change)"
+                    let peer = makeUser(id: "refresh-video-peer", name: "Peer")
+                    let transport = IncomingSameCallOwnershipHTTPTransport(
+                        callID: callID, callType: "video", peerUID: peer.id, firstJoinGate: gate,
+                        gateStage: stage
+                    )
+                    var context = makeAuthenticatedAPIContext()
+                    context.tenantAuthSession = IMStoredAuthSession(
+                        sessionID: "stable-video-session", refreshToken: "test-refresh", tokenType: "tenant"
+                    )
+                    let video = TestVideoMediaClient()
+                    let state = AppState(
+                        api: makeCallEndingAPI(transport: transport), videoMediaClient: video,
+                        videoPermissionDecisionOverride: { true }, apiContextOverride: context
+                    )
+                    state.currentUser = makeUser(id: "uid-1", name: "Me")
+                    state.contacts = [peer]
+                    state.fileUploadConfig = callLicenseFileConfig(voiceEnabled: true, videoEnabled: true)
+                    if action == "preview" {
+                        state.presentVideoCallPreview(to: peer)
+                    } else {
+                        state.activeVoiceCall = VoiceCallSession(
+                            id: callID, callID: callID, peer: peer, direction: "呼出", startedAt: "now",
+                            statusText: "连接中", mediaState: .connecting, isMuted: false, speakerOn: true,
+                            requestedMediaMode: "video", mediaMode: "video", localCameraEnabled: true
+                        )
+                        state.downgradeActiveVideoCallToAudio()
+                    }
+                    for _ in 0..<200 {
+                        if await gate.isWaiting() { break }
+                        try await Task.sleep(nanoseconds: 5_000_000)
+                    }
+                    let waiting = await gate.isWaiting()
+                    XCTAssertTrue(waiting, callID)
+                    context.imToken = "rotated-video-token"
+                    context.credentialRevision += 1
+                    if change == "session" { context.sessionEpoch = "replacement-video-login" }
+                    state.overrideAPIContextForTesting(context)
+                    if change == "license" {
+                        state.fileUploadConfig = callLicenseFileConfig(voiceEnabled: false, videoEnabled: false)
+                    }
+                    await gate.resumeFirst()
+                    if change == "refresh" {
+                        for _ in 0..<200 where video.prepareCount + video.downgradeToAudioCount == 0 {
+                            try await Task.sleep(nanoseconds: 5_000_000)
+                        }
+                        XCTAssertEqual(transport.authorizationHeader(path: "/api/rtc/provider"),
+                                       stage == "files" ? "Bearer rotated-video-token" : "Bearer im-token", callID)
+                        if action == "preview" {
+                            XCTAssertEqual(video.prepareCount, 1, callID)
+                            XCTAssertNotNil(state.videoCallPreview, callID)
+                        } else {
+                            XCTAssertEqual(video.downgradeToAudioCount, 1, callID)
+                            XCTAssertEqual(transport.authorizationHeader(path: "/api/rtc/calls/\(callID)/downgrade"),
+                                           "Bearer rotated-video-token", callID)
+                            XCTAssertEqual(state.activeVoiceCall?.mediaMode, "audio", callID)
+                        }
+                    } else {
+                        try await Task.sleep(nanoseconds: 50_000_000)
+                        XCTAssertEqual(video.prepareCount, 0, callID)
+                        XCTAssertEqual(video.downgradeToAudioCount, 0, callID)
+                        XCTAssertEqual(transport.requestCount(path: "/api/rtc/calls/\(callID)/downgrade"), 0, callID)
+                    }
+                    if action == "preview" { state.dismissVideoCallPreview() }
+                }
+            }
+        }
+    }
+
+    @MainActor
+    func testDirectCallBindingPreservesRealSessionAndAuthorityBoundaries() {
+        func session(id: String = "stable-session", refresh: String = "test-refresh-token",
+                     authVersion: Int64 = 2, generation: Int64 = 3) -> IMStoredAuthSession {
+            IMStoredAuthSession(sessionID: id, refreshToken: refresh, tokenType: "tenant",
+                                authVersion: authVersion, sessionGeneration: generation)
+        }
+        var context = makeAuthenticatedAPIContext()
+        context.tenantAuthSession = session()
+        let original = DirectCallContextBinding(context: context)
+        var refreshed = context
+        refreshed.imToken = "rotated-test-token"
+        refreshed.credentialRevision += 1
+        refreshed.tenantAuthSession = session(refresh: "rotated-test-refresh-token", generation: 4)
+        XCTAssertEqual(original, DirectCallContextBinding(context: refreshed))
+
+        let identityChanges: [(String, (inout IMAPIContext) -> Void)] = [
+            ("account", { $0.accountID = "another-account" }),
+            ("tenant", { $0.tenantID = "another-tenant" }),
+            ("uid", { $0.imUID = "another-uid" }),
+            ("app", { $0.appID = "another-app" }),
+            ("device", { $0.deviceID = "another-device" }),
+            ("epoch", { $0.sessionEpoch = "another-epoch" }),
+            ("session", { $0.tenantAuthSession = session(id: "another-session") }),
+            ("authVersion", { $0.tenantAuthSession = session(authVersion: 3) }),
+            ("logout", { $0.imToken = nil }),
+            ("sessionRemoved", { $0.tenantAuthSession = nil })
+        ]
+        for (name, change) in identityChanges {
+            var changed = context
+            change(&changed)
+            XCTAssertNotEqual(original, DirectCallContextBinding(context: changed), name)
+        }
+        var legacy = makeAuthenticatedAPIContext()
+        let originalLegacy = DirectCallContextBinding(context: legacy)
+        legacy.imToken = "different-legacy-token"
+        XCTAssertNotEqual(originalLegacy, DirectCallContextBinding(context: legacy))
+    }
+
+    @MainActor
+    func testIncomingCallSurvivesSameSessionCredentialRotationDuringJoin() async throws {
+        let scenarios = [("audio", "audio"), ("video", "audio"), ("video", "video")].flatMap { callType, answerMode in
+            ["provider", "join", "participants"].map { (callType, answerMode, $0) }
+        }
+        for (callType, answerMode, gateStage) in scenarios {
+            let joinGate = FirstJoinSuspensionGate()
+            let callID = "incoming-\(callType)-\(answerMode)-\(gateStage)-rotation"
+            let peer = makeUser(id: "refresh-peer", name: "Refresh Peer")
+            let transport = IncomingSameCallOwnershipHTTPTransport(
+                callID: callID,
+                callType: callType,
+                peerUID: peer.id,
+                firstJoinGate: joinGate,
+                gateStage: gateStage,
+                acceptedMediaMode: answerMode
+            )
+            let media = TestVoiceMediaClient()
+            let videoMedia = TestVideoMediaClient()
+            var context = makeAuthenticatedAPIContext()
+            context.tenantAuthSession = IMStoredAuthSession(
+                sessionID: "stable-tenant-session",
+                refreshToken: "test-refresh-token",
+                tokenType: "tenant"
+            )
+            let state = AppState(
+                api: makeCallEndingAPI(transport: transport),
+                voiceMediaClient: media,
+                videoMediaClient: videoMedia,
+                microphonePermissionDecisionOverride: { true },
+                videoPermissionDecisionOverride: { true },
+                apiContextOverride: context
+            )
+            state.voiceMediaClientAvailableOverride = true
+            state.fileUploadConfig = callLicenseFileConfig(voiceEnabled: true, videoEnabled: true)
+            state.incomingVoiceCall = IncomingVoiceCall(
+                id: callID,
+                callID: callID,
+                caller: peer,
+                startedAt: "刚刚",
+                source: "好友通话",
+                requestedMediaMode: callType
+            )
+            if callType == "audio" {
+                state.acceptIncomingVoiceCall()
+            } else {
+                state.acceptIncomingVideoCall(as: answerMode)
+            }
+            for _ in 0..<200 {
+                if await joinGate.isWaiting() { break }
+                try? await Task.sleep(nanoseconds: 5_000_000)
+            }
+            let joinIsWaiting = await joinGate.isWaiting()
+            XCTAssertTrue(joinIsWaiting, callType)
+
+            // Foreground refresh advances credentials without replacing the login session.
+            context.imToken = "rotated-test-im-token"
+            context.credentialRevision += 1
+            context.tenantAuthSession = IMStoredAuthSession(
+                sessionID: "stable-tenant-session", refreshToken: "rotated-test-refresh-token",
+                tokenType: "tenant", sessionGeneration: 1
+            )
+            state.overrideAPIContextForTesting(context)
+            await joinGate.resumeFirst()
+            let hangupPath = "/api/rtc/calls/\(callID)/hangup"
+            for _ in 0..<200 where media.startedContexts.isEmpty && videoMedia.startCount == 0 && transport.requestCount(path: hangupPath) == 0 {
+                try? await Task.sleep(nanoseconds: 5_000_000)
+            }
+            XCTAssertEqual(
+                transport.authorizationHeader(path: "/api/rtc/calls/\(callID)/accept"),
+                gateStage == "provider" ? "Bearer rotated-test-im-token" : "Bearer im-token",
+                "\(callType)/\(gateStage)"
+            )
+            XCTAssertEqual(media.startedContexts.count, answerMode == "audio" ? 1 : 0, "\(callType)/\(gateStage)")
+            XCTAssertEqual(videoMedia.startCount, answerMode == "video" ? 1 : 0, "\(callType)/\(gateStage)")
+            XCTAssertEqual(state.activeVoiceCall?.callID, callID, callType)
+            XCTAssertEqual(transport.requestCount(path: hangupPath), 0, callType)
+        }
+    }
+    // WDT_IOS1_CLEANUP_CREDENTIALS_20260921_END
 
     @MainActor
     func testIncomingVideoStaleJoinCannotClearOrHangupSameCallOwnedByReplacementSession() async throws {
@@ -12400,6 +12934,75 @@ final class DomainStoreTests: XCTestCase {
             state.activeVoiceCall = nil
         }
 
+    }
+
+    @MainActor
+    func testIncomingAudioRetriesReceiverMediaStartBeforeEndingCall() async throws {
+        let joinGate = FirstJoinSuspensionGate()
+        let callID = "incoming-audio-start-retry"
+        let peer = makeUser(id: "incoming-audio-retry-peer", name: "Audio Peer")
+        let voiceMediaClient = TestVoiceMediaClient(
+            events: [.iceConnected, .remoteAudioTrackReady, .remoteAudioRTPReady],
+            startErrors: [IMAPIError.server("音频设备启动暂不可用")]
+        )
+        let transport = IncomingSameCallOwnershipHTTPTransport(
+            callID: callID,
+            callType: "audio",
+            peerUID: peer.id,
+            firstJoinGate: joinGate
+        )
+        let api = IMAPIClient(
+            platformBase: URL(string: "https://platform.example.test")!,
+            tenantBase: URL(string: "https://tenant.example.test")!,
+            imBase: URL(string: "https://im.example.test")!,
+            httpTransport: transport
+        )
+        let state = AppState(
+            api: api,
+            voiceMediaClient: voiceMediaClient,
+            videoMediaClient: TestVideoMediaClient(),
+            microphonePermissionDecisionOverride: { true },
+            apiContextOverride: makeAuthenticatedAPIContext()
+        )
+        state.isAuthenticated = true
+        state.fileUploadConfig = callLicenseFileConfig(voiceEnabled: true, videoEnabled: true)
+        state.incomingVoiceCall = IncomingVoiceCall(
+            id: "incoming-audio-retry",
+            callID: callID,
+            caller: peer,
+            startedAt: "刚刚",
+            source: "好友语音通话",
+            requestedMediaMode: "audio"
+        )
+
+        state.acceptIncomingVoiceCall()
+        for _ in 0..<200 {
+            if await joinGate.isWaiting() { break }
+            try? await Task.sleep(nanoseconds: 5_000_000)
+        }
+        await joinGate.resumeFirst()
+        for _ in 0..<300 {
+            if voiceMediaClient.startedContexts.count == 2,
+               state.activeVoiceCall?.mediaState == .connected {
+                break
+            }
+            try? await Task.sleep(nanoseconds: 5_000_000)
+        }
+
+        XCTAssertEqual(voiceMediaClient.startedContexts.count, 2)
+        XCTAssertEqual(voiceMediaClient.startedContexts.first?.isCaller, false)
+        XCTAssertEqual(voiceMediaClient.startedContexts.last?.callID, callID)
+        XCTAssertEqual(state.activeVoiceCall?.callID, callID)
+        XCTAssertEqual(state.activeVoiceCall?.mediaState, .connected)
+        XCTAssertNotEqual(state.toast, Optional("音频设备启动失败，通话已结束"))
+        XCTAssertEqual(transport.requestCount(path: "/api/rtc/calls/\(callID)/hangup"), 0)
+
+        state.endActiveVoiceCall()
+        for _ in 0..<100 where voiceMediaClient.stopReasons.isEmpty {
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        XCTAssertEqual(voiceMediaClient.stopReasons, ["user_ending"])
+        state.activeVoiceCall = nil
     }
 
     func testVideoCallPreviewShowsStartingStateRejectsDuplicateAndSurfacesProviderFailure() async throws {
@@ -18950,13 +19553,22 @@ private actor SequencedBoolDecision {
     }
 }
 
+// WDT_IOS1_CALLKIT_ANSWER_20260921_BEGIN: provider and file config keep the same independently selectable voice license.
+// WDT_IOS1_CLEANUP_CREDENTIALS_20260921_BEGIN: faithful response origins/capabilities and deterministic async boundaries.
 private final class IncomingSameCallOwnershipHTTPTransport: HTTPTransport, @unchecked Sendable {
     private let lock = NSLock()
+    private let voiceEnabled: Bool
     private let callID: String
     private let callType: String
     private let peerUID: String
+    private let acceptGate: FirstJoinSuspensionGate?
     private let firstJoinGate: FirstJoinSuspensionGate
     private let providerSuccessLimit: Int?
+    private let gateStage: String
+    private let acceptedMediaMode: String
+    private let failJoin: Bool
+    private let hangupFailures: Int
+    private var mutationKeys: [String: [String]] = [:]
     private var pathCounts: [String: Int] = [:]
     private var authorizationHeaders: [String: [String]] = [:]
 
@@ -18965,25 +19577,50 @@ private final class IncomingSameCallOwnershipHTTPTransport: HTTPTransport, @unch
         callType: String,
         peerUID: String,
         firstJoinGate: FirstJoinSuspensionGate,
-        providerSuccessLimit: Int? = nil
+        acceptGate: FirstJoinSuspensionGate? = nil,
+        providerSuccessLimit: Int? = nil,
+        gateStage: String = "join",
+        acceptedMediaMode: String = "audio",
+        failJoin: Bool = false,
+        hangupFailures: Int = 0,
+        voiceEnabled: Bool = true
     ) {
+        self.voiceEnabled = voiceEnabled
         self.callID = callID
         self.callType = callType
         self.peerUID = peerUID
+        self.acceptGate = acceptGate
         self.firstJoinGate = firstJoinGate
         self.providerSuccessLimit = providerSuccessLimit
+        self.gateStage = gateStage
+        self.acceptedMediaMode = acceptedMediaMode
+        self.failJoin = failJoin
+        self.hangupFailures = hangupFailures
+    }
+
+    func data(
+        for request: URLRequest,
+        rejectingCrossOriginRedirectsFrom expectedOrigin: URL
+    ) async throws -> HTTPTransportResult {
+        try await data(for: request).resolvingResponseURL(request.url)
     }
 
     func data(for request: URLRequest) async throws -> HTTPTransportResult {
         let path = request.url?.path ?? ""
         lock.withLock {
             pathCounts[path, default: 0] += 1
+            if let body = request.httpBody,
+               let json = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
+               let key = json["idempotency_key"] as? String {
+                mutationKeys[path, default: []].append(key)
+            }
             if let authorization = request.value(forHTTPHeaderField: "Authorization") {
                 authorizationHeaders[path, default: []].append(authorization)
             }
         }
         switch path {
         case "/api/tenant/files/config":
+            if gateStage == "files" { await firstJoinGate.passOrSuspendFirst() }
             return jsonResult(
                 """
                 {"ok":true,"data":{
@@ -18991,7 +19628,7 @@ private final class IncomingSameCallOwnershipHTTPTransport: HTTPTransport, @unch
                   "max_mb":20,
                   "source":"test",
                   "message_recall_max_minutes":120,
-                  "voice_call_enabled":true,
+                  "voice_call_enabled":\(voiceEnabled),
                   "video_call_enabled":true,
                   "read_receipts_enabled":true,
                   "group_admin_delete_message_enabled":false
@@ -18999,6 +19636,7 @@ private final class IncomingSameCallOwnershipHTTPTransport: HTTPTransport, @unch
                 """
             )
         case "/api/rtc/provider":
+            if gateStage == "provider" { await firstJoinGate.passOrSuspendFirst() }
             if let providerSuccessLimit,
                requestCount(path: path) > providerSuccessLimit {
                 return jsonResult(
@@ -19015,15 +19653,17 @@ private final class IncomingSameCallOwnershipHTTPTransport: HTTPTransport, @unch
                 """
                 {"ok":true,"data":{
                   "call_types":["audio","video"],
-                  "voice_call_enabled":true,
+                  "voice_call_enabled":\(voiceEnabled),
                   "video_call_enabled":true,
-                  "capabilities_version":"same-call-owner-v1",
+                  "capabilities_version":"video-call-v1",
+                  "video_supported":true,
                   "media_plane_configured":true,
                   "ice_servers_configured":true
                 }}
                 """
             )
         case "/api/rtc/calls/\(callID)/accept":
+            if let acceptGate { await acceptGate.passOrSuspendFirst() }
             let requestedMode = callType == "video" ? "video" : "audio"
             return jsonResult(
                 """
@@ -19034,7 +19674,7 @@ private final class IncomingSameCallOwnershipHTTPTransport: HTTPTransport, @unch
                     "status":"accepted",
                     "call_type":"\(callType)",
                     "requested_media_mode":"\(requestedMode)",
-                    "media_mode":"audio",
+                    "media_mode":"\(acceptedMediaMode)",
                     "caller_uid":"\(peerUID)",
                     "callee_uid":"uid-1",
                     "caller_device":{
@@ -19058,7 +19698,18 @@ private final class IncomingSameCallOwnershipHTTPTransport: HTTPTransport, @unch
                 """
             )
         case "/api/rtc/rooms/\(callID)-room/join":
-            await firstJoinGate.passOrSuspendFirst()
+            if gateStage == "join" { await firstJoinGate.passOrSuspendFirst() }
+            if failJoin { throw URLError(.cannotConnectToHost) }
+            if gateStage == "participants" {
+                return jsonResult("""
+                {"ok":true,"data":{
+                  "room_id":"\(callID)-room","rtc_token":"\(callID)-token",
+                  "media":{"owt_base_url":"https://rtc.example.test","ice_servers":[]},
+                  "self_participant":{"uid":"uid-1","device_id":"unit-test-device","device_type":"ios","role":"self"},
+                  "participants":[{"uid":"uid-1","device_id":"unit-test-device","device_type":"ios","role":"self"}]
+                }}
+                """)
+            }
             return jsonResult(
                 """
                 {"ok":true,"data":{
@@ -19103,11 +19754,22 @@ private final class IncomingSameCallOwnershipHTTPTransport: HTTPTransport, @unch
                 }}
                 """
             )
+        case "/api/rtc/rooms/\(callID)-room/participants":
+            await firstJoinGate.passOrSuspendFirst()
+            return jsonResult("""
+            {"ok":true,"data":{"items":[
+              {"uid":"uid-1","device_id":"unit-test-device","device_type":"ios","role":"self"},
+              {"uid":"\(peerUID)","device_id":"peer-device","device_type":"web","role":"peer"}
+            ]}}
+            """)
         case "/api/rtc/rooms/\(callID)-room/signals":
             return jsonResult(#"{"ok":true,"data":{"items":[],"next_cursor":"next","has_more":false}}"#)
         case "/api/rtc/rooms/\(callID)-room/ice-credentials":
             return jsonResult(#"{"ok":true,"data":{"ice_servers":[],"rtc_token":"rtc-refreshed","ice_credential_expires_at":"","ice_credential_refresh_after":""}}"#)
-        case "/api/rtc/calls/\(callID)/hangup":
+        case "/api/rtc/calls/\(callID)/hangup", "/api/rtc/calls/\(callID)/downgrade":
+            if path.hasSuffix("/hangup"), requestCount(path: path) <= hangupFailures {
+                return jsonResult(#"{"ok":false,"error":{"code":"temporary_unavailable","message":"retry"}}"#, statusCode: 503)
+            }
             return jsonResult(#"{"ok":true,"data":{}}"#)
         default:
             throw URLError(.unsupportedURL)
@@ -19126,6 +19788,10 @@ private final class IncomingSameCallOwnershipHTTPTransport: HTTPTransport, @unch
         lock.withLock { pathCounts[path, default: 0] }
     }
 
+    func idempotencyKeys(path: String) -> [String] {
+        lock.withLock { mutationKeys[path] ?? [] }
+    }
+
     func authorizationHeader(path: String) -> String? {
         lock.withLock { authorizationHeaders[path]?.last }
     }
@@ -19141,6 +19807,9 @@ private final class IncomingSameCallOwnershipHTTPTransport: HTTPTransport, @unch
         )
     }
 }
+
+// WDT_IOS1_CLEANUP_CREDENTIALS_20260921_END
+// WDT_IOS1_CALLKIT_ANSWER_20260921_END
 
 private final class RTCSystemEndHTTPTransport: HTTPTransport, @unchecked Sendable {
     private let lock = NSLock()
@@ -19166,6 +19835,7 @@ private final class RTCSystemEndHTTPTransport: HTTPTransport, @unchecked Sendabl
         lock.withLock {
             capturedRequests.append(request)
         }
+        // WDT_IOS1_CALLKIT_ANSWER_20260921_BEGIN: same-origin provider responses must reach the suspended permission boundary.
         if request.httpMethod == "GET", request.url?.path == "/api/tenant/files/config",
            let fileConfigLicenseFields {
             let first = requestCount(path: "/api/tenant/files/config") == 1
@@ -19181,6 +19851,7 @@ private final class RTCSystemEndHTTPTransport: HTTPTransport, @unchecked Sendabl
                 isHTTPResponse: true, statusCode: 200
             )
         }
+        // WDT_IOS1_CALLKIT_ANSWER_20260921_END
         if request.httpMethod == "GET", request.url?.path == "/api/rtc/calls" {
             return HTTPTransportResult(
                 data: Data(
@@ -19866,6 +20537,17 @@ private final class TestVoiceCallSystemIntegration: VoiceCallSystemIntegrating, 
 
     func setMuted(callID: String, isMuted: Bool) {}
 
+    // WDT_IOS1_CALLKIT_ANSWER_20260921_BEGIN
+    private(set) var requestedAnswers: [String] = []
+    var answerRequestError: Error?
+    var onAnswerRequest: (@MainActor (String) -> Void)?
+    func answerPresentedCall(callID: String) async throws {
+        requestedAnswers.append(callID)
+        if let answerRequestError { throw answerRequestError }
+        if let onAnswerRequest { await onAnswerRequest(callID) }
+    }
+    // WDT_IOS1_CALLKIT_ANSWER_20260921_END
+
     func hasPresentedCall(callID: String) -> Bool {
         presentedCallIDs.contains(callID)
     }
@@ -20052,18 +20734,23 @@ private final class TestVideoMediaClient: VideoMediaClient {
 private final class TestVoiceMediaClient: VoiceMediaClient {
     var isAvailable: Bool { true }
     private let events: [RTCVoiceMediaEvent]
+    private var startErrors: [Error]
     private(set) var startedContexts: [VoiceMediaSessionContext] = []
     private(set) var speakerValues: [Bool] = []
     private(set) var mutedValues: [Bool] = []
     private(set) var stopReasons: [String] = []
     private(set) var audioReconcileSpeakerValues: [Bool] = []
 
-    init(events: [RTCVoiceMediaEvent] = []) {
+    init(events: [RTCVoiceMediaEvent] = [], startErrors: [Error] = []) {
         self.events = events
+        self.startErrors = startErrors
     }
 
     func start(context: VoiceMediaSessionContext) async throws -> AsyncStream<RTCVoiceMediaEvent> {
         startedContexts.append(context)
+        if !startErrors.isEmpty {
+            throw startErrors.removeFirst()
+        }
         let events = self.events
         return AsyncStream { continuation in
             for event in events {
@@ -20507,6 +21194,91 @@ final class IOSNotificationStateMachineTests: XCTestCase {
         XCTAssertNil(request.content.userInfo["body"])
         XCTAssertNil(request.content.userInfo["sender_name"])
         XCTAssertNil(request.content.userInfo["source_device"])
+    }
+
+    func testRealtimeLocalNotificationTapEmitsConversationOpenPayloadFromMetadata() throws {
+        let metadata = try XCTUnwrap(IOSNotificationLocalMetadata(
+            notificationID: "message-7",
+            aggregateID: "conversation-1",
+            tenantID: "tenant-a",
+            imUID: "user-a",
+            appID: "app-ios",
+            channelID: "c1",
+            channelType: "direct",
+            channelSeq: 7
+        ))
+        let center = RecordingIOSNotificationCenter()
+        let store = RecordingIOSNotificationLocalIndexStore()
+        let runtime = IOSNotificationRuntime(notificationCenter: center, localIndexStore: store)
+        var received: [IOSNotificationRuntimeEvent] = []
+        let observer = runtime.observe {
+            received.append($0)
+            return true
+        }
+        defer { runtime.removeObserver(observer) }
+
+        runtime.presentRealtimeMessage(
+            eventID: "message-7",
+            backgrounded: true,
+            localMetadata: metadata
+        )
+
+        let request = try XCTUnwrap(center.addedRequests.first)
+        XCTAssertEqual(request.content.userInfo["schema_version"] as? String, "notification_local.v1")
+        XCTAssertTrue(runtime.handleNotificationResponse(request.content.userInfo))
+        guard case let .notificationOpened(opened) = try XCTUnwrap(received.last) else {
+            return XCTFail("expected notificationOpened from realtime local notification tap")
+        }
+        XCTAssertEqual(opened.category, "message")
+        XCTAssertEqual(opened.channelID, "c1")
+        XCTAssertEqual(opened.channelType, "direct")
+        XCTAssertEqual(opened.channelSeq, 7)
+        XCTAssertEqual(opened.scopeKey, IOSNotificationRuntime.scopeKey(tenantID: "tenant-a"))
+        XCTAssertEqual(opened.targetRef, "")
+    }
+
+    func testBackgroundLocalNotificationTapPreservesConversationOpenPayload() throws {
+        let center = RecordingIOSNotificationCenter()
+        let store = RecordingIOSNotificationLocalIndexStore()
+        let runtime = IOSNotificationRuntime(notificationCenter: center, localIndexStore: store)
+        var received: [IOSNotificationRuntimeEvent] = []
+        let observer = runtime.observe {
+            received.append($0)
+            return true
+        }
+        defer { runtime.removeObserver(observer) }
+        let payload: [AnyHashable: Any] = [
+            "schema_version": "notification_state.v1",
+            "notification_id": "message-background-tap-1",
+            "aggregate_id": "conversation-background-tap-1",
+            "notification_category": "message",
+            "presentation": "alert",
+            "scope_key": IOSNotificationRuntime.scopeKey(tenantID: "tenant-a"),
+            "target_ref": "opaque-target-ref-1",
+            "tenant_id": "tenant-a",
+            "im_uid": "user-a",
+            "app_id": "app-ios",
+            "channel_id": "conversation-background-tap-1",
+            "channel_type": "direct",
+            "channel_seq": "11"
+        ]
+
+        XCTAssertEqual(
+            runtime.handleRemoteNotification(payload, processState: .backgroundAlive),
+            .localSystemNotification
+        )
+        let request = try XCTUnwrap(center.addedRequests.first)
+        XCTAssertEqual(request.content.userInfo["schema_version"] as? String, "notification_state.v1")
+        XCTAssertEqual(request.content.userInfo["target_ref"] as? String, "opaque-target-ref-1")
+        XCTAssertEqual(request.content.userInfo["channel_seq"] as? String, "11")
+
+        XCTAssertTrue(runtime.handleNotificationResponse(request.content.userInfo))
+        guard case let .notificationOpened(opened) = try XCTUnwrap(received.last) else {
+            return XCTFail("expected notificationOpened from local notification tap")
+        }
+        XCTAssertEqual(opened.targetRef, "opaque-target-ref-1")
+        XCTAssertEqual(opened.channelID, "conversation-background-tap-1")
+        XCTAssertEqual(opened.channelSeq, 11)
     }
 
     func testStandardAPNsRegistrationPreservesRenamedBundleIdentity() {

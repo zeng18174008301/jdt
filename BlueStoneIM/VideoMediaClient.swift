@@ -1552,6 +1552,12 @@ final class WebRTCVideoMediaClient: NSObject, VideoMediaClient {
     private var lastInboundVideoFrames: Int64 = 0
     private var connectedEmitted = false
     private var currentDebugID = ""
+    // JHT_MOD_BEGIN IOS_RTC_ANSWER_MEDIA_FAILURE_20260917 - 修改开始：跟踪视频实例音频会话所有权和启动阶段，避免旧实例误关新音频
+    private var ownedAudioSessionEpoch: Int?
+    // WDT_IOS1_AUDIO_ROUTE_20260921: keep explicit route intent when recovering.
+    private var speakerEnabled = true
+    private var mediaStartStage = "idle"
+    // JHT_MOD_END IOS_RTC_ANSWER_MEDIA_FAILURE_20260917 - 修改结束
 
     override init() {
         _ = WebRTCRuntime.isReady
@@ -1617,8 +1623,13 @@ final class WebRTCVideoMediaClient: NSObject, VideoMediaClient {
             videoDebug(
                 "start role=\(context.isCaller ? "caller" : "callee") localDeviceHash=\(Self.shortStableHash(context.localDeviceID)) peerDeviceHash=\(Self.shortStableHash(context.peerDeviceID)) iceServers=\(context.iceServers.count) cameraIntent=\(cameraEnabled)"
             )
+            // JHT_MOD_BEGIN IOS_RTC_ANSWER_MEDIA_FAILURE_20260917 - 修改开始：记录视频媒体启动阶段，便于真机失败定位
+            mediaStartStage = "audio_category"
             try configureAudioSession()
+            mediaStartStage = "peer_connection_create"
             try createPeerConnection(context: context)
+            mediaStartStage = "quality_session_create"
+            // JHT_MOD_END IOS_RTC_ANSWER_MEDIA_FAILURE_20260917 - 修改结束
             if RTCQualityTokenScope.hasWriteScope(context.rtcToken), let connection = peerConnection {
                 qualityTelemetrySession = RTCQualityTelemetrySession(
                     rtcToken: context.rtcToken,
@@ -1635,9 +1646,15 @@ final class WebRTCVideoMediaClient: NSObject, VideoMediaClient {
             } else {
                 qualityTelemetrySession = nil
             }
+            // JHT_MOD_BEGIN IOS_RTC_ANSWER_MEDIA_FAILURE_20260917 - 修改开始
+            mediaStartStage = "audio_track_create"
             try createLocalAudioTrack(context: context)
+            mediaStartStage = "video_track_create"
             try createLocalVideoTrackIfNeeded()
+            mediaStartStage = "video_track_add"
             try addLocalVideoTrack(context: context)
+            mediaStartStage = "camera_start"
+            // JHT_MOD_END IOS_RTC_ANSWER_MEDIA_FAILURE_20260917 - 修改结束
             let shouldCapture = RTCVideoCapturePolicy.shouldCapture(
                 cameraEnabledIntent: cameraEnabled,
                 isApplicationBackgrounded: isApplicationBackgrounded
@@ -1656,14 +1673,20 @@ final class WebRTCVideoMediaClient: NSObject, VideoMediaClient {
                 await stopCaptureIfNeeded()
                 localVideoTrack?.isEnabled = false
             }
+            // JHT_MOD_BEGIN IOS_RTC_ANSWER_MEDIA_FAILURE_20260917 - 修改开始
+            mediaStartStage = "signaling_start"
             startSignalPolling(context: context)
+            mediaStartStage = "ice_credential_schedule"
             scheduleCredentialRefresh(
                 refreshAfter: context.iceCredentialRefreshAfter,
                 expiresAt: context.iceCredentialExpiresAt
             )
             if context.isCaller {
+                mediaStartStage = "offer_create"
                 try await negotiate(iceRestart: false)
             }
+            mediaStartStage = "started"
+            // JHT_MOD_END IOS_RTC_ANSWER_MEDIA_FAILURE_20260917 - 修改结束
             if cameraUnavailableAtStart || !shouldCapture {
                 emit(cameraUnavailableAtStart ? .cameraUnavailable : .cameraPaused)
                 try? await sendSignal(
@@ -1676,6 +1699,9 @@ final class WebRTCVideoMediaClient: NSObject, VideoMediaClient {
             }
             return stream
         } catch {
+            // JHT_MOD_BEGIN IOS_RTC_ANSWER_MEDIA_FAILURE_20260917 - 修改开始：只记录安全字段，不输出 SDP/ICE/token/userInfo
+            videoDebug("start_failed stage=\(mediaStartStage) error=\(Self.safeErrorSummary(error))")
+            // JHT_MOD_END IOS_RTC_ANSWER_MEDIA_FAILURE_20260917 - 修改结束
             await closeCurrent(reason: "start_failed", sendBye: false, finishStream: true, releasePreview: true)
             throw error
         }
@@ -1685,19 +1711,17 @@ final class WebRTCVideoMediaClient: NSObject, VideoMediaClient {
         localAudioTrack?.isEnabled = !isMuted
     }
 
+    // WDT_IOS1_AUDIO_ROUTE_20260921_BEGIN
     func setSpeakerEnabled(_ isEnabled: Bool) async throws {
+        speakerEnabled = isEnabled
+        guard currentContext != nil, peerConnection != nil, !isClosingCurrentSession else { return }
+        try configureAudioSession()
         let session = RTCAudioSession.sharedInstance()
         session.lockForConfiguration()
         defer { session.unlockForConfiguration() }
-        let options: AVAudioSession.CategoryOptions = isEnabled
-            ? [.allowBluetoothHFP, .defaultToSpeaker]
-            : [.allowBluetoothHFP]
-        try session.setCategory(.playAndRecord, with: options)
-        try session.setMode(.videoChat)
-        try session.setActive(true)
-        session.isAudioEnabled = true
-        try AVAudioSession.sharedInstance().overrideOutputAudioPort(isEnabled ? .speaker : .none)
+        try session.overrideOutputAudioPort(isEnabled ? .speaker : .none)
     }
+    // WDT_IOS1_AUDIO_ROUTE_20260921_END
 
     func setCameraEnabled(_ isEnabled: Bool) async throws {
         let previousIntent = cameraEnabledIntent
@@ -1816,28 +1840,38 @@ final class WebRTCVideoMediaClient: NSObject, VideoMediaClient {
         )
     }
 
+    // WDT_IOS1_AUDIO_ROUTE_20260921_BEGIN
     func reconcileAudioSessionAfterSystemEvent() async throws {
+        guard currentContext != nil, peerConnection != nil, !isClosingCurrentSession else { return }
         try configureAudioSession()
     }
+    // WDT_IOS1_AUDIO_ROUTE_20260921_END
 
     func stop(reason: String) async {
         await closeCurrent(reason: reason, sendBye: true, finishStream: true, releasePreview: true)
     }
 
+    // WDT_IOS1_AUDIO_ROUTE_20260921_BEGIN: share the voice client's balanced, idempotent audio ownership rule.
     private func configureAudioSession() throws {
         let session = RTCAudioSession.sharedInstance()
         session.lockForConfiguration()
         defer { session.unlockForConfiguration() }
-        try session.setCategory(.playAndRecord, with: [.allowBluetoothHFP, .defaultToSpeaker])
-        try session.setMode(.videoChat)
-        // JHT_MOD_BEGIN RTC_CONNECT_LATENCY_STABILITY_20260915 - 修改开始：通话音频低延迟偏好，不支持时不阻断通话
-        let avSession = AVAudioSession.sharedInstance()
-        try? avSession.setPreferredSampleRate(48_000)
-        try? avSession.setPreferredIOBufferDuration(0.01)
-        // JHT_MOD_END RTC_CONNECT_LATENCY_STABILITY_20260915 - 修改结束
-        try session.setActive(true)
+        let options: AVAudioSession.CategoryOptions = speakerEnabled
+            ? [.allowBluetoothHFP, .defaultToSpeaker] : [.allowBluetoothHFP]
+        if session.category != AVAudioSession.Category.playAndRecord.rawValue || session.categoryOptions != options {
+            try session.setCategory(.playAndRecord, with: options)
+        }
+        if session.mode != AVAudioSession.Mode.videoChat.rawValue { try session.setMode(.videoChat) }
+        if ownedAudioSessionEpoch != sessionEpoch {
+            try? session.setPreferredSampleRate(48_000)
+            try? session.setPreferredIOBufferDuration(0.01)
+            try session.setActive(true)
+            ownedAudioSessionEpoch = sessionEpoch
+        }
         session.isAudioEnabled = true
+        mediaStartStage = "audio_session_ready"
     }
+    // WDT_IOS1_AUDIO_ROUTE_20260921_END
 
     private func createPeerConnection(context: VideoMediaSessionContext) throws {
         let configuration = RTCConfiguration()
@@ -2738,6 +2772,11 @@ final class WebRTCVideoMediaClient: NSObject, VideoMediaClient {
         guard !isClosingCurrentSession else { return }
         isClosingCurrentSession = true
         defer { isClosingCurrentSession = false }
+        // JHT_MOD_BEGIN IOS_RTC_ANSWER_MEDIA_FAILURE_20260917 - 修改开始：在换代前确认音频会话所有权，旧实例不得误关新实例音频
+        let shouldReleaseAudioSession = ownedAudioSessionEpoch == sessionEpoch
+        ownedAudioSessionEpoch = nil
+        mediaStartStage = "closed"
+        // JHT_MOD_END IOS_RTC_ANSWER_MEDIA_FAILURE_20260917 - 修改结束
         // Invalidate every suspended poll/refresh before the first await below.
         // A late response from the old call must never mutate a replacement call.
         sessionEpoch &+= 1
@@ -2798,14 +2837,20 @@ final class WebRTCVideoMediaClient: NSObject, VideoMediaClient {
         }
         let audioSession = RTCAudioSession.sharedInstance()
         audioSession.lockForConfiguration()
-        audioSession.isAudioEnabled = false
-        try? audioSession.setActive(false)
+        // JHT_MOD_BEGIN IOS_RTC_ANSWER_MEDIA_FAILURE_20260917 - 修改开始
+        if shouldReleaseAudioSession {
+            audioSession.isAudioEnabled = false
+            try? audioSession.setActive(false)
+        }
+        // JHT_MOD_END IOS_RTC_ANSWER_MEDIA_FAILURE_20260917 - 修改结束
         audioSession.unlockForConfiguration()
         if finishStream {
             eventContinuation?.finish()
             eventContinuation = nil
         }
-        videoDebug("closed reason=\(reason) sendBye=\(sendBye)")
+        // JHT_MOD_BEGIN IOS_RTC_ANSWER_MEDIA_FAILURE_20260917 - 修改开始
+        videoDebug("closed reason=\(reason) sendBye=\(sendBye) releasedAudio=\(shouldReleaseAudioSession)")
+        // JHT_MOD_END IOS_RTC_ANSWER_MEDIA_FAILURE_20260917 - 修改结束
         currentDebugID = ""
     }
 
@@ -2986,6 +3031,23 @@ final class WebRTCVideoMediaClient: NSObject, VideoMediaClient {
         }
         return String(describing: type(of: error))
     }
+
+    // JHT_MOD_BEGIN IOS_RTC_ANSWER_MEDIA_FAILURE_20260917 - 修改开始：只记录安全错误字段，不输出 userInfo/凭据
+    private static func safeErrorSummary(_ error: Error) -> String {
+        let nsError = error as NSError
+        var parts = [
+            "label=\(safeErrorLabel(error))",
+            "type=\(String(describing: type(of: error)))",
+            "domain=\(nsError.domain)",
+            "code=\(nsError.code)"
+        ]
+        if let underlying = nsError.userInfo[NSUnderlyingErrorKey] as? NSError {
+            parts.append("underlyingDomain=\(underlying.domain)")
+            parts.append("underlyingCode=\(underlying.code)")
+        }
+        return parts.joined(separator: " ")
+    }
+    // JHT_MOD_END IOS_RTC_ANSWER_MEDIA_FAILURE_20260917 - 修改结束
 }
 
 extension WebRTCVideoMediaClient: RTCPeerConnectionDelegate {

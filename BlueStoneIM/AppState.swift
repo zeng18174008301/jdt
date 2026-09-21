@@ -647,6 +647,10 @@ final class AppState: ObservableObject {
     var pushDeviceRetirementTasksByScope: [String: Task<Void, Never>] = [:]
     var standardPushRegistrationTasksByScope: [String: Task<Void, Never>] = [:]
     var voipPushRegistrationTasksByScope: [String: Task<Void, Never>] = [:]
+    // JHT_MOD_BEGIN IOS_RTC_ANSWER_MEDIA_FAILURE_20260917 - 修改开始：记录 CallKit 音频会话激活状态，便于判断接听与媒体启动顺序
+    var voiceCallSystemAudioSessionActive = false
+    var voiceCallSystemAudioSessionGeneration: UInt64 = 0
+    // JHT_MOD_END IOS_RTC_ANSWER_MEDIA_FAILURE_20260917 - 修改结束
     var voipPushPayloadsByCallID: [String: RTCVoIPPushPayload] = [:]
     var busyRejectedIncomingCallIDs: Set<String> = []
     var failedSystemAnsweredCallIDs: Set<String> = []
@@ -776,6 +780,9 @@ final class AppState: ObservableObject {
             if previousPhoneBindingScope != currentPhoneBindingScope {
                 invalidatePhoneBindingChallenge(ownedBy: previousPhoneBindingScope)
             }
+            // WDT_RTC_IOS1_AUTODROP_20260921_BEGIN: refresh cleanup credentials before direct-call invalidation checks.
+            reconcileDirectCallCleanupContexts(from: oldValue, to: apiContext)
+            // WDT_RTC_IOS1_AUTODROP_20260921_END
             if DirectCallContextBinding(context: oldValue) != DirectCallContextBinding(context: apiContext) {
                 if oldValue.accountID != apiContext.accountID
                     || oldValue.sessionEpoch != apiContext.sessionEpoch

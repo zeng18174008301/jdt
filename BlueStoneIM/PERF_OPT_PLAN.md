@@ -1,7 +1,7 @@
 # BlueStoneIM iOS 启动性能优化 — 实现规格 & 验收标准
 
 > 角色分工:本文档由方案方产出,**执行方 AI 据此改代码**,方案方负责验收。
-> 工程路径:`apps/ios-chat/BlueStoneIM/`,SwiftUI / iOS 17 / 应用名 BlueStoneIM(X01)。
+> 工程路径:`apps/ios-chat/BlueStoneIM/`,SwiftUI / iOS 17 / 应用名 BlueStoneIM(问达通)。
 > 约束:不引入新依赖、不改 UI 外观、不改功能语义(消息不丢、顺序正确、未读数正确);纯 iOS 改动可不跑 `codegraph sync`。
 > 行号基于当前版本,执行方改前请以**函数名/符号**为准定位(行号会随改动漂移)。
 

@@ -61,7 +61,7 @@ current-policy explicitly enables `access_diagnostics_overlay_enabled` for the
 exact effective AppId and the active page receives five Logo taps within three
 seconds. Disabled or unavailable policy, AppId mismatch, scope change, and page
 navigation reset activation. The authenticated entry is the Logo under
-`我的 → 关于 X01`.
+`我的 → 关于 问达通`.
 
 The prelogin bootstrap test vectors are vendored under
 `BlueStoneIMTests/Resources/` so this subtree can build for testing without

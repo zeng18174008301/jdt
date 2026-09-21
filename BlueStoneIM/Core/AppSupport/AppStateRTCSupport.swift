@@ -270,7 +270,7 @@ struct PendingRTCTerminalCompensation {
     let callID: String
     let action: RTCTerminalCompensationAction
     let reason: String
-    let context: IMAPIContext
+    var context: IMAPIContext
     let scope: String
     let idempotencyKey: String
     var attemptCount: Int

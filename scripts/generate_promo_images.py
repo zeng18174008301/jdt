@@ -44,7 +44,7 @@ class PromoLocale:
 
 ZH = PromoLocale(
     lang="zh",
-    brand="X01",
+    brand="问达通",
     badge="企业即时协作",
     titles=[
         "企业会话\n集中处理",
@@ -558,7 +558,7 @@ def render(locale: PromoLocale, index: int) -> Image.Image:
 
     _, active, screen = SCREENS[index]
     app_shell(base, active, screen)
-    footer = "BlueStoneIM" if locale.lang == "en" else "BlueStoneIM · X01"
+    footer = "BlueStoneIM" if locale.lang == "en" else "BlueStoneIM · 问达通"
     draw.text((W // 2, H - 58), footer, font=promo_font(locale, 22, True), fill=(92, 104, 132), anchor="mm")
     return base.convert("RGB")
 

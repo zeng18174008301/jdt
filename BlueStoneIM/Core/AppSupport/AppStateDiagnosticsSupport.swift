@@ -227,23 +227,38 @@ enum DirectCallCapabilityKind: Hashable {
 }
 
 struct DirectCallContextBinding: Equatable {
+    private enum SessionIdentity: Equatable {
+        case authenticated(id: String, authVersion: Int64)
+        case legacyToken(String)
+    }
+
     let accountID: String
     let tenantID: String
     let imUID: String
     let appID: String
     let deviceID: String
-    let sessionDiscriminator: String
+    private let sessionEpoch: String
+    private let hasIMSession: Bool
+    private let sessionIdentity: SessionIdentity
 
     init(context: IMAPIContext) {
+        // WDT_RTC_IOS1_AUTODROP_20260921_BEGIN: stable call ownership ignores normal token rotation.
         accountID = context.accountID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         tenantID = context.tenantID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         imUID = context.imUID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         appID = IMAPIContext.normalizedIOSAppID(context.appID)
         deviceID = context.deviceID.trimmingCharacters(in: .whitespacesAndNewlines)
-        let authSessionID = context.tenantAuthSession?.sessionID
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let imToken = context.imToken?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        sessionDiscriminator = authSessionID.isEmpty ? imToken : "\(authSessionID)|\(imToken)"
+        sessionEpoch = context.sessionEpoch
+        hasIMSession = context.hasIMSession
+        if let session = context.tenantAuthSession, session.isUsable {
+            sessionIdentity = .authenticated(
+                id: session.sessionID.trimmingCharacters(in: .whitespacesAndNewlines),
+                authVersion: session.authVersion
+            )
+        } else {
+            sessionIdentity = .legacyToken(context.imToken?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "")
+        }
+        // WDT_RTC_IOS1_AUTODROP_20260921_END
     }
 }
 
@@ -259,7 +274,7 @@ struct DirectCallAttempt: Equatable {
 
 struct DirectCallCleanupObligation {
     let callID: String
-    let context: IMAPIContext
+    var context: IMAPIContext
     let sourceAttempt: DirectCallAttempt
     let responsibleOperationID: UUID
 

@@ -6661,8 +6661,15 @@ extension AppState {
     }
 
     func currentRTCProviderForCall(context: IMAPIContext, attempt: DirectCallAttempt) async throws -> RemoteRTCProvider {
-        try await currentRTCProvider(
-            context: context,
+        // WDT_RTC_IOS1_AUTODROP_20260921_BEGIN: send provider checks with latest credentials for the same call owner.
+        let requestContext = apiContext
+        guard requestContext.hasIMSession,
+              DirectCallContextBinding(context: requestContext) == attempt.context else {
+            throw CancellationError()
+        }
+        // WDT_RTC_IOS1_AUTODROP_20260921_END
+        return try await currentRTCProvider(
+            context: requestContext,
             media: attempt.mediaMode == "audio" ? .voice : .video,
             isCurrent: { self.isCurrentDirectCallAttempt(attempt) }
         )

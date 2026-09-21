@@ -53,7 +53,7 @@ struct MeView: View {
                     }
 
                     VStack(spacing: 12) {
-                        SettingsRow(symbol: "bell.badge.fill", title: "通知", subtitle: "接收范围、推送灰度") {
+                        SettingsRow(symbol: "bell.badge.fill", title: "通知", subtitle: "接收通知消息") {
                             route = .notifications
                         }
                         SettingsRow(symbol: "lock.shield.fill", title: "账号安全", subtitle: "密码、Face ID、登录提醒") {
@@ -607,7 +607,6 @@ private struct AboutJianHuiTongView: View {
     // JHT_MOD_BEGIN ACCESS_DIAGNOSTICS_FIVE_TAP_TOGGLE
     @EnvironmentObject private var state: AppState
     // JHT_MOD_END ACCESS_DIAGNOSTICS_FIVE_TAP_TOGGLE
-
     private var displayName: String {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String
             ?? Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String
@@ -673,6 +672,7 @@ private struct AboutJianHuiTongView: View {
         }
         // JHT_MOD_END ACCESS_DIAGNOSTICS_FIVE_TAP_TOGGLE
     }
+
 }
 
 private struct AboutAppMark: View {
@@ -739,7 +739,7 @@ private struct ContactUsView: View {
             AuroraBackground()
             ScrollView(showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 16) {
-                    SheetHeader(symbol: "envelope.fill", title: "联系我们", subtitle: "通过当前 AppId 配置的邮箱联系支持团队。")
+                    SheetHeader(symbol: "envelope.fill", title: "联系我们", subtitle: "通过当前邮箱联系支持团队。")
 
                     VStack(alignment: .leading, spacing: 16) {
                         HStack(spacing: 12) {

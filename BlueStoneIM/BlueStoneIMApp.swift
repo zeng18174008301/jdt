@@ -455,6 +455,36 @@ struct IOSNotificationStatePayload: Equatable {
         let nested = Self.stringDictionary(root["payload"] as? [AnyHashable: Any] ?? [:])
         let values = root.merging(nested) { current, _ in current }
         let schemaVersion = (values["schema_version"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        // JHT_MOD_BEGIN NOTIFICATION_TAP_LOCAL_SCHEMA_20260917 - 修改开始：允许点击本地通知元数据后恢复会话定位字段
+        if schemaVersion == IOSNotificationLocalMetadata.schemaVersion {
+            notificationID = Self.firstString(values, keys: ["notification_id", "message_id", "messageID"])
+            aggregateID = Self.firstString(values, keys: ["aggregate_id", "conversation_id", "conversationID", "channel_id", "channelID"])
+            category = "message"
+            presentation = "alert"
+            tenantID = Self.firstString(values, keys: ["tenant_id", "tenantId"])
+            imUID = Self.firstString(values, keys: ["im_uid", "imUID"])
+            appID = Self.firstString(values, keys: ["app_id", "appId"])
+            channelID = Self.firstString(values, keys: ["channel_id", "channelID", "conversation_id", "conversationID"])
+            channelType = Self.firstString(values, keys: ["channel_type", "channelType"]).lowercased()
+            channelSeq = Int64(Self.firstString(values, keys: ["channel_seq", "channelSeq"]).trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
+            scopeKey = Self.scopeKey(tenantID: tenantID)
+            payloadType = ""
+            eventType = ""
+            callID = ""
+            callType = ""
+            targetRef = Self.firstString(values, keys: ["target_ref", "targetRef"])
+            attention = Self.firstString(values, keys: ["attention"]).lowercased() == "mention" ? .mention : .none
+            guard !notificationID.isEmpty,
+                  !aggregateID.isEmpty,
+                  !scopeKey.isEmpty,
+                  !channelID.isEmpty,
+                  ["direct", "group", "system"].contains(channelType),
+                  channelSeq > 0 else {
+                return nil
+            }
+            return
+        }
+        // JHT_MOD_END NOTIFICATION_TAP_LOCAL_SCHEMA_20260917 - 修改结束
         guard schemaVersion == "notification_state.v1" else {
             return nil
         }
@@ -492,6 +522,13 @@ struct IOSNotificationStatePayload: Equatable {
             }
         }
         return ""
+    }
+
+    private static func scopeKey(tenantID: String) -> String {
+        let normalized = tenantID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else { return "" }
+        let digest = SHA256.hash(data: Data(normalized.utf8))
+        return digest.prefix(12).map { String(format: "%02x", $0) }.joined()
     }
 
     var localMetadata: IOSNotificationLocalMetadata? {
@@ -748,9 +785,11 @@ final class IOSNotificationRuntime {
             if payload.attention == .mention {
                 userInfo["attention"] = payload.attention.rawValue
             }
+            // JHT_MOD_BEGIN NOTIFICATION_TAP_SCHEMA_PRESERVE_20260917 - 修改开始：保留 state schema，避免本地元数据覆盖点击解析入口
             if let localMetadata {
-                userInfo.merge(localMetadata.userInfo) { _, new in new }
+                userInfo.merge(localMetadata.userInfo) { current, _ in current }
             }
+            // JHT_MOD_END NOTIFICATION_TAP_SCHEMA_PRESERVE_20260917 - 修改结束
             content.userInfo = userInfo
             let requestIdentifier = localMetadata?.requestIdentifier ?? payload.aggregateID
             upsertLocalNotificationRecord(localMetadata)
@@ -842,6 +881,11 @@ final class BlueStoneApplicationDelegate: NSObject, UIApplicationDelegate {
         }
 		if let remote = launchOptions?[.remoteNotification] as? [AnyHashable: Any] {
 			_ = IOSNotificationRuntime.shared.handleRemoteNotification(remote, processState: .terminated)
+            // JHT_MOD_BEGIN NOTIFICATION_TAP_COLD_LAUNCH_20260917 - 修改开始：冷启动由通知进入时也投递打开会话事件
+            if application.applicationState != .background {
+                _ = IOSNotificationRuntime.shared.handleNotificationResponse(remote)
+            }
+            // JHT_MOD_END NOTIFICATION_TAP_COLD_LAUNCH_20260917 - 修改结束
 		}
 		return true
 	}

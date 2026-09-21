@@ -496,6 +496,8 @@ protocol VoiceCallSystemIntegrating: AnyObject, Sendable {
     func reportIncomingCall(_ payload: RTCVoIPPushPayload) -> Bool
     func endCall(callID: String, reason: String)
     func setMuted(callID: String, isMuted: Bool)
+    // WDT_IOS1_CALLKIT_ANSWER_20260921: in-app answers must also advance a presented system call.
+    func answerPresentedCall(callID: String) async throws
     func hasPresentedCall(callID: String) -> Bool
     func clearPresentedCall(callID: String)
     func reportOutgoingCallStarted(callID: String, peerName: String, isVideo: Bool)
@@ -503,6 +505,8 @@ protocol VoiceCallSystemIntegrating: AnyObject, Sendable {
 }
 
 extension VoiceCallSystemIntegrating {
+    // WDT_IOS1_CALLKIT_ANSWER_20260921: integrations without CallKit need no system transaction.
+    func answerPresentedCall(callID _: String) async throws {}
     func reportOutgoingCallStarted(callID _: String, peerName _: String, isVideo _: Bool) {}
     func reportOutgoingCallConnected(callID _: String) {}
 }
@@ -624,6 +628,22 @@ final class CallKitPushVoiceCallManager: NSObject, VoiceCallSystemIntegrating, @
         let transaction = CXTransaction(action: CXSetMutedCallAction(call: uuid, muted: isMuted))
         CXCallController().request(transaction) { _ in }
     }
+
+    // WDT_IOS1_CALLKIT_ANSWER_20260921_BEGIN: use the existing UUID; never create a second system call.
+    func answerPresentedCall(callID: String) async throws {
+        let normalized = callID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard presentedCallIDs.contains(normalized), let uuid = uuidsByCallID[normalized] else {
+            throw CancellationError()
+        }
+        callKitDebug("in_app_answer_request call=\(Self.shortDebugID(normalized))")
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            CXCallController().request(CXTransaction(action: CXAnswerCallAction(call: uuid))) { error in
+                if let error { continuation.resume(throwing: error) }
+                else { continuation.resume() }
+            }
+        }
+    }
+    // WDT_IOS1_CALLKIT_ANSWER_20260921_END
 
     func hasPresentedCall(callID: String) -> Bool {
         presentedCallIDs.contains(callID.trimmingCharacters(in: .whitespacesAndNewlines))
@@ -1028,6 +1048,12 @@ final class WebRTCVoiceMediaClient: NSObject, VoiceMediaClient {
     private var qualitySampleReducer = RTCQualitySampleReducer()
     private var qualitySampleSequence: Int64 = 0
     private var isClosingCurrentSession = false
+    // JHT_MOD_BEGIN IOS_RTC_ANSWER_MEDIA_FAILURE_20260917 - 修改开始：跟踪本实例音频会话所有权和启动阶段，便于接听失败定位
+    private var ownedAudioSessionEpoch: Int?
+    // WDT_IOS1_AUDIO_ROUTE_20260921: preserve receiver/speaker intent across recovery.
+    private var speakerEnabled = true
+    private var mediaStartStage = "idle"
+    // JHT_MOD_END IOS_RTC_ANSWER_MEDIA_FAILURE_20260917 - 修改结束
     private var sequence = 0
     private var negotiationID = WebRTCVoiceMediaClient.makeNegotiationID()
     private static let localCandidateBatchDelayNanoseconds: UInt64 = 25_000_000
@@ -1086,21 +1112,42 @@ final class WebRTCVoiceMediaClient: NSObject, VoiceMediaClient {
             qualityProbeTask = nil
             qualitySampleReducer = RTCQualitySampleReducer()
             qualitySampleSequence = 0
-            rtcDebug("start role=\(context.isCaller ? "caller" : "callee") iceServers=\(context.iceServers.count)")
+            rtcDebug("start issue=media_degrade_or_long_call_end role=\(context.isCaller ? "caller" : "callee") iceServers=\(context.iceServers.count)")
+            // JHT_MOD_BEGIN IOS_RTC_ANSWER_MEDIA_FAILURE_20260917 - 修改开始
+            mediaStartStage = "audio_category"
+            // JHT_MOD_END IOS_RTC_ANSWER_MEDIA_FAILURE_20260917 - 修改结束
             try configureAudioSession()
+            // JHT_MOD_BEGIN IOS_RTC_ANSWER_MEDIA_FAILURE_20260917 - 修改开始
+            mediaStartStage = "peer_connection_create"
+            // JHT_MOD_END IOS_RTC_ANSWER_MEDIA_FAILURE_20260917 - 修改结束
             try createPeerConnection(context: context)
             emit(.roomJoined)
+            // JHT_MOD_BEGIN IOS_RTC_ANSWER_MEDIA_FAILURE_20260917 - 修改开始
+            mediaStartStage = "audio_track_create"
+            // JHT_MOD_END IOS_RTC_ANSWER_MEDIA_FAILURE_20260917 - 修改结束
             try createLocalAudioTrack(context: context)
+            // JHT_MOD_BEGIN IOS_RTC_ANSWER_MEDIA_FAILURE_20260917 - 修改开始
+            mediaStartStage = "signaling_start"
+            // JHT_MOD_END IOS_RTC_ANSWER_MEDIA_FAILURE_20260917 - 修改结束
             startSignalPolling(context: context)
             scheduleCredentialRefresh(
                 refreshAfter: context.iceCredentialRefreshAfter,
                 expiresAt: context.iceCredentialExpiresAt
             )
             if context.isCaller {
+                // JHT_MOD_BEGIN IOS_RTC_ANSWER_MEDIA_FAILURE_20260917 - 修改开始
+                mediaStartStage = "offer_create"
+                // JHT_MOD_END IOS_RTC_ANSWER_MEDIA_FAILURE_20260917 - 修改结束
                 try await createAndSendOffer(iceRestart: false)
             }
+            // JHT_MOD_BEGIN IOS_RTC_ANSWER_MEDIA_FAILURE_20260917 - 修改开始
+            mediaStartStage = "started"
+            // JHT_MOD_END IOS_RTC_ANSWER_MEDIA_FAILURE_20260917 - 修改结束
             return stream
         } catch {
+            // JHT_MOD_BEGIN IOS_RTC_ANSWER_MEDIA_FAILURE_20260917 - 修改开始
+            rtcDebug("start_failed stage=\(mediaStartStage) error=\(Self.safeErrorSummary(error))")
+            // JHT_MOD_END IOS_RTC_ANSWER_MEDIA_FAILURE_20260917 - 修改结束
             await closeCurrent(reason: "start_failed", sendBye: false, finishStream: true)
             throw error
         }
@@ -1111,46 +1158,72 @@ final class WebRTCVoiceMediaClient: NSObject, VoiceMediaClient {
         rtcDebug("mute_changed muted=\(isMuted) localTrackEnabled=\(localAudioTrack?.isEnabled == true)")
     }
 
+    // WDT_IOS1_AUDIO_ROUTE_20260921_BEGIN: route changes are local audio changes, never synthetic ICE failures.
     func setSpeakerEnabled(_ isEnabled: Bool) async {
+        speakerEnabled = isEnabled
+        guard currentContext != nil, peerConnection != nil, !isClosingCurrentSession else { return }
         do {
-            try AVAudioSession.sharedInstance().overrideOutputAudioPort(isEnabled ? .speaker : .none)
+            try configureAudioSession()
+            let session = RTCAudioSession.sharedInstance()
+            session.lockForConfiguration()
+            defer { session.unlockForConfiguration() }
+            try session.overrideOutputAudioPort(isEnabled ? .speaker : .none)
             rtcDebug("speaker_route enabled=\(isEnabled)")
         } catch {
-            // Route changes can fail while iOS is rebuilding the audio graph; media state should not lie.
-            rtcDebug("speaker_route_failed")
-            emit(.iceDisconnected)
+            rtcDebug("speaker_route_failed error=\(Self.safeErrorSummary(error))")
         }
     }
+    // WDT_IOS1_AUDIO_ROUTE_20260921_END
 
     // JHT_MOD_BEGIN RTC_VOICE_AUDIO_RECONCILE_20260914 - 修改开始：只恢复音频会话和既有扬声器意图，不改通话状态机
+    // WDT_IOS1_AUDIO_ROUTE_20260921_BEGIN: recover only this live media owner, never a ringing/closed call.
     func reconcileAudioSessionAfterSystemEvent(speakerOn: Bool) async throws {
+        guard currentContext != nil, peerConnection != nil, !isClosingCurrentSession else { return }
+        speakerEnabled = speakerOn
         try configureAudioSession()
-        try AVAudioSession.sharedInstance().overrideOutputAudioPort(speakerOn ? .speaker : .none)
+        let session = RTCAudioSession.sharedInstance()
+        session.lockForConfiguration()
+        defer { session.unlockForConfiguration() }
+        let usingSpeaker = session.currentRoute.outputs.contains { $0.portType == .builtInSpeaker }
+        let builtInOutput = session.currentRoute.outputs.contains {
+            $0.portType == .builtInSpeaker || $0.portType == .builtInReceiver
+        }
+        if builtInOutput && usingSpeaker != speakerOn {
+            try session.overrideOutputAudioPort(speakerOn ? .speaker : .none)
+        }
         rtcDebug("audio_session_reconciled speaker=\(speakerOn) route=\(audioRouteSummary())")
     }
+    // WDT_IOS1_AUDIO_ROUTE_20260921_END
     // JHT_MOD_END RTC_VOICE_AUDIO_RECONCILE_20260914 - 修改结束
 
     func stop(reason: String) async {
         await closeCurrent(reason: reason, sendBye: true, finishStream: true)
     }
 
+    // WDT_IOS1_AUDIO_ROUTE_20260921_BEGIN: acquire one balanced activation per media epoch, not per route notification.
     private func configureAudioSession() throws {
         let session = RTCAudioSession.sharedInstance()
         session.lockForConfiguration()
         defer { session.unlockForConfiguration() }
-        try session.setCategory(.playAndRecord, with: [.allowBluetoothHFP, .defaultToSpeaker])
-        try session.setMode(.voiceChat)
-        // JHT_MOD_BEGIN RTC_CONNECT_LATENCY_STABILITY_20260915 - 修改开始：通话音频低延迟偏好，不支持时不阻断通话
-        let avSession = AVAudioSession.sharedInstance()
-        try? avSession.setPreferredSampleRate(48_000)
-        try? avSession.setPreferredIOBufferDuration(0.01)
-        try? avSession.setPreferredInputNumberOfChannels(1)
-        try? avSession.setPreferredOutputNumberOfChannels(1)
-        // JHT_MOD_END RTC_CONNECT_LATENCY_STABILITY_20260915 - 修改结束
-        try session.setActive(true)
+        let options: AVAudioSession.CategoryOptions = speakerEnabled
+            ? [.allowBluetoothHFP, .defaultToSpeaker] : [.allowBluetoothHFP]
+        if session.category != AVAudioSession.Category.playAndRecord.rawValue || session.categoryOptions != options {
+            try session.setCategory(.playAndRecord, with: options)
+        }
+        if session.mode != AVAudioSession.Mode.voiceChat.rawValue { try session.setMode(.voiceChat) }
+        if ownedAudioSessionEpoch != sessionEpoch {
+            // Preferences belong to initial setup. Do not rebuild the audio graph on route feedback.
+            try? session.setPreferredSampleRate(48_000)
+            try? session.setPreferredIOBufferDuration(0.01)
+            try session.setActive(true)
+            ownedAudioSessionEpoch = sessionEpoch
+        }
         session.isAudioEnabled = true
-        rtcDebug("audio_session_ready route=\(audioRouteSummary())")
+        mediaStartStage = "audio_session_ready"
+        let av = session.session
+        rtcDebug("audio_session_ready route=\(audioRouteSummary()) sampleRate=\(av.sampleRate) ioBuffer=\(av.ioBufferDuration) inputs=\(av.inputNumberOfChannels) outputs=\(av.outputNumberOfChannels)")
     }
+    // WDT_IOS1_AUDIO_ROUTE_20260921_END
 
     private func createPeerConnection(context: VoiceMediaSessionContext) throws {
         let configuration = RTCConfiguration()
@@ -1198,21 +1271,18 @@ final class WebRTCVoiceMediaClient: NSObject, VoiceMediaClient {
             throw IMAPIError.server("本地语音轨道创建失败")
         }
         localAudioTrack = track
-        rtcDebug("local_audio_track_ready enabled=\(track.isEnabled)")
+        rtcDebug("local_audio_track_ready issue=media_degrade_or_long_call_end enabled=\(track.isEnabled) audioProcessing=default")
         emit(.localTrackReady)
     }
 
+    // WDT_RTC_ISSUE2_MEDIA_DEGRADE_20260919_BEGIN: use WebRTC default audio processing, matching Android's empty constraints.
     private func audioProcessingConstraints() -> RTCMediaConstraints {
         RTCMediaConstraints(
             mandatoryConstraints: nil,
-            optionalConstraints: [
-                "googEchoCancellation": "true",
-                "googAutoGainControl": "true",
-                "googNoiseSuppression": "true",
-                "googHighpassFilter": "true"
-            ]
+            optionalConstraints: nil
         )
     }
+    // WDT_RTC_ISSUE2_MEDIA_DEGRADE_20260919_END
 
     private func enableRemoteAudioTracks(_ tracks: [RTCAudioTrack], source: String, streamCount: Int) {
         let newTracks = tracks.filter { track in
@@ -1325,7 +1395,7 @@ final class WebRTCVoiceMediaClient: NSObject, VoiceMediaClient {
                     sampleSeq: self.qualitySampleSequence
                 ) else { continue }
                 self.rtcDebug(
-                    "voice_quality route=\(sample.connectionRoute) proto=\(sample.candidateProtocol) rtt_ms=\(Self.qualityMetric(sample.rttMS)) jitter_ms=\(Self.qualityMetric(sample.jitterMS)) loss_pct=\(Self.qualityMetric(sample.packetLossPct)) conceal_pct=\(Self.qualityMetric(sample.audioConcealmentPct)) in_kbps=\(Self.qualityMetric(sample.inboundBitrateKbps)) out_kbps=\(Self.qualityMetric(sample.outboundBitrateKbps))"
+                    "voice_quality issue=media_degrade_or_long_call_end route=\(sample.connectionRoute) proto=\(sample.candidateProtocol) rtt_ms=\(Self.qualityMetric(sample.rttMS)) jitter_ms=\(Self.qualityMetric(sample.jitterMS)) loss_pct=\(Self.qualityMetric(sample.packetLossPct)) conceal_pct=\(Self.qualityMetric(sample.audioConcealmentPct)) in_kbps=\(Self.qualityMetric(sample.inboundBitrateKbps)) out_kbps=\(Self.qualityMetric(sample.outboundBitrateKbps))"
                 )
             }
         }
@@ -1913,7 +1983,7 @@ final class WebRTCVoiceMediaClient: NSObject, VoiceMediaClient {
         let generation = recoveryGeneration
         let epoch = sessionEpoch
         recoveryBudget.startWindowIfNeeded()
-        rtcDebug("recovery_scheduled trigger=\(trigger) attempts=\(recoveryBudget.attempts)")
+        rtcDebug("recovery_scheduled issue=media_degrade_or_long_call_end trigger=\(trigger) attempts=\(recoveryBudget.attempts)")
         recoveryTask = Task { @MainActor [weak self] in
             guard let self else { return }
             if graceSeconds > 0 {
@@ -2085,7 +2155,7 @@ final class WebRTCVoiceMediaClient: NSObject, VoiceMediaClient {
 
     private func exhaustRecoveryIfCurrent(epoch: Int, generation: Int) async {
         guard isCurrentRecovery(epoch: epoch, generation: generation) else { return }
-        rtcDebug("recovery_exhausted attempts=\(recoveryBudget.attempts)")
+        rtcDebug("recovery_exhausted issue=media_degrade_or_long_call_end attempts=\(recoveryBudget.attempts)")
         recoveryTask = nil
         emit(.recoveryExhausted)
         await closeCurrent(
@@ -2099,6 +2169,11 @@ final class WebRTCVoiceMediaClient: NSObject, VoiceMediaClient {
         guard !isClosingCurrentSession else { return }
         isClosingCurrentSession = true
         defer { isClosingCurrentSession = false }
+        // JHT_MOD_BEGIN IOS_RTC_ANSWER_MEDIA_FAILURE_20260917 - 修改开始：在换代前确认音频会话所有权，避免把自身也误判为非拥有者
+        let shouldReleaseAudioSession = ownedAudioSessionEpoch == sessionEpoch
+        ownedAudioSessionEpoch = nil
+        mediaStartStage = "closed"
+        // JHT_MOD_END IOS_RTC_ANSWER_MEDIA_FAILURE_20260917 - 修改结束
         sessionEpoch &+= 1
         recoveryGeneration &+= 1
         let hadContext = currentContext != nil
@@ -2142,10 +2217,16 @@ final class WebRTCVoiceMediaClient: NSObject, VoiceMediaClient {
         lastInboundAudioPackets = 0
         let audioSession = RTCAudioSession.sharedInstance()
         audioSession.lockForConfiguration()
-        audioSession.isAudioEnabled = false
-        try? audioSession.setActive(false)
+        // JHT_MOD_BEGIN IOS_RTC_ANSWER_MEDIA_FAILURE_20260917 - 修改开始
+        if shouldReleaseAudioSession {
+            audioSession.isAudioEnabled = false
+            try? audioSession.setActive(false)
+        }
+        // JHT_MOD_END IOS_RTC_ANSWER_MEDIA_FAILURE_20260917 - 修改结束
         audioSession.unlockForConfiguration()
-        rtcDebug("closed reason=\(reason) sendBye=\(sendBye)")
+        // JHT_MOD_BEGIN IOS_RTC_ANSWER_MEDIA_FAILURE_20260917 - 修改开始
+        rtcDebug("closed reason=\(reason) sendBye=\(sendBye) releasedAudio=\(shouldReleaseAudioSession)")
+        // JHT_MOD_END IOS_RTC_ANSWER_MEDIA_FAILURE_20260917 - 修改结束
         if finishStream {
             eventContinuation?.finish()
             eventContinuation = nil
@@ -2182,6 +2263,25 @@ final class WebRTCVoiceMediaClient: NSObject, VoiceMediaClient {
         if trimmed.count <= 8 { return trimmed }
         return String(trimmed.prefix(4)) + "..." + String(trimmed.suffix(4))
     }
+
+    // JHT_MOD_BEGIN IOS_RTC_ANSWER_MEDIA_FAILURE_20260917 - 修改开始：只记录安全错误字段，不输出 userInfo/凭据
+    private static func safeErrorSummary(_ error: Error) -> String {
+        if error is CancellationError {
+            return "cancelled"
+        }
+        let nsError = error as NSError
+        var parts = [
+            "type=\(String(describing: type(of: error)))",
+            "domain=\(nsError.domain)",
+            "code=\(nsError.code)"
+        ]
+        if let underlying = nsError.userInfo[NSUnderlyingErrorKey] as? NSError {
+            parts.append("underlyingDomain=\(underlying.domain)")
+            parts.append("underlyingCode=\(underlying.code)")
+        }
+        return parts.joined(separator: " ")
+    }
+    // JHT_MOD_END IOS_RTC_ANSWER_MEDIA_FAILURE_20260917 - 修改结束
 
     private static func makeNegotiationID() -> String {
         "voice-neg-\(UUID().uuidString.lowercased())"

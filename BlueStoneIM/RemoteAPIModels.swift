@@ -3858,6 +3858,9 @@ enum RTCVoiceMediaEvent: String, Codable, Sendable, Equatable {
     case connectionRecovered
     case iceDisconnected
     case iceFailed
+    // JHT_MOD_BEGIN IOS_RTC_ANSWER_MEDIA_FAILURE_20260917 - 修改开始：区分本机媒体启动失败与真实 ICE 失败
+    case mediaStartFailed
+    // JHT_MOD_END IOS_RTC_ANSWER_MEDIA_FAILURE_20260917 - 修改结束
     case recoveryExhausted
     case closed
 
@@ -3875,7 +3878,9 @@ enum RTCVoiceMediaEvent: String, Codable, Sendable, Equatable {
             return .connecting
         case .iceDisconnected:
             return .unstable
-        case .iceFailed, .recoveryExhausted:
+        // JHT_MOD_BEGIN IOS_RTC_ANSWER_MEDIA_FAILURE_20260917 - 修改开始
+        case .iceFailed, .mediaStartFailed, .recoveryExhausted:
+        // JHT_MOD_END IOS_RTC_ANSWER_MEDIA_FAILURE_20260917 - 修改结束
             return .failed
         case .closed:
             return .closed

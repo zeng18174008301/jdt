@@ -149,16 +149,7 @@ extension AppState {
                 Task { @MainActor in
                     guard let self else { return }
                     let reason = rawReason.flatMap(AVAudioSession.RouteChangeReason.init(rawValue:))
-                    let projected: CallPromptRouteChangeReason
-                    switch reason {
-                    case .newDeviceAvailable: projected = .newDeviceAvailable
-                    case .oldDeviceUnavailable: projected = .oldDeviceUnavailable
-                    default: projected = .reconfiguration
-                    }
-                    self.renderCallPromptEnvironment(.audioRouteChanged(projected))
-                    // JHT_MOD_BEGIN RTC_VOICE_AUDIO_RECONCILE_20260914 - 修改开始
-                    self.reconcileActiveCallAudioSession(reason: "route_changed")
-                    // JHT_MOD_END RTC_VOICE_AUDIO_RECONCILE_20260914 - 修改结束
+                    self.handleCallAudioRouteChange(reason)
                 }
             }
         )
@@ -179,17 +170,40 @@ extension AppState {
         )
     }
 
+    // WDT_IOS1_AUDIO_ROUTE_20260921_BEGIN: category/override notifications are consequences of our own configuration.
+    func handleCallAudioRouteChange(_ reason: AVAudioSession.RouteChangeReason?) {
+        let projected: CallPromptRouteChangeReason
+        switch reason {
+        case .newDeviceAvailable: projected = .newDeviceAvailable
+        case .oldDeviceUnavailable: projected = .oldDeviceUnavailable
+        default: return
+        }
+        renderCallPromptEnvironment(.audioRouteChanged(projected))
+        reconcileActiveCallAudioSession(reason: "route_changed")
+    }
+    // WDT_IOS1_AUDIO_ROUTE_20260921_END
+
     // JHT_MOD_BEGIN RTC_VOICE_AUDIO_RECONCILE_20260914 - 修改开始：保留视频原恢复逻辑，同时为纯语音补齐音频会话恢复
     private func reconcileActiveCallAudioSession(reason: String) {
         guard let call = activeVoiceCall,
               let callID = call.callID?.trimmingCharacters(in: .whitespacesAndNewlines),
               !callID.isEmpty else { return }
+        // JHT_MOD_BEGIN IOS_RTC_ANSWER_MEDIA_FAILURE_20260917 - 修改开始：记录恢复时 CallKit 音频激活状态，只做诊断不改变现有恢复策略
+        // WDT_IOS1_AUDIO_ROUTE_20260921: distinguish replacements even when the server call ID is reused.
+        let localSessionID = call.id
+        let callKitAudioActive = voiceCallSystemAudioSessionActive
+        let callKitAudioGeneration = voiceCallSystemAudioSessionGeneration
+        voiceDebug("audio_reconcile reason=\(reason) call=\(Self.shortDebugID(callID)) video=\(call.isVideoCall) callkitAudioActive=\(callKitAudioActive) callkitAudioGen=\(callKitAudioGeneration)")
+        // JHT_MOD_END IOS_RTC_ANSWER_MEDIA_FAILURE_20260917 - 修改结束
         if call.isVideoCall {
             Task { [weak self, videoMediaClient] in
+                // WDT_IOS1_AUDIO_ROUTE_20260921: discard old reconciliation tasks after hangup/replacement.
+                guard let self, !self.isEndingActiveCall, self.activeVoiceCall?.callID == callID, self.activeVoiceCall?.id == localSessionID,
+                      self.activeVoiceCall?.isVideoCall == true else { return }
                 do {
                     try await videoMediaClient.reconcileAudioSessionAfterSystemEvent()
                 } catch {
-                    guard let self, self.activeVoiceCall?.callID == callID else { return }
+                    guard self.activeVoiceCall?.callID == callID else { return }
                     self.toast = reason == "media_services_reset"
                         ? "视频通话音频服务恢复失败，请结束后重试"
                         : "视频通话音频路由恢复失败"
@@ -199,11 +213,13 @@ extension AppState {
         }
         let speakerOn = call.speakerOn
         Task { [weak self, voiceMediaClient] in
+            // WDT_IOS1_AUDIO_ROUTE_20260921: discard old reconciliation tasks after hangup/replacement.
+            guard let self, !self.isEndingActiveCall, self.activeVoiceCall?.callID == callID, self.activeVoiceCall?.id == localSessionID,
+                  self.activeVoiceCall?.isVideoCall != true else { return }
             do {
                 try await voiceMediaClient.reconcileAudioSessionAfterSystemEvent(speakerOn: speakerOn)
             } catch {
-                guard let self,
-                      self.activeVoiceCall?.callID == callID,
+                guard self.activeVoiceCall?.callID == callID, self.activeVoiceCall?.id == localSessionID,
                       self.activeVoiceCall?.isVideoCall != true else { return }
                 self.toast = reason == "media_services_reset"
                     ? "语音通话音频服务恢复失败，请结束后重试"
@@ -346,6 +362,47 @@ extension AppState {
         directCallCleanupObligations[callID] = obligation.transferred(to: attempt)
     }
 
+    // WDT_RTC_IOS1_AUTODROP_20260921_BEGIN: keep call ownership stable while using latest same-session credentials.
+    func reconcileDirectCallCleanupContexts(from oldContext: IMAPIContext, to newContext: IMAPIContext) {
+        // WDT_IOS1_CLEANUP_CREDENTIALS_20260921_BEGIN: retain the last credentials of the resource's own login.
+        let oldBinding = DirectCallContextBinding(context: oldContext)
+        let latest = newContext.hasIMSession && DirectCallContextBinding(context: newContext) == oldBinding
+            ? newContext : oldContext
+        for key in directCallCleanupObligations.keys {
+            guard DirectCallContextBinding(context: directCallCleanupObligations[key]?.context ?? oldContext) == oldBinding else { continue }
+            directCallCleanupObligations[key]?.context = latest
+        }
+        for key in pendingRTCTerminalCompensations.keys {
+            guard DirectCallContextBinding(context: pendingRTCTerminalCompensations[key]?.context ?? oldContext) == oldBinding else { continue }
+            pendingRTCTerminalCompensations[key]?.context = latest
+        }
+        // WDT_IOS1_CLEANUP_CREDENTIALS_20260921_END
+    }
+
+    private func currentDirectCallRequestContext(
+        _ original: IMAPIContext,
+        attempt: DirectCallAttempt? = nil
+    ) throws -> IMAPIContext {
+        try Task.checkCancellation()
+        let current = apiContext
+        guard current.hasIMSession else { throw CancellationError() }
+        let binding = attempt?.context ?? DirectCallContextBinding(context: original)
+        guard DirectCallContextBinding(context: current) == binding else {
+            throw CancellationError()
+        }
+        return current
+    }
+
+    private func directCallCleanupContext(_ stored: IMAPIContext) -> IMAPIContext {
+        let current = apiContext
+        guard current.hasIMSession,
+              DirectCallContextBinding(context: current) == DirectCallContextBinding(context: stored) else {
+            return stored
+        }
+        return current
+    }
+    // WDT_RTC_IOS1_AUTODROP_20260921_END
+
     private func registerAcceptedDirectCallCleanupObligation(
         context: IMAPIContext,
         callID: String,
@@ -361,7 +418,8 @@ extension AppState {
         }
         directCallCleanupObligations[callID] = DirectCallCleanupObligation(
             callID: callID,
-            context: context,
+            // WDT_IOS1_CLEANUP_CREDENTIALS_20260921: accept may finish after this login refreshed.
+            context: directCallCleanupContext(context),
             sourceAttempt: attempt,
             responsibleOperationID: attempt.operationID
         )
@@ -458,10 +516,10 @@ extension AppState {
         let cleanupContext: IMAPIContext
         if let obligation = directCallCleanupObligations[callID],
            obligation.responsibleOperationID == attempt.operationID {
-            cleanupContext = obligation.context
+            cleanupContext = directCallCleanupContext(obligation.context)
             directCallCleanupObligations.removeValue(forKey: callID)
         } else {
-            cleanupContext = context
+            cleanupContext = directCallCleanupContext(context)
         }
         let cleanupScope = remoteDataScopeKey(for: cleanupContext)
         if isCurrentRemoteScope(cleanupScope) {
@@ -674,9 +732,34 @@ extension AppState {
             activeTab = .chats
             let targetRef = payload.targetRef.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !targetRef.isEmpty else {
-                Task { [weak self] in
-                    _ = await self?.refreshRemoteSnapshot(silent: true, force: true)
+                // JHT_MOD_BEGIN NOTIFICATION_TAP_CHANNEL_FALLBACK_20260917 - 修改开始：缺少 target_ref 时按通知携带的 channel_id 打开会话
+                guard let fallbackConversationID = notificationConversationID(fromOpenedMessagePayload: payload) else {
+                    Task { [weak self] in
+                        _ = await self?.refreshRemoteSnapshot(silent: true, force: true)
+                    }
+                    return
                 }
+                notificationTargetResolutionGeneration &+= 1
+                let generation = notificationTargetResolutionGeneration
+                let scope = remoteDataScopeKey(for: context)
+                let authFence = context.authSessionFence
+                Task { [weak self] in
+                    guard let self else { return }
+                    _ = await self.refreshRemoteSnapshot(silent: true, force: true)
+                    guard self.notificationTargetResolutionGeneration == generation,
+                          self.isCurrentRemoteScope(scope),
+                          self.apiContext.isSameAuthAuthority(as: authFence)
+                            || self.apiContext.credentialsAdvanced(since: authFence) else {
+                        return
+                    }
+                    let conversationID = self.notificationConversationID(fromOpenedMessagePayload: payload) ?? fallbackConversationID
+                    self.notificationConversationOpenRequest = IOSNotificationConversationOpenRequest(
+                        conversationID: conversationID,
+                        messageID: nil,
+                        channelSeq: payload.channelSeq > 0 ? payload.channelSeq : nil
+                    )
+                }
+                // JHT_MOD_END NOTIFICATION_TAP_CHANNEL_FALLBACK_20260917 - 修改结束
                 return
             }
             notificationTargetResolutionGeneration &+= 1
@@ -729,6 +812,20 @@ extension AppState {
             }
         }
     }
+
+    // JHT_MOD_BEGIN NOTIFICATION_TAP_CHANNEL_FALLBACK_20260917 - 修改开始：通知点击兜底会话定位
+    private func notificationConversationID(fromOpenedMessagePayload payload: IOSNotificationStatePayload) -> String? {
+        let channelID = payload.channelID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !channelID.isEmpty else { return nil }
+        if let conversation = conversations.first(where: { conversation in
+            conversation.id == channelID
+                || remoteChannelID(for: conversation).trimmingCharacters(in: .whitespacesAndNewlines) == channelID
+        }) {
+            return conversation.id
+        }
+        return channelID
+    }
+    // JHT_MOD_END NOTIFICATION_TAP_CHANNEL_FALLBACK_20260917 - 修改结束
 
     func consumeNotificationConversationOpenRequest(_ requestID: UUID) {
         guard notificationConversationOpenRequest?.id == requestID else { return }
@@ -843,11 +940,21 @@ extension AppState {
         case let .mute(callID, isMuted):
             setVoiceCallMutedFromSystem(callID: callID, isMuted: isMuted)
         case .audioSessionActivated:
+            // JHT_MOD_BEGIN IOS_RTC_ANSWER_MEDIA_FAILURE_20260917 - 修改开始：保留系统音频激活顺序，辅助定位真机接听失败
+            voiceCallSystemAudioSessionActive = true
+            voiceCallSystemAudioSessionGeneration &+= 1
+            voiceDebug("callkit_audio_session active=true gen=\(voiceCallSystemAudioSessionGeneration)")
+            // JHT_MOD_END IOS_RTC_ANSWER_MEDIA_FAILURE_20260917 - 修改结束
             renderCallPromptEnvironment(.callKitAudioSessionActivated)
             // JHT_MOD_BEGIN RTC_VOICE_AUDIO_RECONCILE_20260914 - 修改开始：CallKit 交回音频会话后，恢复当前通话的 WebRTC 音频配置
             reconcileActiveCallAudioSession(reason: "callkit_audio_session_activated")
             // JHT_MOD_END RTC_VOICE_AUDIO_RECONCILE_20260914 - 修改结束
         case .audioSessionDeactivated:
+            // JHT_MOD_BEGIN IOS_RTC_ANSWER_MEDIA_FAILURE_20260917 - 修改开始
+            voiceCallSystemAudioSessionActive = false
+            voiceCallSystemAudioSessionGeneration &+= 1
+            voiceDebug("callkit_audio_session active=false gen=\(voiceCallSystemAudioSessionGeneration)")
+            // JHT_MOD_END IOS_RTC_ANSWER_MEDIA_FAILURE_20260917 - 修改结束
             renderCallPromptEnvironment(.callKitAudioSessionDeactivated)
         case .providerReset:
             renderCallPromptEnvironment(.mediaServicesReset)
@@ -1124,6 +1231,19 @@ extension AppState {
         guard !normalizedCallID.isEmpty,
               !failedSystemAnsweredCallIDs.contains(normalizedCallID),
               rtcTerminalMarkersByCallID[normalizedCallID] == nil else { return }
+        // WDT_IOS1_CALLKIT_ANSWER_20260921_BEGIN: the app-requested action echoes through the system delegate.
+        // Preserve the mode of this exact, still-authorized answer operation before
+        // applying the system button's audio default. A different or invalidated
+        // operation must continue through the normal ownership and license checks.
+        if let operationID = callStore.incomingCallAnswerOperationID,
+           incomingVoiceCall?.callID?.trimmingCharacters(in: .whitespacesAndNewlines) == normalizedCallID,
+           directCallAttempts.values.contains(where: {
+               $0.operationID == operationID && $0.callID == normalizedCallID
+                   && $0.mediaMode == incomingCallAnswerMode && isCurrentDirectCallAttempt($0)
+           }) {
+            return
+        }
+        // WDT_IOS1_CALLKIT_ANSWER_20260921_END
         if incomingVoiceCall?.callID?.trimmingCharacters(in: .whitespacesAndNewlines) != normalizedCallID,
            let payload = voipPushPayloadsByCallID[normalizedCallID] {
             let isVideo = payload.callType.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "video"
@@ -1244,7 +1364,7 @@ extension AppState {
         // JHT_MOD_END IOS_RTC_REQUEST_BACKOFF_20260911
     ) {
         let normalizedCallID = callID.trimmingCharacters(in: .whitespacesAndNewlines)
-        let boundContext = context ?? apiContext
+        let boundContext = directCallCleanupContext(context ?? apiContext)
         guard !normalizedCallID.isEmpty, boundContext.hasIMSession else { return }
         let scope = remoteDataScopeKey(for: boundContext)
         // JHT_MOD_BEGIN IOS_RTC_REQUEST_BACKOFF_20260910
@@ -1418,23 +1538,42 @@ extension AppState {
                     return
                 }
                 do {
+                    // WDT_IOS1_CLEANUP_CREDENTIALS_20260921_BEGIN: a queued Task must not restore its stale captured token.
+                    let retained = self.pendingRTCTerminalCompensations[intent.callID]
+                    let latestOwnedContext: IMAPIContext
+                    if let retained,
+                       retained.action == intent.action,
+                       retained.idempotencyKey == intent.idempotencyKey,
+                       DirectCallContextBinding(context: retained.context) == DirectCallContextBinding(context: intent.context) {
+                        latestOwnedContext = retained.context
+                    } else {
+                        latestOwnedContext = intent.context
+                    }
+                    let requestContext = self.directCallCleanupContext(latestOwnedContext)
+                    // WDT_IOS1_CLEANUP_CREDENTIALS_20260921_END
+                    if var current = self.pendingRTCTerminalCompensations[intent.callID],
+                       current.action == intent.action,
+                       current.idempotencyKey == intent.idempotencyKey {
+                        current.context = requestContext
+                        self.pendingRTCTerminalCompensations[intent.callID] = current
+                    }
                     switch intent.action {
                     case .reject:
                         try await api.rejectRTCCall(
-                            context: intent.context,
+                            context: requestContext,
                             callID: intent.callID,
                             idempotencyKey: intent.idempotencyKey
                         )
                     case .cancel:
                         try await api.cancelRTCCall(
-                            context: intent.context,
+                            context: requestContext,
                             callID: intent.callID,
                             reason: intent.reason,
                             idempotencyKey: intent.idempotencyKey
                         )
                     case .hangup:
                         try await api.hangupRTCCall(
-                            context: intent.context,
+                            context: requestContext,
                             callID: intent.callID,
                             reason: intent.reason,
                             idempotencyKey: intent.idempotencyKey
@@ -1739,12 +1878,15 @@ extension AppState {
         toast = "\(caller.name) 正在呼叫你"
     }
 
+    // WDT_IOS1_CALLKIT_ANSWER_20260921_BEGIN: complete acceptIncomingVoiceCall implementation, including all failure cleanup branches.
     func acceptIncomingVoiceCall(fromSystem: Bool = false) {
         guard let call = incomingVoiceCall, !call.isVideo else { return }
         guard incomingCallAnswerMode == nil else { return }
         let systemCallID = call.callID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        // WDT_IOS1_CALLKIT_ANSWER_20260921: both app UI and system UI share CallKit audio ownership.
+        let usesSystemAudio = fromSystem || voiceCallSystem.hasPresentedCall(callID: systemCallID)
         guard guardCallLicenseForAction(.voice) else {
-            if fromSystem {
+            if usesSystemAudio {
                 rollbackFailedSystemAnswer(callID: systemCallID, context: apiContext,
                     reason: "callkit_answer_license_unavailable", rejectServer: true,
                     preservingEstablishedCall: true)
@@ -1756,7 +1898,7 @@ extension AppState {
         let context = apiContext
         guard context.hasIMSession else {
             toast = "登录会话不可用，请重新登录"
-            if fromSystem {
+            if usesSystemAudio {
                 rollbackFailedSystemAnswer(
                     callID: systemCallID,
                     context: context,
@@ -1786,6 +1928,7 @@ extension AppState {
                 finishDirectCallAttemptSetup(attempt)
             }
             var acceptedCallID: String?
+            var acceptedCallContext = context
             var installedActiveCall = false
             do {
                 try await ensureRTCProviderReadyForAudioCall(
@@ -1798,7 +1941,7 @@ extension AppState {
                     await ensureMicrophonePermissionForVoiceCall()
                 }
                 guard microphoneAuthorized else {
-                    if fromSystem {
+                    if usesSystemAudio {
                         rollbackFailedSystemAnswer(
                             callID: systemCallID,
                             context: context,
@@ -1809,6 +1952,13 @@ extension AppState {
                     return
                 }
                 guard isCurrentIncomingVoiceAnswer(call, attempt: attempt) else { return }
+                // WDT_IOS1_CALLKIT_ANSWER_20260921_BEGIN: answer the already-presented system call before media setup.
+                if usesSystemAudio && !fromSystem {
+                    try await awaitDirectCallStage(attempt) {
+                        try await voiceCallSystem.answerPresentedCall(callID: systemCallID)
+                    }
+                }
+                // WDT_IOS1_CALLKIT_ANSWER_20260921_END
                 try configureAudioSessionForVoiceCall()
                 guard isCurrentIncomingVoiceAnswer(call, attempt: attempt) else {
                     releaseAudioSessionForVoiceCall()
@@ -1817,7 +1967,9 @@ extension AppState {
                 let response: RemoteRTCCallResponse?
                 if let callID = call.callID, !callID.isEmpty {
                     response = try await awaitDirectCallStage(attempt) {
-                        try await api.acceptRTCCall(context: context, callID: callID)
+                        let requestContext = try currentDirectCallRequestContext(context, attempt: attempt)
+                        acceptedCallContext = requestContext
+                        return try await api.acceptRTCCall(context: requestContext, callID: callID)
                     }
                     acceptedCallID = response?.call.id.isEmpty == false ? response?.call.id : callID
                     attempt = try rebindDirectCallAttempt(
@@ -1826,7 +1978,7 @@ extension AppState {
                     )
                     if let acceptedCallID {
                         registerAcceptedDirectCallCleanupObligation(
-                            context: context,
+                            context: acceptedCallContext,
                             callID: acceptedCallID,
                             attempt: attempt
                         )
@@ -1838,7 +1990,7 @@ extension AppState {
                     releaseAudioSessionForVoiceCall()
                     if let acceptedCallID, !acceptedCallID.isEmpty {
                         await hangupDirectCallResourceIfOwned(
-                            context: context,
+                            context: acceptedCallContext,
                             callID: acceptedCallID,
                             by: attempt,
                             reason: "client_scope_changed"
@@ -1855,7 +2007,7 @@ extension AppState {
                     }
                     joinedRoom = try await awaitDirectCallStage(attempt) {
                         try await api.joinRTCRoom(
-                            context: context,
+                            context: currentDirectCallRequestContext(acceptedCallContext, attempt: attempt),
                             roomID: response.call.roomID,
                             rtcToken: response.rtcToken
                         )
@@ -1866,7 +2018,7 @@ extension AppState {
                     releaseAudioSessionForVoiceCall()
                     if let acceptedCallID, !acceptedCallID.isEmpty {
                         await hangupDirectCallResourceIfOwned(
-                            context: context,
+                            context: acceptedCallContext,
                             callID: acceptedCallID,
                             by: attempt,
                             reason: "client_scope_changed"
@@ -1906,7 +2058,7 @@ extension AppState {
                     let readyRoom = try await joinedRoomReadyForVoiceStart(
                         call: acceptedRemoteCall,
                         joinedRoom: joinedRoom,
-                        context: context,
+                        context: acceptedCallContext,
                         roomID: acceptedRemoteCall.roomID,
                         rtcToken: response?.rtcToken ?? acceptedRemoteCall.rtcToken,
                         scope: scope,
@@ -1922,13 +2074,20 @@ extension AppState {
                         )
                         if let acceptedCallID, !acceptedCallID.isEmpty {
                             await hangupDirectCallResourceIfOwned(
-                                context: context,
+                                context: acceptedCallContext,
                                 callID: acceptedCallID,
                                 by: attempt,
                                 reason: "client_scope_changed"
                             )
                         }
                         return
+                    }
+                    if usesSystemAudio {
+                        try await waitForCallKitAudioSessionBeforeVoiceStart(
+                            callID: acceptedRemoteCall.id,
+                            scope: scope,
+                            attempt: attempt
+                        )
                     }
                     startVoiceMediaSession(
                         call: acceptedRemoteCall,
@@ -1947,7 +2106,7 @@ extension AppState {
                 if let waitError = error as? RTCPeerParticipantWaitError {
                     if waitError == .timedOut,
                        isCurrentDirectCallAttempt(attempt) {
-                        if fromSystem {
+                        if usesSystemAudio {
                             rollbackFailedSystemAnswer(
                                 callID: acceptedCallID ?? systemCallID,
                                 context: context,
@@ -1959,7 +2118,7 @@ extension AppState {
                     }
                 }
                 guard isCurrentDirectCallAttempt(attempt) else {
-                    if fromSystem, acceptedCallID == nil {
+                    if usesSystemAudio, acceptedCallID == nil {
                         rollbackUnconnectedSystemAnswerIfOwned(attempt: attempt, context: context)
                     }
                     if let acceptedCallID {
@@ -1969,7 +2128,7 @@ extension AppState {
                             reason: "incoming_voice_scope_changed"
                         )
                         await hangupDirectCallResourceIfOwned(
-                            context: context,
+                            context: acceptedCallContext,
                             callID: acceptedCallID,
                             by: attempt,
                             reason: "client_scope_changed"
@@ -1999,14 +2158,14 @@ extension AppState {
                     )
                     Task {
                         await hangupDirectCallResourceIfOwned(
-                            context: context,
+                            context: acceptedCallContext,
                             callID: acceptedCallID,
                             by: attempt,
                             reason: failureReason
                         )
                     }
                 }
-                if fromSystem {
+                if usesSystemAudio {
                     rollbackFailedSystemAnswer(
                         callID: acceptedCallID ?? systemCallID,
                         context: context,
@@ -2018,6 +2177,7 @@ extension AppState {
             }
         }
     }
+    // WDT_IOS1_CALLKIT_ANSWER_20260921_END: complete acceptIncomingVoiceCall implementation.
 
     private func isCurrentIncomingVoiceAnswer(
         _ expected: IncomingVoiceCall,
@@ -2221,10 +2381,15 @@ extension AppState {
             }
             guard isCurrent() else { return }
             do {
-                _ = try await self.currentFileUploadConfig(context: context, scope: scope)
+                _ = try await self.currentFileUploadConfig(
+                    context: try self.currentDirectCallRequestContext(context),
+                    scope: scope
+                )
                 guard isCurrent() else { return }
                 let provider = try await self.currentRTCProvider(
-                    context: context, media: .video, isCurrent: isCurrent
+                    context: try self.currentDirectCallRequestContext(context),
+                    media: .video,
+                    isCurrent: isCurrent
                 )
                 guard isCurrent() else { return }
                 try self.requireVideoProviderCapabilities(provider)
@@ -2459,6 +2624,7 @@ extension AppState {
                 finishDirectCallAttemptSetup(attempt)
             }
             var createdCallID = ""
+            var createdCallContext = context
             do {
                 let provider = try await ensureRTCProviderReadyForVideoCall(
                     context: context,
@@ -2467,7 +2633,7 @@ extension AppState {
                 )
                 try await awaitDirectCallStage(attempt) {
                     try await api.updateRTCDeviceCapabilities(
-                        context: context,
+                        context: currentDirectCallRequestContext(context, attempt: attempt),
                         capabilities: localVideoCapabilities
                     )
                 }
@@ -2506,8 +2672,10 @@ extension AppState {
                     attempt: attempt
                 )
                 let response = try await awaitDirectCallStage(attempt) {
-                    try await api.createRTCVideoCall(
-                        context: context,
+                    let requestContext = try currentDirectCallRequestContext(context, attempt: attempt)
+                    createdCallContext = requestContext
+                    return try await api.createRTCVideoCall(
+                        context: requestContext,
                         calleeUID: target.id,
                         channelID: voiceCallChannelID(for: target, requestedChannelID: channelID),
                         capabilities: localVideoCapabilities
@@ -2525,7 +2693,7 @@ extension AppState {
                     attempt: attempt
                 )
                 let joined = try await initialOutgoingRoomJoin(
-                    response: response, context: context, attempt: attempt
+                    response: response, context: createdCallContext, attempt: attempt
                 )
                 try ensureVideoCallStartIsCurrent(
                     generation: generation,
@@ -2593,7 +2761,7 @@ extension AppState {
                     let readyRoom = try await joinedRoomReadyForVoiceStart(
                         call: remoteCall,
                         joinedRoom: joined,
-                        context: context,
+                        context: createdCallContext,
                         roomID: remoteCall.roomID,
                         rtcToken: response.rtcToken,
                         scope: scope,
@@ -2645,7 +2813,7 @@ extension AppState {
                         callID: createdCallID,
                         action: .cancel,
                         reason: "video_start_failed",
-                        context: context
+                        context: createdCallContext
                     )
                 }
                 // JHT_MOD_BEGIN RTC_VIDEO_FAST_PRESENT_FROM_CHAT_20260912 - 修改开始：发起失败时清理提前展示的空 callID 通话页，避免卡在视频页
@@ -2722,12 +2890,15 @@ extension AppState {
         return "无法发起视频通话：\(detail)"
     }
 
+    // WDT_IOS1_CALLKIT_ANSWER_20260921_BEGIN: complete acceptIncomingVideoCall implementation, including all failure cleanup branches.
     func acceptIncomingVideoCall(as mode: String, fromSystem: Bool = false) {
         guard let incoming = incomingVoiceCall, incoming.isVideo else { return }
         let normalizedMode = mode == "video" ? "video" : "audio"
         let systemCallID = incoming.callID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        // WDT_IOS1_CALLKIT_ANSWER_20260921: both app UI and system UI share CallKit audio ownership.
+        let usesSystemAudio = fromSystem || voiceCallSystem.hasPresentedCall(callID: systemCallID)
         guard guardCallLicenseForAction(normalizedMode == "video" ? .video : .voice) else {
-            if fromSystem {
+            if usesSystemAudio {
                 rollbackFailedSystemAnswer(callID: systemCallID, context: apiContext,
                     reason: "callkit_video_answer_license_unavailable", rejectServer: true,
                     preservingEstablishedCall: true)
@@ -2743,7 +2914,7 @@ extension AppState {
         let context = apiContext
         guard context.hasIMSession else {
             toast = "登录会话不可用，请重新登录"
-            if fromSystem {
+            if usesSystemAudio {
                 rollbackFailedSystemAnswer(
                     callID: systemCallID,
                     context: context,
@@ -2773,6 +2944,7 @@ extension AppState {
                 finishDirectCallAttemptSetup(attempt)
             }
             var acceptedCallID = ""
+            var acceptedCallContext = context
             var installedActiveCall = false
             do {
                 if normalizedMode == "video" {
@@ -2785,7 +2957,7 @@ extension AppState {
                 }
                 guard microphoneAuthorized else {
                     toast = "需要麦克风权限才能接听通话"
-                    if fromSystem {
+                    if usesSystemAudio {
                         rollbackFailedSystemAnswer(
                             callID: systemCallID,
                             context: context,
@@ -2796,6 +2968,13 @@ extension AppState {
                     return
                 }
                 guard isCurrentIncomingVideoAnswer(incoming, attempt: attempt) else { return }
+                // WDT_IOS1_CALLKIT_ANSWER_20260921_BEGIN: answer the already-presented system call before media setup.
+                if usesSystemAudio && !fromSystem {
+                    try await awaitDirectCallStage(attempt) {
+                        try await voiceCallSystem.answerPresentedCall(callID: systemCallID)
+                    }
+                }
+                // WDT_IOS1_CALLKIT_ANSWER_20260921_END
                 let cameraAvailable = videoMediaClient.cameraAvailable
                 let cameraAuthorized = normalizedMode == "video" && cameraAvailable
                     ? try await awaitDirectCallStage(attempt) {
@@ -2817,8 +2996,10 @@ extension AppState {
                     mediaMode: answerPlan.acceptedMode
                 )
                 let response = try await awaitDirectCallStage(attempt) {
-                    try await api.acceptRTCCall(
-                        context: context,
+                    let requestContext = try currentDirectCallRequestContext(context, attempt: attempt)
+                    acceptedCallContext = requestContext
+                    return try await api.acceptRTCCall(
+                        context: requestContext,
                         callID: incoming.callID ?? "",
                         mode: answerPlan.acceptedMode,
                         capabilities: localVideoCapabilities
@@ -2832,14 +3013,14 @@ extension AppState {
                     callID: acceptedCallID
                 )
                 registerAcceptedDirectCallCleanupObligation(
-                    context: context,
+                    context: acceptedCallContext,
                     callID: acceptedCallID,
                     attempt: attempt
                 )
                 guard isCurrentIncomingVideoAnswer(incoming, attempt: attempt) else {
                     if !acceptedCallID.isEmpty {
                         await hangupDirectCallResourceIfOwned(
-                            context: context,
+                            context: acceptedCallContext,
                             callID: acceptedCallID,
                             by: attempt,
                             reason: "client_scope_changed"
@@ -2849,7 +3030,7 @@ extension AppState {
                 }
                 let joined = try await awaitDirectCallStage(attempt) {
                     try await api.joinRTCRoom(
-                        context: context,
+                        context: currentDirectCallRequestContext(acceptedCallContext, attempt: attempt),
                         roomID: response.call.roomID,
                         rtcToken: response.rtcToken
                     )
@@ -2857,7 +3038,7 @@ extension AppState {
                 guard isCurrentIncomingVideoAnswer(incoming, attempt: attempt) else {
                     if !acceptedCallID.isEmpty {
                         await hangupDirectCallResourceIfOwned(
-                            context: context,
+                            context: acceptedCallContext,
                             callID: acceptedCallID,
                             by: attempt,
                             reason: "client_scope_changed"
@@ -2907,7 +3088,7 @@ extension AppState {
                 let readyRoom = try await joinedRoomReadyForVoiceStart(
                     call: remoteCall,
                     joinedRoom: joined,
-                    context: context,
+                    context: acceptedCallContext,
                     roomID: remoteCall.roomID,
                     rtcToken: response.rtcToken,
                     scope: scope,
@@ -2923,7 +3104,7 @@ extension AppState {
                     )
                     if !acceptedCallID.isEmpty {
                         await hangupDirectCallResourceIfOwned(
-                            context: context,
+                            context: acceptedCallContext,
                             callID: acceptedCallID,
                             by: attempt,
                             reason: "client_scope_changed"
@@ -2931,6 +3112,11 @@ extension AppState {
                     }
                     return
                 }
+                // WDT_IOS1_CALLKIT_ANSWER_20260921_BEGIN: video and video-as-audio also await system activation.
+                if usesSystemAudio {
+                    try await waitForCallKitAudioSessionBeforeVoiceStart(callID: remoteCall.id, scope: scope, attempt: attempt)
+                }
+                // WDT_IOS1_CALLKIT_ANSWER_20260921_END
                 if acceptedMediaMode == "video" {
                     startVideoMediaSession(
                         call: remoteCall,
@@ -2956,7 +3142,7 @@ extension AppState {
                 if let waitError = error as? RTCPeerParticipantWaitError {
                     if waitError == .timedOut,
                        isCurrentDirectCallAttempt(attempt) {
-                        if fromSystem {
+                        if usesSystemAudio {
                             rollbackFailedSystemAnswer(
                                 callID: acceptedCallID.isEmpty ? systemCallID : acceptedCallID,
                                 context: context,
@@ -2968,7 +3154,7 @@ extension AppState {
                     }
                 }
                 guard isCurrentDirectCallAttempt(attempt) else {
-                    if fromSystem, acceptedCallID.isEmpty {
+                    if usesSystemAudio, acceptedCallID.isEmpty {
                         rollbackUnconnectedSystemAnswerIfOwned(attempt: attempt, context: context)
                     }
                     clearActiveDirectCallResourceIfOwned(
@@ -2978,7 +3164,7 @@ extension AppState {
                     )
                     if !acceptedCallID.isEmpty {
                         await hangupDirectCallResourceIfOwned(
-                            context: context,
+                            context: acceptedCallContext,
                             callID: acceptedCallID,
                             by: attempt,
                             reason: "client_scope_changed"
@@ -3001,7 +3187,7 @@ extension AppState {
                     activeVoiceCall = nil
                     if !acceptedCallID.isEmpty {
                         await hangupDirectCallResourceIfOwned(
-                            context: context,
+                            context: acceptedCallContext,
                             callID: acceptedCallID,
                             by: attempt,
                             reason: rtcCallFailureReason(
@@ -3010,7 +3196,7 @@ extension AppState {
                             )
                         )
                     }
-                    if fromSystem {
+                    if usesSystemAudio {
                         rollbackFailedSystemAnswer(
                             callID: acceptedCallID,
                             context: context,
@@ -3030,7 +3216,7 @@ extension AppState {
                     )
                     incomingVoiceCall = nil
                     await hangupDirectCallResourceIfOwned(
-                        context: context,
+                        context: acceptedCallContext,
                         callID: acceptedCallID,
                         by: attempt,
                         reason: rtcCallFailureReason(
@@ -3039,7 +3225,7 @@ extension AppState {
                         )
                     )
                 }
-                if fromSystem {
+                if usesSystemAudio {
                     rollbackFailedSystemAnswer(
                         callID: acceptedCallID.isEmpty ? systemCallID : acceptedCallID,
                         context: context,
@@ -3051,6 +3237,7 @@ extension AppState {
             }
         }
     }
+    // WDT_IOS1_CALLKIT_ANSWER_20260921_END: complete acceptIncomingVideoCall implementation.
 
     private func isCurrentIncomingVideoAnswer(
         _ expected: IncomingVoiceCall,
@@ -3078,7 +3265,10 @@ extension AppState {
         attempt: DirectCallAttempt
     ) async throws -> RemoteRTCProvider {
         let config = try await awaitDirectCallStage(attempt) {
-            try await currentFileUploadConfig(context: context, scope: scope)
+            try await currentFileUploadConfig(
+                context: currentDirectCallRequestContext(context, attempt: attempt),
+                scope: scope
+            )
         }
         try requireRTCLicense(config.videoCallLicenseKnown ? config.videoCallEnabled : nil, media: .video)
         let provider = try await currentRTCProviderForCall(context: context, attempt: attempt)
@@ -3150,6 +3340,7 @@ extension AppState {
         Task {
             defer { finishDirectCallAttemptSetup(attempt) }
             var createdCallID: String?
+            var createdCallContext = context
             do {
                 let provider = try await ensureRTCProviderReadyForAudioCall(
                     context: context,
@@ -3162,8 +3353,10 @@ extension AppState {
                 guard microphoneAuthorized else { return }
                 try configureAudioSessionForVoiceCall()
                 let response = try await awaitDirectCallStage(attempt) {
-                    try await api.createRTCCall(
-                        context: context,
+                    let requestContext = try currentDirectCallRequestContext(context, attempt: attempt)
+                    createdCallContext = requestContext
+                    return try await api.createRTCCall(
+                        context: requestContext,
                         calleeUID: target.id,
                         callType: "audio",
                         channelID: callChannelID
@@ -3182,7 +3375,7 @@ extension AppState {
                         let idempotencyKey = makeRTCTerminalCompensationIdempotencyKey(action: .cancel)
                         Task {
                             try? await api.cancelRTCCall(
-                                context: context,
+                                context: createdCallContext,
                                 callID: cleanupCallID,
                                 reason: "client_scope_changed",
                                 idempotencyKey: idempotencyKey
@@ -3193,7 +3386,7 @@ extension AppState {
                     return
                 }
                 let joinedRoom = try await initialOutgoingRoomJoin(
-                    response: response, context: context, attempt: attempt
+                    response: response, context: createdCallContext, attempt: attempt
                 )
                 let remoteCall = rtcCall(response.call, withRTCToken: response.rtcToken)
                 guard isCurrentDirectCallAttempt(attempt) else {
@@ -3204,7 +3397,7 @@ extension AppState {
                         let idempotencyKey = makeRTCTerminalCompensationIdempotencyKey(action: .cancel)
                         Task {
                             try? await api.cancelRTCCall(
-                                context: context,
+                                context: createdCallContext,
                                 callID: cleanupCallID,
                                 reason: "client_scope_changed",
                                 idempotencyKey: idempotencyKey
@@ -3259,7 +3452,7 @@ extension AppState {
                     let readyRoom = try await joinedRoomReadyForVoiceStart(
                         call: remoteCall,
                         joinedRoom: joinedRoom,
-                        context: context,
+                        context: createdCallContext,
                         roomID: remoteCall.roomID,
                         rtcToken: response.rtcToken,
                         scope: scope,
@@ -3309,7 +3502,7 @@ extension AppState {
                         callID: createdCallID,
                         action: .cancel,
                         reason: rtcCallFailureReason(for: error, defaultReason: "network_error"),
-                        context: context
+                        context: createdCallContext
                     )
                 }
                 guard isCurrentDirectCallAttempt(attempt) else {
@@ -3343,7 +3536,11 @@ extension AppState {
         guard !response.requiresAcceptedDeviceBeforeJoin else { return nil }
         do {
             return try await awaitDirectCallStage(attempt) {
-                try await api.joinRTCRoom(context: context, roomID: response.call.roomID, rtcToken: response.rtcToken)
+                try await api.joinRTCRoom(
+                    context: currentDirectCallRequestContext(context, attempt: attempt),
+                    roomID: response.call.roomID,
+                    rtcToken: response.rtcToken
+                )
             }
         } catch {
             // A provider rollout can race the legacy observation; preserve the call.
@@ -3362,6 +3559,7 @@ extension AppState {
         callerUID: String, callerDeviceID: String, callerAppID: String,
         calleeUID: String, minimumStateVersion: Int64
     ) -> Bool {
+        // WDT_RTC_ISSUE1_CONNECT_DROP_20260919_BEGIN: Android accepted-device appID can be absent; bind by uid/device.
         guard let remote, remote.id == callID, remote.roomID == roomID,
               remote.status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "accepted",
               remote.stateVersion >= minimumStateVersion,
@@ -3370,8 +3568,8 @@ extension AppState {
               !callerDeviceID.isEmpty, !callerAppID.isEmpty,
               caller.uid == callerUID, caller.deviceID == callerDeviceID, caller.appID == callerAppID,
               accepted.uid == calleeUID,
-              !accepted.deviceID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              !accepted.appID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+              !accepted.deviceID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+        // WDT_RTC_ISSUE1_CONNECT_DROP_20260919_END
         return true
     }
 
@@ -3390,7 +3588,10 @@ extension AppState {
         attempt: DirectCallAttempt
     ) async throws -> RemoteRTCProvider {
         let config = try await awaitDirectCallStage(attempt) {
-            try await currentFileUploadConfig(context: context, scope: scope)
+            try await currentFileUploadConfig(
+                context: currentDirectCallRequestContext(context, attempt: attempt),
+                scope: scope
+            )
         }
         try requireRTCLicense(config.voiceCallLicenseKnown ? config.voiceCallEnabled : nil, media: .voice)
         let provider = try await currentRTCProviderForCall(context: context, attempt: attempt)
@@ -3452,17 +3653,23 @@ extension AppState {
         }
         guard !roomID.isEmpty, !rtcToken.isEmpty else {
             voiceDebug("start_failed missing_room_or_token call=\(Self.shortDebugID(callID))")
-            handleVoiceMediaEvent(.iceFailed, callID: callID, scope: scope)
+            // JHT_MOD_BEGIN IOS_RTC_ANSWER_MEDIA_FAILURE_20260917 - 修改开始：本机媒体启动前置资料缺失不再伪装成 ICE 失败
+            handleVoiceMediaEvent(.mediaStartFailed, callID: callID, scope: scope)
+            // JHT_MOD_END IOS_RTC_ANSWER_MEDIA_FAILURE_20260917 - 修改结束
             return
         }
         guard !localDeviceID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             voiceDebug("start_failed missing_self_device call=\(Self.shortDebugID(callID))")
-            handleVoiceMediaEvent(.iceFailed, callID: callID, scope: scope)
+            // JHT_MOD_BEGIN IOS_RTC_ANSWER_MEDIA_FAILURE_20260917 - 修改开始
+            handleVoiceMediaEvent(.mediaStartFailed, callID: callID, scope: scope)
+            // JHT_MOD_END IOS_RTC_ANSWER_MEDIA_FAILURE_20260917 - 修改结束
             return
         }
         guard !peerDeviceID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             voiceDebug("start_failed missing_peer_device call=\(Self.shortDebugID(callID))")
-            handleVoiceMediaEvent(.iceFailed, callID: callID, scope: scope)
+            // JHT_MOD_BEGIN IOS_RTC_ANSWER_MEDIA_FAILURE_20260917 - 修改开始
+            handleVoiceMediaEvent(.mediaStartFailed, callID: callID, scope: scope)
+            // JHT_MOD_END IOS_RTC_ANSWER_MEDIA_FAILURE_20260917 - 修改结束
             return
         }
         activeVoiceMediaCallID = callID
@@ -3560,9 +3767,13 @@ extension AppState {
             guard let self else { return }
             do {
                 self.voiceDebug("client_start_call call=\(Self.shortDebugID(callID))")
-                let events = try await self.awaitDirectCallStage(attempt) {
-                    try await voiceMediaClient.start(context: context)
-                }
+                // JHT_MOD_BEGIN IOS_RTC_RECEIVER_MEDIA_START_RETRY_20260917 - 修改开始：接收方音频会话刚切换时，媒体启动瞬时失败先短暂重试，避免接听后立即结束
+                let events = try await self.startVoiceMediaClientWithStartupRetry(
+                    voiceMediaClient,
+                    context: context,
+                    attempt: attempt
+                )
+                // JHT_MOD_END IOS_RTC_RECEIVER_MEDIA_START_RETRY_20260917 - 修改结束
                 let speakerOn = self.activeVoiceCall?.speakerOn ?? true
                 await voiceMediaClient.setSpeakerEnabled(speakerOn)
                 for await event in events {
@@ -3581,16 +3792,83 @@ extension AppState {
                 guard attempt.map(self.isCurrentDirectCallAttempt) ?? true else {
                     return
                 }
-                self.voiceDebug("client_start_failed call=\(Self.shortDebugID(callID)) error=\(Self.safeVoiceErrorSummary(error))")
+                // JHT_MOD_BEGIN IOS_RTC_ANSWER_MEDIA_FAILURE_20260917 - 修改开始：媒体启动抛错保留阶段语义，不再归类为真实 ICE 失败
+                self.voiceDebug("client_start_failed stage=media_start call=\(Self.shortDebugID(callID)) error=\(Self.safeVoiceErrorSummary(error))")
                 self.handleVoiceMediaEvent(
-                    .iceFailed,
+                    .mediaStartFailed,
                     callID: callID,
                     scope: scope,
                     operationID: attempt?.operationID
                 )
+                // JHT_MOD_END IOS_RTC_ANSWER_MEDIA_FAILURE_20260917 - 修改结束
             }
         }
     }
+
+    // JHT_MOD_BEGIN IOS_RTC_RECEIVER_MEDIA_START_RETRY_20260917 - 修改开始：仅对接收方媒体启动做短重试，呼出方保持原有首错即停语义
+    private func startVoiceMediaClientWithStartupRetry(
+        _ voiceMediaClient: any VoiceMediaClient,
+        context: VoiceMediaSessionContext,
+        attempt: DirectCallAttempt?
+    ) async throws -> AsyncStream<RTCVoiceMediaEvent> {
+        let maxAttempts = context.isCaller ? 1 : 3
+        var startAttempt = 1
+        while true {
+            do {
+                return try await awaitDirectCallStage(attempt) {
+                    try await voiceMediaClient.start(context: context)
+                }
+            } catch {
+                guard startAttempt < maxAttempts,
+                      shouldRetryVoiceMediaStartup(error) else {
+                    throw error
+                }
+                voiceDebug(
+                    "client_start_retry call=\(Self.shortDebugID(context.callID)) attempt=\(startAttempt + 1) error=\(Self.safeVoiceErrorSummary(error))"
+                )
+                if let attempt {
+                    try ensureDirectCallAttemptIsCurrent(attempt)
+                } else if Task.isCancelled {
+                    throw CancellationError()
+                }
+                try await Task.sleep(nanoseconds: UInt64(startAttempt) * 250_000_000)
+                if let attempt {
+                    try ensureDirectCallAttemptIsCurrent(attempt)
+                } else if Task.isCancelled {
+                    throw CancellationError()
+                }
+                startAttempt += 1
+            }
+        }
+    }
+
+    private func shouldRetryVoiceMediaStartup(_ error: Error) -> Bool {
+        if error is CancellationError {
+            return false
+        }
+        guard let apiError = error as? IMAPIError else {
+            return true
+        }
+        switch apiError {
+        case let .server(message):
+            let normalized = message.lowercased()
+            if normalized.contains("ice 配置缺失")
+                || normalized.contains("房间信息不完整")
+                || normalized.contains("设备信息不完整") {
+                return false
+            }
+            return normalized.contains("audio")
+                || normalized.contains("microphone")
+                || normalized.contains("peerconnection")
+                || normalized.contains("track")
+                || normalized.contains("音频")
+                || normalized.contains("麦克风")
+                || normalized.contains("轨道")
+        default:
+            return false
+        }
+    }
+    // JHT_MOD_END IOS_RTC_RECEIVER_MEDIA_START_RETRY_20260917 - 修改结束
 
     private func startVoiceMediaSessionFromActiveCall(
         scope: String,
@@ -3627,7 +3905,9 @@ extension AppState {
         let context = apiContext
         guard context.hasIMSession else {
             voiceDebug("join_failed no_im_session call=\(Self.shortDebugID(callID))")
-            handleVoiceMediaEvent(.iceFailed, callID: callID, scope: scope)
+            // JHT_MOD_BEGIN IOS_RTC_ANSWER_MEDIA_FAILURE_20260917 - 修改开始
+            handleVoiceMediaEvent(.mediaStartFailed, callID: callID, scope: scope)
+            // JHT_MOD_END IOS_RTC_ANSWER_MEDIA_FAILURE_20260917 - 修改结束
             return
         }
         guard !call.requiresAcceptedDeviceBeforeJoin || Self.hasBoundAcceptedOutgoingCall(
@@ -3656,7 +3936,7 @@ extension AppState {
                       self.rtcTerminalMarkersByCallID[callID] == nil else { return }
                 let joinedRoom = try await self.awaitDirectCallStage(directCallAttempt) {
                     try await self.api.joinRTCRoom(
-                        context: context,
+                        context: self.currentDirectCallRequestContext(context, attempt: directCallAttempt),
                         roomID: roomID,
                         rtcToken: rtcToken
                     )
@@ -3745,7 +4025,9 @@ extension AppState {
                 if error is RTCPeerParticipantWaitError {
                     return
                 }
-                self?.handleVoiceMediaEvent(.iceFailed, callID: callID, scope: scope)
+                // JHT_MOD_BEGIN IOS_RTC_ANSWER_MEDIA_FAILURE_20260917 - 修改开始：join/准备失败不是 ICE 传输失败
+                self?.handleVoiceMediaEvent(.mediaStartFailed, callID: callID, scope: scope)
+                // JHT_MOD_END IOS_RTC_ANSWER_MEDIA_FAILURE_20260917 - 修改结束
             }
         }
     }
@@ -3790,7 +4072,7 @@ extension AppState {
             )
             let participants = try await awaitDirectCallStage(attempt) {
                 try await api.listRTCRoomParticipants(
-                    context: context,
+                    context: currentDirectCallRequestContext(context, attempt: attempt),
                     roomID: roomID,
                     rtcToken: rtcToken
                 )
@@ -3814,6 +4096,7 @@ extension AppState {
                 return current
             }
         }
+        voiceDebug("participants_timeout issue=connect_drop call=\(Self.shortDebugID(call.id)) attempts=\(maximumAttempts)")
         markActiveCallPeerWaitFailed(callID: call.id)
         await terminateRTCCallAfterPeerWaitTimeout(
             call: call,
@@ -3823,6 +4106,60 @@ extension AppState {
         )
         throw RTCPeerParticipantWaitError.timedOut
     }
+
+    // JHT_MOD_BEGIN IOS_RTC_CALLKIT_AUDIO_WAIT_20260917 - 修改开始：系统接听后等 CallKit 音频会话激活，再启动本地 WebRTC 音频
+    private func waitForCallKitAudioSessionBeforeVoiceStart(
+        callID: String,
+        scope: String,
+        attempt: DirectCallAttempt?
+    ) async throws {
+        let normalizedCallID = callID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedCallID.isEmpty,
+              voiceCallSystem.hasPresentedCall(callID: normalizedCallID) else { return }
+        let startedGeneration = voiceCallSystemAudioSessionGeneration
+        if voiceCallSystemAudioSessionActive {
+            voiceDebug("callkit_audio_wait_ready call=\(Self.shortDebugID(normalizedCallID)) gen=\(startedGeneration)")
+            return
+        }
+        voiceDebug("callkit_audio_wait_start call=\(Self.shortDebugID(normalizedCallID)) gen=\(startedGeneration)")
+        let maximumAttempts = 20
+        for pollAttempt in 1...maximumAttempts {
+            if let attempt {
+                try ensureDirectCallAttemptIsCurrent(attempt)
+            }
+            guard !Task.isCancelled,
+                  isCurrentRemoteScope(scope),
+                  !isEndingActiveCall,
+                  activeVoiceCall?.callID?.trimmingCharacters(in: .whitespacesAndNewlines) == normalizedCallID else {
+                throw CancellationError()
+            }
+            if voiceCallSystemAudioSessionActive {
+                voiceDebug("callkit_audio_wait_ready call=\(Self.shortDebugID(normalizedCallID)) attempt=\(pollAttempt) gen=\(voiceCallSystemAudioSessionGeneration)")
+                return
+            }
+            do {
+                try await Task.sleep(nanoseconds: 100_000_000)
+            } catch {
+                throw CancellationError()
+            }
+        }
+        if let attempt {
+            try ensureDirectCallAttemptIsCurrent(attempt)
+        }
+        guard !Task.isCancelled,
+              isCurrentRemoteScope(scope),
+              !isEndingActiveCall,
+              activeVoiceCall?.callID?.trimmingCharacters(in: .whitespacesAndNewlines) == normalizedCallID else {
+            throw CancellationError()
+        }
+        if voiceCallSystemAudioSessionActive {
+            voiceDebug("callkit_audio_wait_ready call=\(Self.shortDebugID(normalizedCallID)) attempt=final gen=\(voiceCallSystemAudioSessionGeneration)")
+            return
+        }
+        voiceDebug("callkit_audio_wait_timeout call=\(Self.shortDebugID(normalizedCallID)) fromGen=\(startedGeneration) toGen=\(voiceCallSystemAudioSessionGeneration)")
+        throw IMAPIError.server("audio session activation timeout")
+    }
+    // JHT_MOD_END IOS_RTC_CALLKIT_AUDIO_WAIT_20260917 - 修改结束
 
     private func ensureRTCParticipantWaitIsCurrent(
         callID: String,
@@ -4221,7 +4558,19 @@ extension AppState {
         if error is CancellationError {
             return "cancelled"
         }
-        return String(describing: type(of: error))
+        // JHT_MOD_BEGIN IOS_RTC_ANSWER_MEDIA_FAILURE_20260917 - 修改开始：保留安全的 NSError 定位字段，不记录 userInfo/token
+        let nsError = error as NSError
+        var parts = [
+            "type=\(String(describing: type(of: error)))",
+            "domain=\(nsError.domain)",
+            "code=\(nsError.code)"
+        ]
+        if let underlying = nsError.userInfo[NSUnderlyingErrorKey] as? NSError {
+            parts.append("underlyingDomain=\(underlying.domain)")
+            parts.append("underlyingCode=\(underlying.code)")
+        }
+        return parts.joined(separator: " ")
+        // JHT_MOD_END IOS_RTC_ANSWER_MEDIA_FAILURE_20260917 - 修改结束
     }
 
     private func stopVoiceMediaSession(reason: String) {
@@ -4580,6 +4929,9 @@ extension AppState {
         ) {
             let stateVersion = activeVoiceCall?.stateVersion ?? 0
             let callKind = activeVoiceCall?.isVideoCall == true ? "视频" : "语音"
+            voiceDebug(
+                "media_heartbeat_terminal issue=media_degrade_or_long_call_end call=\(Self.shortDebugID(session.callID)) error=\(Self.safeVoiceErrorSummary(error))"
+            )
             stopRTCMediaStateHeartbeat(reason: "authoritative_terminal")
             finishVoiceCallFromRemote(
                 status: "已结束",
@@ -4593,7 +4945,7 @@ extension AppState {
             return
         }
         voiceDebug(
-            "media_heartbeat_failed call=\(Self.shortDebugID(session.callID)) error=\(Self.safeVoiceErrorSummary(error))"
+            "media_heartbeat_failed issue=media_degrade_or_long_call_end call=\(Self.shortDebugID(session.callID)) error=\(Self.safeVoiceErrorSummary(error))"
         )
     }
 
@@ -4826,6 +5178,9 @@ extension AppState {
                 guard attempt.map(self.isCurrentDirectCallAttempt) ?? true else {
                     return
                 }
+                // JHT_MOD_BEGIN IOS_RTC_ANSWER_MEDIA_FAILURE_20260917 - 修改开始：视频本地媒体启动失败保留安全错误摘要
+                self.voiceDebug("video_client_start_failed stage=media_start call=\(Self.shortDebugID(callID)) error=\(Self.safeVoiceErrorSummary(error))")
+                // JHT_MOD_END IOS_RTC_ANSWER_MEDIA_FAILURE_20260917 - 修改结束
                 self.handleVideoMediaEvent(
                     .failed,
                     callID: callID,
@@ -5020,17 +5375,26 @@ extension AppState {
                 }
             }
             do {
-                _ = try await self.currentFileUploadConfig(context: context, scope: scope)
+                _ = try await self.currentFileUploadConfig(
+                    context: try self.currentDirectCallRequestContext(context),
+                    scope: scope
+                )
                 guard DirectCallContextBinding(context: self.apiContext) == binding,
                       self.guardCallLicenseForAction(.voice),
                       self.callLicenseActionGeneration(for: .voice) == capabilityGeneration,
                       self.activeVoiceCall?.callID == callID else { return }
-                let provider = try await api.rtcProvider(context: context)
+                let provider = try await api.rtcProvider(
+                    context: try self.currentDirectCallRequestContext(context)
+                )
                 guard DirectCallContextBinding(context: self.apiContext) == binding,
                       self.callLicenseActionGeneration(for: .voice) == capabilityGeneration,
                       self.activeVoiceCall?.callID == callID else { return }
                 try self.requireRTCLicense(provider.voiceCallEnabled, media: .voice)
-                _ = try await api.downgradeRTCCall(context: context, callID: callID, reason: "user_downgrade")
+                _ = try await api.downgradeRTCCall(
+                    context: try self.currentDirectCallRequestContext(context),
+                    callID: callID,
+                    reason: "user_downgrade"
+                )
                 guard self.isCurrentRemoteScope(scope),
                       self.callLicenseActionGeneration(for: .voice) == capabilityGeneration,
                       self.activeVoiceCall?.callID == callID else { return }
@@ -5106,6 +5470,7 @@ extension AppState {
         }
         voiceDebug("media_event call=\(Self.shortDebugID(normalizedCallID.isEmpty ? (call.callID ?? "") : normalizedCallID)) event=\(event.rawValue) state=\(event.mediaState.rawValue)")
         if event == .recoveryExhausted {
+            voiceDebug("media_recovery_exhausted issue=media_degrade_or_long_call_end call=\(Self.shortDebugID(normalizedCallID.isEmpty ? (call.callID ?? "") : normalizedCallID))")
             let failedCallID = call.callID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             let requestContext = apiContext
             finishVoiceCallFromRemote(
@@ -5147,7 +5512,9 @@ extension AppState {
         case .iceDisconnected:
             call.voiceTransportConnected = false
             call.remoteAudioRTPReady = false
-        case .iceFailed, .recoveryExhausted, .closed:
+        // JHT_MOD_BEGIN IOS_RTC_ANSWER_MEDIA_FAILURE_20260917 - 修改开始：媒体启动失败参与同一失败状态清理
+        case .iceFailed, .mediaStartFailed, .recoveryExhausted, .closed:
+        // JHT_MOD_END IOS_RTC_ANSWER_MEDIA_FAILURE_20260917 - 修改结束
             call.voiceTransportConnected = false
             call.remoteAudioRTPReady = false
         default:
@@ -5198,14 +5565,27 @@ extension AppState {
         case .unstable:
             _ = advanceCallLifecycle(callID: currentCallID, to: .reconnecting, reason: "voice_media_reconnecting")
         case .failed:
+            // JHT_MOD_BEGIN IOS_RTC_ANSWER_MEDIA_FAILURE_20260917 - 修改开始：本地 accepted 后不可恢复失败时，清理前保留上下文并补偿 hangup
+            let requestContext = apiContext
+            let isMediaStartFailure = event == .mediaStartFailed
+            let endReason = isMediaStartFailure ? "media_start_failed" : "media_failed"
             finishVoiceCallFromRemote(
                 status: "连接失败",
-                subtitle: "语音通话 · 媒体连接失败",
-                toastText: "语音通话连接失败",
-                endReason: "media_failed",
+                subtitle: isMediaStartFailure ? "语音通话 · 音频设备启动失败" : "语音通话 · 媒体连接失败",
+                toastText: isMediaStartFailure ? "音频设备启动失败，通话已结束" : "语音通话连接失败",
+                endReason: endReason,
                 expectedCallID: currentCallID,
                 lifecyclePhase: .failure
             )
+            if !currentCallID.isEmpty, requestContext.hasIMSession {
+                enqueueRTCTerminalCompensation(
+                    callID: currentCallID,
+                    action: .hangup,
+                    reason: endReason,
+                    context: requestContext
+                )
+            }
+            // JHT_MOD_END IOS_RTC_ANSWER_MEDIA_FAILURE_20260917 - 修改结束
         case .preparing, .signaling, .connecting, .closed:
             break
         }
@@ -5578,6 +5958,13 @@ extension AppState {
         }
     }
 
+    // WDT_RTC_ISSUE1_CONNECT_DROP_20260919_BEGIN: only apply outgoing ringing timeout while it is still truly ringing.
+    private static func shouldRunOutgoingRingingTimeout(_ call: VoiceCallSession) -> Bool {
+        guard shouldCancelActiveCall(call) else { return false }
+        return call.statusText.trimmingCharacters(in: .whitespacesAndNewlines) == "等待对方接听"
+    }
+    // WDT_RTC_ISSUE1_CONNECT_DROP_20260919_END
+
     private func isRTCCallAlreadyTerminalError(_ error: Error) -> Bool {
         let code = RTCMediaStateHeartbeatFailurePolicy.normalizedErrorCode(error)
         if code == "rtc_call_not_active" || code == "rtc_call_not_found" {
@@ -5834,9 +6221,9 @@ extension AppState {
             cancelVoiceCallWatchdog()
             return
         }
-        guard activeVoiceCall?.callID == callID,
-              activeVoiceCall?.direction == "呼出",
-              activeVoiceCall?.statusText != "通话中" else {
+        guard let activeCall = activeVoiceCall,
+              activeCall.callID?.trimmingCharacters(in: .whitespacesAndNewlines) == callID,
+              Self.shouldRunOutgoingRingingTimeout(activeCall) else {
             cancelVoiceCallWatchdog()
             return
         }
@@ -5852,13 +6239,14 @@ extension AppState {
                     self.cancelVoiceCallWatchdog()
                     return
                 }
-                guard self.activeVoiceCall?.callID == callID,
-                      self.activeVoiceCall?.direction == "呼出",
-                      self.activeVoiceCall?.statusText != "通话中" else {
+                guard let activeCall = self.activeVoiceCall,
+                      activeCall.callID?.trimmingCharacters(in: .whitespacesAndNewlines) == callID,
+                      Self.shouldRunOutgoingRingingTimeout(activeCall) else {
                     self.cancelVoiceCallWatchdog()
                     return
                 }
                 self.cancelVoiceCallWatchdog()
+                self.voiceDebug("outgoing_watchdog_timeout issue=connect_drop call=\(Self.shortDebugID(callID))")
                 Task {
                     try? await self.api.timeoutRTCCall(context: context, callID: callID, reason: "client_watchdog_timeout")
                 }
@@ -6007,6 +6395,12 @@ extension AppState {
                 payload: payload,
                 callPayload: callPayload
             ) == false {
+                // WDT_RTC_ISSUE1_CONNECT_DROP_20260919_BEGIN: do not treat our in-flight answer as answered elsewhere.
+                if shouldDeferAcceptedElsewhereWhileAnswering(callID: callID) {
+                    voiceDebug("accepted_elsewhere_deferred issue=connect_drop call=\(Self.shortDebugID(callID)) reason=local_answer_in_progress")
+                    return true
+                }
+                // WDT_RTC_ISSUE1_CONNECT_DROP_20260919_END
                 finishVoiceCallFromRemote(
                     status: "已在其他设备接听",
                     subtitle: "语音通话 · 已在其他设备接听",
@@ -6091,6 +6485,28 @@ extension AppState {
             "rtc.call.timed_out"
         ].contains(event)
     }
+
+    // WDT_RTC_ISSUE1_CONNECT_DROP_20260919_BEGIN: local answering races can precede accepted-device reconciliation.
+    private func shouldDeferAcceptedElsewhereWhileAnswering(callID: String) -> Bool {
+        let normalizedCallID = callID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedCallID.isEmpty else { return false }
+        if let active = activeVoiceCall,
+           active.callID?.trimmingCharacters(in: .whitespacesAndNewlines) == normalizedCallID,
+           active.direction == "来电",
+           [.preparing, .signaling, .connecting].contains(active.mediaState) {
+            return true
+        }
+        guard incomingCallAnswerMode != nil
+                || callStore.incomingCallAnswerOperationID != nil else {
+            return false
+        }
+        if incomingVoiceCall?.callID?.trimmingCharacters(in: .whitespacesAndNewlines) == normalizedCallID {
+            return true
+        }
+        return activeVoiceCall?.callID?.trimmingCharacters(in: .whitespacesAndNewlines) == normalizedCallID
+            && activeVoiceCall?.direction == "来电"
+    }
+    // WDT_RTC_ISSUE1_CONNECT_DROP_20260919_END
 
     private func acceptedRTCCallIsBoundToCurrentCallee(
         payload: [String: JSONValue],
@@ -6440,6 +6856,12 @@ extension AppState {
                     matched,
                     identities: identities
                 ) {
+                    // WDT_RTC_ISSUE1_CONNECT_DROP_20260919_BEGIN: avoid ending the call while this device is accepting.
+                    if shouldDeferAcceptedElsewhereWhileAnswering(callID: matched.id) {
+                        voiceDebug("calls_reconcile_current issue=connect_drop call=\(Self.shortDebugID(matched.id)) action=answered_elsewhere_deferred")
+                        return
+                    }
+                    // WDT_RTC_ISSUE1_CONNECT_DROP_20260919_END
                     voiceDebug("calls_reconcile_current call=\(Self.shortDebugID(matched.id)) action=answered_elsewhere")
                     finishVoiceCallFromRemote(
                         status: "已在其他设备接听",
