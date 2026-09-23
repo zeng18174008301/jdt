@@ -876,9 +876,12 @@ final class BlueStoneApplicationDelegate: NSObject, UIApplicationDelegate {
 	) -> Bool {
 		IMRuntimeColdLaunchLifecycle.shared.beginProcessLaunch()
 		UNUserNotificationCenter.current().delegate = self
-        if !JHTRuntimeFeatureFlags.disableRTCRuntime {
+        // WDT_IOS1_CALLKIT_CN_POLICY_20260923_BEGIN: only start the system call layer when this build explicitly enables it.
+        if !JHTRuntimeFeatureFlags.disableRTCRuntime,
+           SystemCallIntegrationPolicy.usesSystemCallIntegration {
             CallKitPushVoiceCallManager.shared.start()
         }
+        // WDT_IOS1_CALLKIT_CN_POLICY_20260923_END
 		if let remote = launchOptions?[.remoteNotification] as? [AnyHashable: Any] {
 			_ = IOSNotificationRuntime.shared.handleRemoteNotification(remote, processState: .terminated)
             // JHT_MOD_BEGIN NOTIFICATION_TAP_COLD_LAUNCH_20260917 - 修改开始：冷启动由通知进入时也投递打开会话事件
@@ -1049,9 +1052,11 @@ private struct BlueStoneRuntimeRoot: View {
         _state = StateObject(
             wrappedValue: AppState(
                 api: api,
-                voiceCallSystem: JHTRuntimeFeatureFlags.disableRTCRuntime
+                // WDT_IOS1_CALLKIT_CN_POLICY_20260923_BEGIN: China-review build keeps RTC calls in-app and avoids CallKit singleton initialization.
+                voiceCallSystem: JHTRuntimeFeatureFlags.disableRTCRuntime || !SystemCallIntegrationPolicy.usesSystemCallIntegration
                     ? NoopVoiceCallSystemIntegration()
                     : CallKitPushVoiceCallManager.shared
+                // WDT_IOS1_CALLKIT_CN_POLICY_20260923_END
             )
         )
     }

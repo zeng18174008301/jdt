@@ -26,6 +26,24 @@ enum JHTRuntimeFeatureFlags {
     }
 }
 
+enum SystemCallIntegrationPolicy {
+    // WDT_IOS1_CALLKIT_CN_POLICY_20260923_BEGIN: submitted build uses in-app RTC calls without CallKit.
+    #if WDT_ENABLE_CALLKIT
+    static let isCallKitEnabled = true
+    static let isVoIPPushRegistrationEnabled = true
+    #else
+    static let isCallKitEnabled = false
+    static let isVoIPPushRegistrationEnabled = false
+    #endif
+
+    static let allowsInAppRTCCalls = true
+
+    static var usesSystemCallIntegration: Bool {
+        isCallKitEnabled && isVoIPPushRegistrationEnabled
+    }
+    // WDT_IOS1_CALLKIT_CN_POLICY_20260923_END
+}
+
 enum MainTab: String, CaseIterable, Identifiable {
     case chats
     case contacts

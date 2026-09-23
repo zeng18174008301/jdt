@@ -1127,6 +1127,9 @@ extension AppState {
     }
 
     func registerPendingVoIPDeviceIfPossible(reason: String) {
+        // WDT_IOS1_CALLKIT_CN_POLICY_20260923_BEGIN: China-review build must not register VoIP/CallKit delivery.
+        guard SystemCallIntegrationPolicy.isVoIPPushRegistrationEnabled else { return }
+        // WDT_IOS1_CALLKIT_CN_POLICY_20260923_END
         guard !JHTRuntimeFeatureFlags.disableRTCRuntime else { return }
         guard let registration = pendingVoIPDeviceRegistration else { return }
         let context = apiContext

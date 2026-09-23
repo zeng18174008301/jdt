@@ -12097,7 +12097,7 @@ final class DomainStoreTests: XCTestCase {
         XCTAssertTrue((plist["NSCameraUsageDescription"] as? String)?.contains("视频通话") == true)
         let backgroundModes = try XCTUnwrap(plist["UIBackgroundModes"] as? [String])
         XCTAssertTrue(backgroundModes.contains("audio"))
-        XCTAssertTrue(backgroundModes.contains("voip"))
+        XCTAssertFalse(backgroundModes.contains("voip"))
         XCTAssertTrue(backgroundModes.contains("remote-notification"))
     }
 
@@ -20878,6 +20878,7 @@ final class IOSNotificationStateMachineTests: XCTestCase {
                 .appendingPathComponent("BlueStoneIM/BlueStoneIMApp.swift"),
             encoding: .utf8
         )
+        XCTAssertTrue(appDelegateSource?.contains("SystemCallIntegrationPolicy.usesSystemCallIntegration") == true)
         XCTAssertTrue(appDelegateSource?.contains("CallKitPushVoiceCallManager.shared.start()") == true)
     }
 
@@ -21338,6 +21339,7 @@ final class IOSNotificationStateMachineTests: XCTestCase {
         XCTAssertTrue(appState.contains("retirePushTokenWithTransientRetry"))
         XCTAssertTrue(appState.contains("provider: .apnsVoIP"))
         XCTAssertFalse(appState.contains("for deviceID in deviceIDs.union(lateStandardDeviceIDs).union(lateVoIPDeviceIDs)"))
+        XCTAssertTrue(appDelegate.contains("SystemCallIntegrationPolicy.usesSystemCallIntegration"))
         XCTAssertTrue(appDelegate.contains("CallKitPushVoiceCallManager.shared.start()"))
         XCTAssertTrue(appDelegate.contains("didFinishLaunchingWithOptions"))
     }

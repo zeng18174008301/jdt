@@ -1,13 +1,15 @@
 import AVFoundation
 import Foundation
 
-#if canImport(CallKit)
+// WDT_IOS1_CALLKIT_CN_POLICY_20260923_BEGIN: keep system call frameworks out unless a build explicitly enables CallKit.
+#if WDT_ENABLE_CALLKIT && canImport(CallKit)
 @preconcurrency import CallKit
 #endif
 
-#if canImport(PushKit)
+#if WDT_ENABLE_CALLKIT && canImport(PushKit)
 @preconcurrency import PushKit
 #endif
+// WDT_IOS1_CALLKIT_CN_POLICY_20260923_END
 
 #if canImport(WebRTC)
 @preconcurrency import WebRTC
@@ -561,9 +563,8 @@ enum VoIPPushTransportPolicy {
     }
 }
 
-// Simulator lacks the system call UI host. Use the existing in-app call path there;
-// keep CallKit and PushKit integration on physical devices.
-#if canImport(CallKit) && canImport(PushKit) && !targetEnvironment(simulator)
+// WDT_IOS1_CALLKIT_CN_POLICY_20260923_BEGIN: compile the system call UI only behind an explicit build flag.
+#if WDT_ENABLE_CALLKIT && canImport(CallKit) && canImport(PushKit) && !targetEnvironment(simulator)
 final class CallKitPushVoiceCallManager: NSObject, VoiceCallSystemIntegrating, @unchecked Sendable {
     static let shared = CallKitPushVoiceCallManager()
 
@@ -1009,6 +1010,7 @@ final class CallKitPushVoiceCallManager: VoiceCallSystemIntegrating, @unchecked 
     func clearPresentedCall(callID: String) {}
 }
 #endif
+// WDT_IOS1_CALLKIT_CN_POLICY_20260923_END
 
 #if canImport(WebRTC)
 @MainActor
