@@ -1878,8 +1878,241 @@ enum LocalMessageProjectionBuilder {
 }
 // JHT_MOD_END APPSTATE_LOCAL_MESSAGE_PROJECTION_SPLIT_20260912 - 修改结束
 
+// WDT_LOGIN_WORKSPACE_MAINACTOR_PERF_20260924_BEGIN: pure cached conversation history projection detached from UI/store actors.
+enum CachedConversationHistoryProjection {
+    typealias HistoryVisibilityBoundary = ConversationStore.HistoryVisibilityBoundary
+
+    static func preparedForLocalHistoryProjection(_ conversation: Conversation) -> Conversation {
+        guard conversation.kind == .group else { return conversation }
+        guard conversation.historyBoundaryConfirmed else {
+            return awaitingHistoryBoundaryConfirmation(conversation)
+        }
+        let persistedBoundary = HistoryVisibilityBoundary(
+            fromSeq: conversation.historyVisibleFromSeq,
+            limited: conversation.historyLimited,
+            confirmed: true
+        )
+        return applyingHistoryVisibilityBoundary(
+            persistedBoundary,
+            to: conversation
+        ) ?? awaitingHistoryBoundaryConfirmation(conversation)
+    }
+
+    private static func awaitingHistoryBoundaryConfirmation(_ conversation: Conversation) -> Conversation {
+        guard conversation.kind == .group else { return conversation }
+        var updated = conversation
+        updated.messages = []
+        updated.lastMessage = ""
+        updated.time = ""
+        updated.unread = 0
+        updated.hasUnreadReaction = false
+        updated.unreadReactionCount = 0
+        updated.firstUnreadSeq = 0
+        updated.firstUnreadMessageID = ""
+        updated.messageCoveredThroughSeq = 0
+        updated.unreadAnchorSeq = 0
+        updated.unreadAnchorState = "none"
+        updated.hasMention = false
+        updated.mentionCount = 0
+        updated.mentionSummaryText = ""
+        updated.mentionSummaryMessageID = ""
+        updated.mentionSummaryChannelSeq = 0
+        updated.sortTimestamp = 0
+        updated.historyBoundaryConfirmed = false
+        return updated
+    }
+
+    private static func applyingHistoryVisibilityBoundary(
+        _ boundary: HistoryVisibilityBoundary?,
+        to conversation: Conversation?,
+        keepPendingLocalMessages: Bool = true
+    ) -> Conversation? {
+        guard var updated = conversation else { return nil }
+        guard updated.kind == .group else { return updated }
+        let resolvedBoundary = boundary ?? HistoryVisibilityBoundary(fromSeq: 1, limited: false, confirmed: true)
+        let previousBoundarySeq = (updated.historyBoundaryConfirmed || updated.historyVisibleFromSeq > 1 || updated.historyLimited)
+            ? max(1, updated.historyVisibleFromSeq)
+            : nil
+        let shouldClearForNewEpisode = previousBoundarySeq.map { resolvedBoundary.fromSeq < $0 } ?? false
+        updated.historyVisibleFromSeq = resolvedBoundary.fromSeq
+        updated.historyLimited = resolvedBoundary.limited
+        updated.historyBoundaryConfirmed = resolvedBoundary.confirmed
+        if shouldClearForNewEpisode {
+            updated.messages = keepPendingLocalMessages ? updated.messages.filter { isPendingLocalMessage($0) } : []
+        } else {
+            updated.messages = historyVisibleMessages(
+                updated.messages,
+                boundary: resolvedBoundary,
+                keepPendingLocalMessages: keepPendingLocalMessages
+            )
+        }
+        refreshHistoryBoundedSummary(&updated, boundary: resolvedBoundary)
+        return updated
+    }
+
+    private static func historyVisibleMessages(
+        _ messages: [ChatMessage],
+        boundary: HistoryVisibilityBoundary?,
+        keepPendingLocalMessages: Bool = true
+    ) -> [ChatMessage] {
+        guard let boundary, boundary.isRestrictive else { return messages }
+        return messages.filter { message in
+            if message.channelSeq >= boundary.fromSeq {
+                return true
+            }
+            if keepPendingLocalMessages, isPendingLocalMessage(message) {
+                return true
+            }
+            return false
+        }
+    }
+
+    private static func refreshHistoryBoundedSummary(_ conversation: inout Conversation, boundary: HistoryVisibilityBoundary) {
+        if let latest = latestConfirmedMessage(in: conversation.messages.filter { !$0.isPinnedContextOnly })
+            ?? latestConfirmedMessage(in: conversation.messages) {
+            conversation.lastMessage = messageListPreview(latest)
+            conversation.time = latest.time
+            conversation.sortTimestamp = effectiveCreatedAt(for: latest)?.timeIntervalSince1970 ?? conversation.sortTimestamp
+        } else if boundary.isRestrictive || conversation.historyBoundaryConfirmed {
+            conversation.lastMessage = ""
+            conversation.time = ""
+            conversation.sortTimestamp = 0
+        }
+        if boundary.isRestrictive {
+            if conversation.firstUnreadSeq > 0 && conversation.firstUnreadSeq < boundary.fromSeq {
+                conversation.unread = 0
+                conversation.firstUnreadSeq = 0
+                conversation.firstUnreadMessageID = ""
+                conversation.unreadAnchorSeq = 0
+                conversation.unreadAnchorState = "none"
+            }
+            if conversation.mentionSummaryChannelSeq > 0 && conversation.mentionSummaryChannelSeq < boundary.fromSeq {
+                conversation.hasMention = false
+                conversation.mentionCount = 0
+                conversation.mentionSummaryText = ""
+                conversation.mentionSummaryMessageID = ""
+                conversation.mentionSummaryChannelSeq = 0
+            }
+            if conversation.messages.isEmpty {
+                conversation.unread = 0
+                conversation.hasUnreadReaction = false
+                conversation.unreadReactionCount = 0
+                conversation.hasMention = false
+                conversation.mentionCount = 0
+            }
+        }
+    }
+
+    private static func latestConfirmedMessage(in messages: [ChatMessage]) -> ChatMessage? {
+        messages.last { message in
+            message.status != .failed && message.status != .sending && !message.isDeletedLocally
+        }
+    }
+
+    private static func messageListPreview(_ message: ChatMessage) -> String {
+        switch message.kind {
+        case .rtcCallRecord:
+            return message.rtcCallRecord?.presentation(viewerIsCaller: message.isOutgoing).conversationPreview
+                ?? RTCCallRecordPayload.safeFallbackText(payload: [:])
+        case .image:
+            return "[图片] \(message.attachmentName ?? message.text)"
+        case .file:
+            switch attachmentMediaCategory(for: message) {
+            case "video":
+                return "[视频] \(message.attachmentName ?? message.text)"
+            case "pdf":
+                return "[PDF] \(message.attachmentName ?? message.text)"
+            default:
+                break
+            }
+            return "[文件] \(message.attachmentName ?? message.text)"
+        case .voice:
+            return "[语音] \(message.text)"
+        case .video:
+            return "[视频] \(message.text)"
+        case .location:
+            return "[位置] \(message.text)"
+        case .contactCard:
+            return message.text
+        case .system, .text:
+            return message.text
+        }
+    }
+
+    private static func attachmentMediaCategory(for message: ChatMessage) -> String {
+        let explicit = message.attachmentMediaCategory.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if !explicit.isEmpty { return explicit }
+        let previewKind = message.attachmentPreviewKind.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if ["image", "video", "pdf"].contains(previewKind) {
+            return previewKind
+        }
+        return inferredAttachmentMediaCategory(
+            kind: message.kind,
+            name: message.attachmentName ?? message.text,
+            mimeType: attachmentMimeType(from: message)
+        )
+    }
+
+    private static func attachmentMimeType(from message: ChatMessage) -> String {
+        let explicit = message.attachmentMimeType.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if !explicit.isEmpty {
+            return explicit
+        }
+        if let value = message.attachmentMeta?
+            .components(separatedBy: " · ")
+            .first?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !value.isEmpty,
+           value.contains("/") {
+            return value.lowercased()
+        }
+        return message.kind == .image ? "image/jpeg" : "application/octet-stream"
+    }
+
+    private static func inferredAttachmentMediaCategory(kind: MessageKind, name: String, mimeType: String) -> String {
+        let normalizedMime = mimeType.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let ext = (name as NSString).pathExtension.lowercased()
+        if kind == .image || normalizedMime.hasPrefix("image/") || ["png", "jpg", "jpeg", "webp", "heic", "gif", "bmp", "tiff"].contains(ext) {
+            return "image"
+        }
+        if normalizedMime.hasPrefix("video/") || ["mp4", "mov", "m4v", "avi", "mkv", "webm", "3gp"].contains(ext) {
+            return "video"
+        }
+        if normalizedMime.contains("pdf") || ext == "pdf" {
+            return "pdf"
+        }
+        if normalizedMime.hasPrefix("audio/") || ["mp3", "m4a", "aac", "wav", "flac", "ogg"].contains(ext) {
+            return "audio"
+        }
+        return "file"
+    }
+
+    private static func effectiveCreatedAt(for message: ChatMessage) -> Date? {
+        message.createdAt
+    }
+
+    private static func isPendingLocalMessage(_ message: ChatMessage) -> Bool {
+        message.id.hasPrefix("local_") || message.status == .sending || message.status == .failed
+    }
+}
+// WDT_LOGIN_WORKSPACE_MAINACTOR_PERF_20260924_END
+
 // JHT_MOD_BEGIN CACHED_CONVERSATION_RESTORE_ASYNC_PERF_20260912 - 修改开始：缓存会话模型恢复从 AppState/MainActor 抽离
 enum CachedConversationRestoreBuilder {
+    // WDT_LOGIN_WORKSPACE_MAINACTOR_PERF_20260924_BEGIN: combine pure cached restore mapping in detached work.
+    static func scrubbedModelsPreparedForLocalHistoryProjectionOffMain(
+        from cachedConversations: [CachedConversation]
+    ) async -> [Conversation] {
+        await Task.detached(priority: .utility) {
+            cachedConversations.map {
+                CachedConversationHistoryProjection.preparedForLocalHistoryProjection(
+                    $0.model.scrubbingGroupMemberTotals()
+                )
+            }
+        }.value
+    }
+    // WDT_LOGIN_WORKSPACE_MAINACTOR_PERF_20260924_END
+
     static func scrubbedModelsOffMain(
         from cachedConversations: [CachedConversation]
     ) async -> [Conversation] {
@@ -1887,6 +2120,20 @@ enum CachedConversationRestoreBuilder {
             cachedConversations.map { $0.model.scrubbingGroupMemberTotals() }
         }.value
     }
+
+    // WDT_LOGIN_WORKSPACE_MAINACTOR_PERF_20260924_BEGIN: combine pure legacy cached restore mapping in detached work.
+    static func scrubbedConversationsPreparedForLocalHistoryProjectionOffMain(
+        _ conversations: [Conversation]
+    ) async -> [Conversation] {
+        await Task.detached(priority: .utility) {
+            conversations.map {
+                CachedConversationHistoryProjection.preparedForLocalHistoryProjection(
+                    $0.scrubbingGroupMemberTotals()
+                )
+            }
+        }.value
+    }
+    // WDT_LOGIN_WORKSPACE_MAINACTOR_PERF_20260924_END
 
     static func scrubbedConversationsOffMain(
         _ conversations: [Conversation]

@@ -1024,19 +1024,7 @@ final class ConversationStore: ObservableObject {
     }
 
     func conversationPreparedForLocalHistoryProjection(_ conversation: Conversation) -> Conversation {
-        guard conversation.kind == .group else { return conversation }
-        guard conversation.historyBoundaryConfirmed else {
-            return conversationAwaitingHistoryBoundaryConfirmation(conversation)
-        }
-        let persistedBoundary = HistoryVisibilityBoundary(
-            fromSeq: conversation.historyVisibleFromSeq,
-            limited: conversation.historyLimited,
-            confirmed: true
-        )
-        return applyingHistoryVisibilityBoundary(
-            persistedBoundary,
-            to: conversation
-        ) ?? conversationAwaitingHistoryBoundaryConfirmation(conversation)
+        CachedConversationHistoryProjection.preparedForLocalHistoryProjection(conversation)
     }
 
     func historyBoundary(for conversation: Conversation?) -> HistoryVisibilityBoundary? {

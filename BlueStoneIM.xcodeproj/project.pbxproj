@@ -146,6 +146,7 @@
 		A09900000000000000000001 /* AppState+RemoteRegistrationSnapshotSync.swift in Sources */ = {isa = PBXBuildFile; fileRef = B09900000000000000000001 /* AppState+RemoteRegistrationSnapshotSync.swift */; };
 		A10000000000000000000001 /* AppState+VoiceCalls.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000001 /* AppState+VoiceCalls.swift */; };
 		A10100000000000000000001 /* AppState+AuthenticationProfileWorkspace.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10100000000000000000001 /* AppState+AuthenticationProfileWorkspace.swift */; };
+		A10200000000000000000001 /* AppState+DebugScreenshotFixtures.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10200000000000000000001 /* AppState+DebugScreenshotFixtures.swift */; };
 		A11000000000000000000001 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = B11000000000000000000001 /* PrivacyInfo.xcprivacy */; };
 		AD0376B830372BD500BFDE97 /* WebRTC in Frameworks */ = {isa = PBXBuildFile; productRef = L00000000000000000000002 /* WebRTC */; };
 /* End PBXBuildFile section */
@@ -304,6 +305,7 @@
 		B09900000000000000000001 /* AppState+RemoteRegistrationSnapshotSync.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "AppState+RemoteRegistrationSnapshotSync.swift"; sourceTree = "<group>"; };
 		B10000000000000000000001 /* AppState+VoiceCalls.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "AppState+VoiceCalls.swift"; sourceTree = "<group>"; };
 		B10100000000000000000001 /* AppState+AuthenticationProfileWorkspace.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "AppState+AuthenticationProfileWorkspace.swift"; sourceTree = "<group>"; };
+		B10200000000000000000001 /* AppState+DebugScreenshotFixtures.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "AppState+DebugScreenshotFixtures.swift"; sourceTree = "<group>"; };
 		B11000000000000000000001 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -542,6 +544,7 @@
 				D09900000000000000000001 /* RemoteSync */,
 				D10000000000000000000001 /* Calls */,
 				D10100000000000000000001 /* AccountSession */,
+				D10200000000000000000001 /* DebugFixtures */,
 			);
 			path = AppSupport;
 			sourceTree = "<group>";
@@ -595,6 +598,14 @@
 				B10100000000000000000001 /* AppState+AuthenticationProfileWorkspace.swift */,
 			);
 			path = AccountSession;
+			sourceTree = "<group>";
+		};
+		D10200000000000000000001 /* DebugFixtures */ = {
+			isa = PBXGroup;
+			children = (
+				B10200000000000000000001 /* AppState+DebugScreenshotFixtures.swift */,
+			);
+			path = DebugFixtures;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -802,6 +813,7 @@
 				A09900000000000000000001 /* AppState+RemoteRegistrationSnapshotSync.swift in Sources */,
 				A10000000000000000000001 /* AppState+VoiceCalls.swift in Sources */,
 				A10100000000000000000001 /* AppState+AuthenticationProfileWorkspace.swift in Sources */,
+				A10200000000000000000001 /* AppState+DebugScreenshotFixtures.swift in Sources */,
 				A05200000000000000000001 /* IMAPIClient+Auth.swift in Sources */,
 				A05300000000000000000001 /* IMAPIClient+Bootstrap.swift in Sources */,
 				A05400000000000000000001 /* IMAPIClient+Workspaces.swift in Sources */,
@@ -1033,7 +1045,7 @@
 				CODE_SIGN_ENTITLEMENTS = BlueStoneIM/BlueStoneIMDebug.entitlements;
 				"CODE_SIGN_IDENTITY[sdk=iphoneos*]" = "iPhone Developer";
 				CODE_SIGN_STYLE = Manual;
-				CURRENT_PROJECT_VERSION = 4;
+				CURRENT_PROJECT_VERSION = 5;
 				DEVELOPMENT_TEAM = "";
 				"DEVELOPMENT_TEAM[sdk=iphoneos*]" = A3PN7W63G3;
 				ENABLE_DEBUG_DYLIB = NO;
@@ -1097,7 +1109,7 @@
 				CODE_SIGN_ENTITLEMENTS = BlueStoneIM/BlueStoneIMRelease.entitlements;
 				"CODE_SIGN_IDENTITY[sdk=iphoneos*]" = "iPhone Distribution";
 				CODE_SIGN_STYLE = Manual;
-				CURRENT_PROJECT_VERSION = 4;
+				CURRENT_PROJECT_VERSION = 5;
 				DEVELOPMENT_TEAM = "";
 				"DEVELOPMENT_TEAM[sdk=iphoneos*]" = A3PN7W63G3;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -1288,7 +1300,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = BlueStoneIM/BlueStoneIM.entitlements;
 				CODE_SIGN_STYLE = Manual;
-				CURRENT_PROJECT_VERSION = 4;
+				CURRENT_PROJECT_VERSION = 5;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_DEBUG_DYLIB = NO;
 				ENABLE_PREVIEWS = YES;
@@ -1345,7 +1357,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = BlueStoneIM/BlueStoneIM.entitlements;
 				CODE_SIGN_STYLE = Manual;
-				CURRENT_PROJECT_VERSION = 4;
+				CURRENT_PROJECT_VERSION = 5;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = BlueStoneIM/Info.plist;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.business";

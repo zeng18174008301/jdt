@@ -4468,6 +4468,20 @@ extension AppState {
         }
     }
 
+    // WDT_RTC_LOCKSCREEN_INTERFACE_LOGS_20260924_BEGIN: lifecycle-only diagnostics for lock/unlock RTC interface tracing.
+    func logRTCLifecycleInterfaceEvent(_ event: String) {
+        let normalizedEvent = event.trimmingCharacters(in: .whitespacesAndNewlines)
+        let activeCallID = activeVoiceCall?.callID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let incomingCallID = incomingVoiceCall?.callID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let heartbeatCallID = rtcMediaHeartbeatSession?.callID.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let heartbeatState = rtcMediaHeartbeatSession?.desiredMediaState ?? "none"
+        let lastReportedState = rtcMediaHeartbeatSession?.lastReportedMediaState ?? "none"
+        voiceDebug(
+            "app_lifecycle interface=rtc event=\(normalizedEvent.isEmpty ? "unknown" : normalizedEvent) backgrounded=\(isApplicationBackgroundedForRTC) active=\(Self.shortDebugID(activeCallID)) incoming=\(Self.shortDebugID(incomingCallID)) heartbeat=\(Self.shortDebugID(heartbeatCallID)) desired=\(heartbeatState) last=\(lastReportedState) ending=\(isEndingActiveCall)"
+        )
+    }
+    // WDT_RTC_LOCKSCREEN_INTERFACE_LOGS_20260924_END
+
     private func rtcDiagnosticMediaLabel(for message: String) -> String {
         let normalized = message.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         if normalized.contains("video") || normalized.contains("media=video") || normalized.contains("media_mode=video") {
@@ -4781,7 +4795,8 @@ extension AppState {
     private func performRTCMediaStateHeartbeatRenewal(generation: UInt64, reason: String) async {
         do {
             let result = try await updateRTCMediaStateWithConflictRetry(
-                generation: generation
+                generation: generation,
+                reason: reason
             )
             applyRTCMediaHeartbeatSuccess(
                 updatedCall: result.call,
@@ -4804,7 +4819,8 @@ extension AppState {
     }
 
     private func updateRTCMediaStateWithConflictRetry(
-        generation: UInt64
+        generation: UInt64,
+        reason: String
     ) async throws -> (call: RemoteRTCCall, reportedMediaState: String) {
         var conflictRetryAttempt = 0
         while true {
@@ -4817,6 +4833,11 @@ extension AppState {
                 // Preserve the first proven connection even if a reconnect event
                 // arrives while the previous request is still in flight.
                 let reportedState = snapshot.connectedReportPending ? "connected" : snapshot.desiredMediaState
+                // WDT_RTC_LOCKSCREEN_INTERFACE_LOGS_20260924_BEGIN: log RTC request attempts around lock/unlock without changing request payload.
+                voiceDebug(
+                    "request_interface path=/api/rtc/calls/{id}/media-state call=\(Self.shortDebugID(snapshot.callID)) state=\(reportedState) reason=\(reason) backgrounded=\(isApplicationBackgroundedForRTC)"
+                )
+                // WDT_RTC_LOCKSCREEN_INTERFACE_LOGS_20260924_END
                 let updatedCall = try await api.updateRTCMediaState(
                     context: snapshot.context,
                     callID: snapshot.callID,
@@ -4872,7 +4893,10 @@ extension AppState {
             current.selfParticipant = joined.selfParticipant ?? current.selfParticipant
             rtcMediaHeartbeatSession = current
 
-            let result = try await updateRTCMediaStateWithConflictRetry(generation: generation)
+            let result = try await updateRTCMediaStateWithConflictRetry(
+                generation: generation,
+                reason: "\(reason)_rejoined"
+            )
             applyRTCMediaHeartbeatSuccess(
                 updatedCall: result.call,
                 reportedMediaState: result.reportedMediaState,
@@ -6733,6 +6757,11 @@ extension AppState {
         retryDuePendingRTCTerminalCompensations(reason: "calls_refresh")
         let observedLifecycleSnapshot = callStore.activeLifecycleSnapshot
         do {
+            // WDT_RTC_LOCKSCREEN_INTERFACE_LOGS_20260924_BEGIN: log RTC request attempts around lock/unlock without changing request payload.
+            voiceDebug(
+                "request_interface path=/api/rtc/calls backgrounded=\(isApplicationBackgroundedForRTC) allow_background=\(allowBackgroundExecution) context=\(Self.rtcDebugContextSummary(context))"
+            )
+            // WDT_RTC_LOCKSCREEN_INTERFACE_LOGS_20260924_END
             let calls = try await api.listRTCCalls(context: context)
             guard !Task.isCancelled,
                   isCurrentRemoteScope(scope),
@@ -7189,6 +7218,11 @@ extension AppState {
             schedulePendingRTCSignalingRefresh()
         }
         do {
+            // WDT_RTC_LOCKSCREEN_INTERFACE_LOGS_20260924_BEGIN: log RTC request attempts around lock/unlock without changing request payload.
+            voiceDebug(
+                "request_interface path=/api/rtc/calls/events backgrounded=\(isApplicationBackgroundedForRTC) allow_background=\(allowBackgroundExecution) context=\(Self.rtcDebugContextSummary(context))"
+            )
+            // WDT_RTC_LOCKSCREEN_INTERFACE_LOGS_20260924_END
             let events = try await api.listRTCCallEvents(context: context)
             guard !Task.isCancelled,
                   isCurrentRemoteScope(scope),

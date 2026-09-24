@@ -219,11 +219,14 @@ extension AppState {
             if !didRetryAfterPlatformSessionRefresh,
                shouldRetryPlatformTenantEnterAfterSessionRefresh(lastError) {
                 didRetryAfterPlatformSessionRefresh = true
-                let refreshed = await refreshStoredAuthSessionIfNeeded(
+                // WDT_IOS_TOKEN_VALIDITY_20260924_BEGIN: platform entry uses platform bearer, so refresh platform session only.
+                let refreshed = await refreshPlatformAuthSessionIfNeeded(
                     reason: "workspace_enter_unauthorized",
                     silent: true,
-                    context: apiContext
+                    context: apiContext,
+                    force: true
                 )
+                // WDT_IOS_TOKEN_VALIDITY_20260924_END
                 guard isCurrent?() ?? true else { throw CancellationError() }
                 if refreshed {
                     continue

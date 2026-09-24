@@ -3361,11 +3361,14 @@ extension AppState {
             guard shouldRetryPlatformTenantEnterAfterSessionRefresh(error) else {
                 throw error
             }
-            let refreshed = await refreshStoredAuthSessionIfNeeded(
+            // WDT_IOS_TOKEN_VALIDITY_20260924_BEGIN: workspace selection preflight uses platform bearer, refresh platform session only.
+            let refreshed = await refreshPlatformAuthSessionIfNeeded(
                 reason: "workspace_prepare_unauthorized",
                 silent: true,
-                context: apiContext
+                context: apiContext,
+                force: true
             )
+            // WDT_IOS_TOKEN_VALIDITY_20260924_END
             guard authFlowGeneration.isCurrent(generation),
                   workspaceSwitchGeneration.isCurrent(switchGeneration) else {
                 throw error
@@ -3471,6 +3474,9 @@ extension AppState {
                     return
                 }
                 enterIM(showToast: false)
+                // WDT_LOGIN_WORKSPACE_MAINACTOR_PERF_20260924_BEGIN: yield after route switch so the entered workbench can render before cached snapshot restore continues.
+                await Task.yield()
+                // WDT_LOGIN_WORKSPACE_MAINACTOR_PERF_20260924_END
                 // 进入后先用目标租户的本地缓存即时渲染会话列表(含已解析名称),再后台刷新合并。
                 let enteredContext = apiContext
                 let enteredScope = remoteDataScopeKey(for: enteredContext)

@@ -77,6 +77,9 @@ extension AppState {
     func appDidEnterForeground() {
 		(api as? IMAPIClient)?.runtimeColdLaunchSceneDidBecomeAvailable(isActive: true)
         isApplicationBackgroundedForRTC = false
+        // WDT_RTC_LOCKSCREEN_INTERFACE_LOGS_20260924_BEGIN: log unlock/foreground boundaries for RTC interface diagnosis only.
+        logRTCLifecycleInterfaceEvent("foreground_unlock")
+        // WDT_RTC_LOCKSCREEN_INTERFACE_LOGS_20260924_END
         renderCallPromptEnvironment(.applicationDidBecomeActive)
         #if DEBUG
         if licenseQuotaScreenshotScenario != nil {
@@ -106,6 +109,11 @@ extension AppState {
         Task {
             guard isCurrentRemoteScope(scope) else { return }
             _ = await refreshStoredAuthSessionIfNeeded(reason: "foreground", silent: true, context: context, scope: scope)
+            // WDT_IOS_TOKEN_VALIDITY_20260924_BEGIN: foreground tenant sessions also keep platform access token fresh for workspace APIs.
+            if context.hasIMSession {
+                _ = await refreshPlatformAuthSessionIfNeeded(reason: "foreground_platform", silent: true, context: apiContext)
+            }
+            // WDT_IOS_TOKEN_VALIDITY_20260924_END
             #if ACCESS_DIAGNOSTICS_OVERLAY_ENABLED
             GroupForegroundSessionClearDiagnostics.recordPostDecision(
                 scopeCurrent: isCurrentRemoteScope(scope),
@@ -157,6 +165,9 @@ extension AppState {
         biometricAccessRevision &+= 1
         revokeBiometricProtectedAccess()
         isApplicationBackgroundedForRTC = true
+        // WDT_RTC_LOCKSCREEN_INTERFACE_LOGS_20260924_BEGIN: log lock/background boundaries for RTC interface diagnosis only.
+        logRTCLifecycleInterfaceEvent("background_lock")
+        // WDT_RTC_LOCKSCREEN_INTERFACE_LOGS_20260924_END
         iosRiskTelemetry.sceneDidEnterBackground()
         iosRiskTelemetrySceneIsActive = false
         // JHT_MOD_BEGIN ATTACHMENT_FOREGROUND_RESUME_20260912 - 修改开始：后台暂停图片/文件上传 task，保留 pending/outbox 供前台继续
@@ -211,6 +222,15 @@ extension AppState {
                 }
 
                 let context = self.apiContext
+                // WDT_IOS_TOKEN_VALIDITY_20260924_BEGIN: Android keeps account/platform and tenant tokens independently fresh.
+                if context.hasIMSession {
+                    _ = await self.refreshPlatformAuthSessionIfNeeded(
+                        reason: "foreground_platform_preemptive",
+                        silent: true,
+                        context: context
+                    )
+                }
+                // WDT_IOS_TOKEN_VALIDITY_20260924_END
                 let accessExpiresAt = IMAuthSessionPreemptiveRefreshPolicy.activeAccessExpiresAt(
                     hasIMSession: context.hasIMSession,
                     contextAccessExpiresAt: context.accessExpiresAt,

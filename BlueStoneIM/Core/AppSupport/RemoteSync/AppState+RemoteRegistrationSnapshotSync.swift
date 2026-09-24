@@ -1869,6 +1869,181 @@ extension AppState {
         return resultIsCurrent(result)
     }
 
+    // WDT_IOS_TOKEN_VALIDITY_20260924_BEGIN: keep platform session refresh independent from tenant IM refresh.
+    func refreshPlatformAuthSessionIfNeeded(
+        reason: String,
+        silent: Bool,
+        context explicitContext: IMAPIContext? = nil,
+        force: Bool = false
+    ) async -> Bool {
+        let context = explicitContext ?? apiContext
+        guard let platformSession = context.platformAuthSession,
+              platformSession.isUsable,
+              context.platformToken?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false else {
+            return false
+        }
+        if !force {
+            guard let refreshDelay = IMAuthSessionPreemptiveRefreshPolicy.delayUntilRefresh(
+                accessExpiresAt: platformSession.accessExpiresAt,
+                now: Date().timeIntervalSince1970
+            ) else {
+                return true
+            }
+            guard refreshDelay <= 0 else { return true }
+        }
+        if platformAuthSessionDidAdvance(since: platformSession, platformToken: context.platformToken) {
+            return true
+        }
+        guard let refreshContext = platformRefreshContext(from: context) else { return false }
+        let refreshFence = refreshContext.authSessionFence
+        if platformAuthSessionDidAdvance(since: platformSession, platformToken: context.platformToken) {
+            return true
+        }
+        if let existing = remoteSyncEngine.currentAuthSessionRefreshTask(for: refreshFence) {
+            let result = await existing.value
+            return result && platformAuthSessionDidAdvance(since: platformSession, platformToken: context.platformToken)
+        }
+        guard let taskToken = remoteSyncEngine.claimAuthSessionRefreshTask(for: refreshFence) else {
+            if let existing = remoteSyncEngine.currentAuthSessionRefreshTask(for: refreshFence) {
+                let result = await existing.value
+                return result && platformAuthSessionDidAdvance(since: platformSession, platformToken: context.platformToken)
+            }
+            return false
+        }
+        let task = Task<Bool, Never> { [weak self, refreshContext, refreshFence, platformSession, reason] in
+            guard let self else { return false }
+            var requestContext = refreshContext
+            if let pending = self.apiContext.pendingRefreshRequestID?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !pending.isEmpty {
+                requestContext.pendingRefreshRequestID = pending
+            } else {
+                var stagedContext = self.apiContext
+                stagedContext.pendingRefreshRequestID = UUID().uuidString.lowercased()
+                guard stagedContext.save(sessionStore: self.protectedSessionStore).isCommitted,
+                      self.currentPlatformRefreshFence() == refreshFence else {
+                    return false
+                }
+                self.apiContext = stagedContext
+                requestContext.pendingRefreshRequestID = stagedContext.pendingRefreshRequestID
+            }
+            do {
+                guard self.currentPlatformRefreshFence() == refreshFence else { return false }
+                let refreshed = try await self.api.refreshCurrentSession(context: requestContext)
+                guard self.applyPlatformAuthSessionRefreshResult(
+                    refreshed,
+                    expectedFence: refreshFence,
+                    previousPlatformSession: platformSession
+                ) else { return false }
+                if !silent {
+                    self.toast = "登录状态已恢复"
+                }
+                print("[JHT Auth] platform_session_refresh_success reason=\(reason) token_type=\(refreshed.authSession.normalizedTokenType)")
+                return true
+            } catch {
+                guard self.currentPlatformRefreshFence() == refreshFence else { return false }
+                let failure = self.safeAuthRefreshFailureLogClassification(error)
+                print("[JHT Auth] platform_session_refresh_failure reason=\(reason) status=\(failure.status) code=\(failure.code)")
+                return false
+            }
+        }
+        remoteSyncEngine.attachAuthSessionRefreshTask(taskToken, task: task)
+        let result = await task.value
+        remoteSyncEngine.finishAuthSessionRefreshTask(taskToken)
+        return result && platformAuthSessionDidAdvance(since: platformSession, platformToken: context.platformToken)
+    }
+
+    private func platformRefreshContext(from context: IMAPIContext) -> IMAPIContext? {
+        guard context.platformAuthSession?.isUsable == true else { return nil }
+        var platformContext = context
+        platformContext.tenantAuthSession = nil
+        platformContext.accessExpiresAt = context.platformAuthSession?.accessExpiresAt ?? 0
+        return platformContext
+    }
+
+    private func currentPlatformRefreshFence() -> IMAuthSessionFence? {
+        platformRefreshContext(from: apiContext)?.authSessionFence
+    }
+
+    private func platformAuthSessionDidAdvance(
+        since previous: IMStoredAuthSession,
+        platformToken previousToken: String?
+    ) -> Bool {
+        guard let current = apiContext.platformAuthSession,
+              current.isUsable,
+              current.normalizedTokenType == "platform" else {
+            return false
+        }
+        if current.sessionID != previous.sessionID { return true }
+        if current.authVersion > previous.authVersion { return true }
+        if current.sessionGeneration > previous.sessionGeneration { return true }
+        if current.accessExpiresAt > previous.accessExpiresAt { return true }
+        let oldToken = previousToken?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let newToken = apiContext.platformToken?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return !newToken.isEmpty && !oldToken.isEmpty && newToken != oldToken
+    }
+
+    private func applyPlatformAuthSessionRefreshResult(
+        _ result: RemoteAuthSessionRefreshResult,
+        expectedFence: IMAuthSessionFence,
+        previousPlatformSession: IMStoredAuthSession
+    ) -> Bool {
+        guard result.authSession.isUsable else { return false }
+        let normalizedType = result.authSession.normalizedTokenType
+        guard normalizedType.isEmpty || normalizedType == "platform" else { return false }
+        guard currentPlatformRefreshFence() == expectedFence,
+              let currentPlatformSession = apiContext.platformAuthSession,
+              currentPlatformSession.sessionID == previousPlatformSession.sessionID else {
+            return false
+        }
+        if result.authVersion > 0,
+           currentPlatformSession.authVersion > 0,
+           result.authVersion < currentPlatformSession.authVersion {
+            return false
+        }
+        if result.sessionGeneration > 0,
+           currentPlatformSession.sessionGeneration > 0,
+           result.sessionGeneration < currentPlatformSession.sessionGeneration {
+            return false
+        }
+        var candidate = apiContext
+        let previousAccessExpiresAt = candidate.accessExpiresAt
+        let tenantAccessExpiresAt = candidate.tenantAuthSession?.accessExpiresAt ?? 0
+        let refreshedPlatformToken = result.platformToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+            ? result.platformToken.trimmingCharacters(in: .whitespacesAndNewlines)
+            : result.imToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !refreshedPlatformToken.isEmpty {
+            candidate.platformToken = refreshedPlatformToken
+        }
+        if !result.authSession.appID.isEmpty {
+            candidate.appID = IMAPIContext.normalizedIOSAppID(result.authSession.appID)
+        }
+        if !result.authSession.deviceID.isEmpty {
+            candidate.deviceID = result.authSession.deviceID
+        }
+        candidate.persistAuthSession(
+            result.authSession,
+            fallbackTokenType: "platform",
+            fallbackTenantID: nil,
+            fallbackAccessExpiresAt: result.expiresAt
+        )
+        if candidate.hasIMSession {
+            candidate.accessExpiresAt = tenantAccessExpiresAt > 0 ? tenantAccessExpiresAt : previousAccessExpiresAt
+        } else if result.expiresAt > 0 {
+            candidate.accessExpiresAt = result.expiresAt
+        }
+        candidate.pendingRefreshRequestID = nil
+        guard candidate.save(sessionStore: protectedSessionStore).isCommitted,
+              currentPlatformRefreshFence() == expectedFence else {
+            return false
+        }
+        apiContext = candidate
+        if !result.workspaces.isEmpty {
+            applyWorkspaces(result.workspaces)
+        }
+        return true
+    }
+    // WDT_IOS_TOKEN_VALIDITY_20260924_END
+
     private func shouldAttemptTenantIMSessionFallback(after error: Error, context: IMAPIContext) -> Bool {
         guard context.hasIMSession else { return false }
         if DisasterRecoveryFallbackClassifier.shouldFallbackFromPlatformFailure(error) {
@@ -1930,10 +2105,31 @@ extension AppState {
         let previousRealtimeToken = apiContext.imToken
         var candidate = apiContext
         let normalizedType = result.authSession.normalizedTokenType
-        if !result.platformToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            candidate.platformToken = result.platformToken
+        // WDT_IOS_TOKEN_VALIDITY_20260924_BEGIN: backend may omit token_type; preserve the refresh authority selected by the request fence.
+        let effectiveAuthSessionType: String
+        if !normalizedType.isEmpty {
+            effectiveAuthSessionType = normalizedType
+        } else {
+            switch expectedFence.authorityFamily {
+            case .platform:
+                effectiveAuthSessionType = "platform"
+            case .tenant:
+                effectiveAuthSessionType = "im"
+            case .none:
+                effectiveAuthSessionType = ""
+            }
         }
-        if !result.imToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        // WDT_IOS_TOKEN_VALIDITY_20260924_END
+        // WDT_IOS_TOKEN_VALIDITY_20260924_BEGIN: generic token can stand for platform bearer only on platform refresh.
+        let refreshedPlatformToken = result.platformToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+            ? result.platformToken.trimmingCharacters(in: .whitespacesAndNewlines)
+            : (effectiveAuthSessionType == "platform" ? result.imToken.trimmingCharacters(in: .whitespacesAndNewlines) : "")
+        if !refreshedPlatformToken.isEmpty {
+            candidate.platformToken = refreshedPlatformToken
+        }
+        // WDT_IOS_TOKEN_VALIDITY_20260924_END
+        if effectiveAuthSessionType != "platform",
+           !result.imToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             candidate.imToken = result.imToken
             if let tenant = result.tenant {
                 candidate.tenantID = tenant.id
@@ -1952,7 +2148,7 @@ extension AppState {
         }
         candidate.persistAuthSession(
             result.authSession,
-            fallbackTokenType: normalizedType.isEmpty ? nil : normalizedType,
+            fallbackTokenType: effectiveAuthSessionType.isEmpty ? nil : effectiveAuthSessionType,
             fallbackTenantID: candidate.tenantID,
             // JHT_MOD_BEGIN AUTH_REFRESH_EXPIRES_AT_PERSISTENCE
             fallbackAccessExpiresAt: result.expiresAt
@@ -5752,20 +5948,15 @@ extension AppState {
                 readStamp: profileContactReadStamp
             )
             if !loaded.conversations.isEmpty {
-                // JHT_MOD_BEGIN CACHED_CONVERSATION_RESTORE_ASYNC_PERF_20260912 - 修改开始：SQLite 缓存会话恢复和 scrub 放到后台，减轻启动恢复 MainActor 压力
-                let restoredConversations = await CachedConversationRestoreBuilder.scrubbedModelsOffMain(
+                // WDT_LOGIN_WORKSPACE_MAINACTOR_PERF_20260924_BEGIN: keep cached restore mapping off MainActor; publish/store mutations stay below.
+                let safeCachedConversations = await CachedConversationRestoreBuilder.scrubbedModelsPreparedForLocalHistoryProjectionOffMain(
                     from: loaded.conversations
                 )
                 guard generation == localMessageSessionGeneration,
                       isCurrentRemoteScope(scope) else {
                     return false
                 }
-                let safeCachedConversations = restoredConversations.map {
-                    conversationStore.conversationPreparedForLocalHistoryProjection(
-                        $0
-                    )
-                }
-                // JHT_MOD_END CACHED_CONVERSATION_RESTORE_ASYNC_PERF_20260912 - 修改结束
+                // WDT_LOGIN_WORKSPACE_MAINACTOR_PERF_20260924_END
                 let visibleCachedConversations = visibleConversationsAfterLocalHiding(
                     safeCachedConversations,
                     scope: scope
@@ -5794,20 +5985,15 @@ extension AppState {
             print("[JHT Perf] cached_snapshot_drop reason=stale_scope scope=\(Self.sessionScopeLogToken(scope))")
             return false
         }
-        // JHT_MOD_BEGIN CACHED_CONVERSATION_RESTORE_ASYNC_PERF_20260912 - 修改开始：旧快照恢复后的 scrub 放到后台，避免启动首页前长时间占用 MainActor
-        let scrubbedLoadedConversations = await CachedConversationRestoreBuilder.scrubbedConversationsOffMain(
+        // WDT_LOGIN_WORKSPACE_MAINACTOR_PERF_20260924_BEGIN: keep legacy cached restore mapping off MainActor; publish/store mutations stay below.
+        let safeCachedConversations = await CachedConversationRestoreBuilder.scrubbedConversationsPreparedForLocalHistoryProjectionOffMain(
             loaded.conversations
         )
         guard isCurrentRemoteScope(scope) else {
             print("[JHT Perf] cached_snapshot_drop reason=stale_scope_after_restore scope=\(Self.sessionScopeLogToken(scope))")
             return false
         }
-        let safeCachedConversations = scrubbedLoadedConversations.map {
-            conversationStore.conversationPreparedForLocalHistoryProjection(
-                $0
-            )
-        }
-        // JHT_MOD_END CACHED_CONVERSATION_RESTORE_ASYNC_PERF_20260912 - 修改结束
+        // WDT_LOGIN_WORKSPACE_MAINACTOR_PERF_20260924_END
         let visibleCachedConversations = visibleConversationsAfterLocalHiding(
             safeCachedConversations,
             scope: scope

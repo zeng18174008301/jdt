@@ -6991,6 +6991,9 @@ struct RemoteAuthSessionRefreshResult: Decodable {
 
     enum CodingKeys: String, CodingKey {
         case platformToken = "platform_token"
+        // WDT_IOS_TOKEN_VALIDITY_20260924_BEGIN: match Android platform refresh field compatibility.
+        case platformTokenCamel = "platformToken"
+        // WDT_IOS_TOKEN_VALIDITY_20260924_END
         case imToken = "im_token"
         case imTokenCamel = "imToken"
         case apiToken = "api_token"
@@ -7013,7 +7016,11 @@ struct RemoteAuthSessionRefreshResult: Decodable {
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         let sessionPayload = try c.decodeIfPresent(RemoteTenantLoginSessionPayload.self, forKey: .session)
-        platformToken = try c.decodeIfPresent(String.self, forKey: .platformToken) ?? ""
+        // WDT_IOS_TOKEN_VALIDITY_20260924_BEGIN: platform refresh may return snake_case or camelCase.
+        platformToken = try c.decodeIfPresent(String.self, forKey: .platformToken)
+            ?? c.decodeIfPresent(String.self, forKey: .platformTokenCamel)
+            ?? ""
+        // WDT_IOS_TOKEN_VALIDITY_20260924_END
         imToken = try c.decodeIfPresent(String.self, forKey: .imToken)
             ?? c.decodeIfPresent(String.self, forKey: .imTokenCamel)
             ?? c.decodeIfPresent(String.self, forKey: .apiToken)
