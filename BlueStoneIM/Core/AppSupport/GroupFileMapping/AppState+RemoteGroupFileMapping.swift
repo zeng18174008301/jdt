@@ -490,12 +490,14 @@ extension AppState {
                 memberPreview: preview,
                 counts: RemoteGroupSummaryCounts(
                     memberCount: detail.memberCount,
-                    adminCount: detail.admins.count,
+                    adminCount: nil,
                     pendingJoinRequestCount: detail.settings.pendingJoinRequestCount,
                     fileCount: detail.settings.fileCount
                 ),
                 currentAnnouncement: detail.currentAnnouncement,
-                settings: detail.settings
+                settings: detail.settings,
+                explicitMyRole: detail.explicitMyRole,
+                memberFriendApplyEnabled: detail.memberFriendApplyEnabled
             )
         }
     }
@@ -699,8 +701,6 @@ extension AppState {
         }
         if shouldShowGroupMemberCount, let total, total > 0 {
             groups[index].memberCount = total
-        } else if shouldShowGroupMemberCount, !users.isEmpty {
-            groups[index].memberCount = max(groups[index].memberCount ?? 0, mergedUsers.count)
         } else if !shouldShowGroupMemberCount {
             groups[index].memberCount = nil
         }
@@ -739,6 +739,10 @@ extension AppState {
                 allMuteUpdatedAt: groups[index].allMuteUpdatedAt,
                 myRole: groups[index].myRole,
                 memberCount: groups[index].memberCount,
+                adminCount: groups[index].adminCount,
+                memberFriendApplyEnabled: groups[index].memberFriendApplyEnabled,
+                memberPreview: groups[index].memberPreview,
+                presentedRole: groups[index].presentedRole,
 	                inviteConfirmRequired: groups[index].inviteConfirmRequired,
 	                pendingJoinRequestCount: groups[index].pendingJoinRequestCount,
 	                fileCount: groups[index].fileCount,
@@ -811,6 +815,10 @@ extension AppState {
             allMuteUpdatedAt: group.allMuteUpdatedAt,
             myRole: group.myRole,
             memberCount: group.memberCount,
+            adminCount: group.adminCount,
+            memberFriendApplyEnabled: group.memberFriendApplyEnabled,
+            memberPreview: group.memberPreview,
+            presentedRole: group.presentedRole,
             inviteConfirmRequired: group.inviteConfirmRequired,
             pendingJoinRequestCount: group.pendingJoinRequestCount,
             fileCount: group.fileCount,
@@ -896,15 +904,9 @@ extension AppState {
         let ownerID = owner.map { $0.imUID.isEmpty ? $0.userID : $0.imUID }.flatMap { $0.isEmpty ? nil : $0 } ?? (remote.ownerUID.isEmpty ? existing?.ownerID ?? "" : remote.ownerUID)
         let ownerDisplayName = owner.map { groupMemberUser(from: $0).name }
             .flatMap { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0 }
-        let decodedMemberCount = [
-            detail?.memberCount,
-            summary?.memberCount,
-            summary?.counts.memberCount,
-            remote.memberCount,
-        ].compactMap { $0 }.max() ?? 0
-        let memberCount = decodedMemberCount > 0
-            ? decodedMemberCount
-            : max(existing?.memberCount ?? 0, existing?.members.count ?? 0)
+        // WDT_APP_CONTRACT_20261021_05: only server aggregates describe a total, never preview sizes.
+        let memberCount = detail?.memberCount ?? summary?.memberCount
+            ?? summary?.counts.memberCount ?? remote.memberCount
         let historyVisibleFromSeq = max(1, detail?.historyVisibleFromSeq ?? summary?.historyVisibleFromSeq ?? remote.historyVisibleFromSeq)
         let historyLimited = detail?.historyLimited ?? summary?.historyLimited ?? remote.historyLimited
         let resolvedRole = detail?.myRole ?? summary?.myRole ?? remote.myRole
@@ -989,6 +991,13 @@ extension AppState {
             allMuteUpdatedAt: groupMute.updatedAt,
             myRole: resolvedRole,
             memberCount: shouldShowGroupMemberCount ? memberCount : nil,
+            adminCount: shouldShowGroupMemberCount ? summary?.counts.adminCount : nil,
+            memberFriendApplyEnabled: acceptsRevisionedProfile
+                ? detail?.memberFriendApplyEnabled ?? summary?.memberFriendApplyEnabled ?? remote.memberFriendApplyEnabled ?? existing?.memberFriendApplyEnabled
+                : existing?.memberFriendApplyEnabled,
+            memberPreview: summary.map { $0.memberPreview.map { groupMemberUser(from: $0) } }
+                ?? existing?.memberPreview ?? [],
+            presentedRole: detail?.explicitMyRole ?? summary?.explicitMyRole ?? remote.explicitMyRole,
             inviteConfirmRequired: settings?.inviteConfirmRequired ?? remote.inviteConfirmRequired,
             pendingJoinRequestCount: settings?.pendingJoinRequestCount ?? summary?.counts.pendingJoinRequestCount ?? existing?.pendingJoinRequestCount ?? 0,
             fileCount: settings?.fileCount ?? summary?.counts.fileCount ?? existing?.fileCount ?? 0,

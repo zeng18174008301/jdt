@@ -3861,6 +3861,10 @@ struct GroupInfo: Identifiable, Hashable {
     var allMuteUpdatedAt: String = ""
     var myRole: String = "member"
     var memberCount: Int? = nil
+    var adminCount: Int? = nil
+    var memberFriendApplyEnabled: Bool? = nil
+    var memberPreview: [IMUser] = []
+    var presentedRole: String? = nil
     var inviteConfirmRequired: Bool = false
     var pendingJoinRequestCount: Int = 0
     var fileCount: Int = 0

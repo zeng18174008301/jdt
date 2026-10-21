@@ -2761,6 +2761,7 @@ enum AttachmentDownloadExecutor {
         fallbackExtension: String,
         expectedSizeBytes: Int64?,
         sessionFactory: @escaping AttachmentDownloadSessionFactory,
+        byteProgress: @escaping @Sendable (AttachmentDownloadSnapshot) -> Void = { _ in },
         progress: @escaping @Sendable (Double) -> Void
     ) async throws -> URL {
         let downloader = AttachmentDownloadProgressDelegate(
@@ -2769,6 +2770,7 @@ enum AttachmentDownloadExecutor {
             fallbackExtension: fallbackExtension,
             expectedSizeBytes: expectedSizeBytes,
             sessionFactory: sessionFactory,
+            byteProgress: byteProgress,
             progress: progress
         )
         return try await downloader.start(remoteURL: remoteURL)
@@ -2782,6 +2784,7 @@ final class AttachmentDownloadProgressDelegate: NSObject, URLSessionDownloadDele
     private let fallbackExtension: String
     private let expectedSizeBytes: Int64?
     private let progress: @Sendable (Double) -> Void
+    private let byteProgress: @Sendable (AttachmentDownloadSnapshot) -> Void
     private let sessionFactory: AttachmentDownloadSessionFactory
     private let lock = NSLock()
     private var continuation: CheckedContinuation<URL, Error>?
@@ -2801,6 +2804,7 @@ final class AttachmentDownloadProgressDelegate: NSObject, URLSessionDownloadDele
         sessionFactory: @escaping AttachmentDownloadSessionFactory = { delegate in
             URLSession(configuration: .ephemeral, delegate: delegate, delegateQueue: nil)
         },
+        byteProgress: @escaping @Sendable (AttachmentDownloadSnapshot) -> Void = { _ in },
         progress: @escaping @Sendable (Double) -> Void
     ) {
         self.suggestedName = suggestedName
@@ -2809,6 +2813,7 @@ final class AttachmentDownloadProgressDelegate: NSObject, URLSessionDownloadDele
         self.expectedSizeBytes = expectedSizeBytes
         self.sessionFactory = sessionFactory
         self.progress = progress
+        self.byteProgress = byteProgress
     }
 
     func start(remoteURL: URL) async throws -> URL {
@@ -2826,7 +2831,7 @@ final class AttachmentDownloadProgressDelegate: NSObject, URLSessionDownloadDele
                 self.task = task
                 lock.unlock()
                 // JHT_MOD_BEGIN CHAT_HISTORY_SYNC_UI_PERF_BEGIN_ATTACHMENT_DOWNLOAD_CALLBACK_THROTTLE_START - 修改开始：初始下载进度走统一节流入口
-                emitProgress(0.02)
+                emitProgress(0)
                 // JHT_MOD_END CHAT_HISTORY_SYNC_UI_PERF_END_ATTACHMENT_DOWNLOAD_CALLBACK_THROTTLE_START - 修改结束：初始下载进度走统一节流入口
                 task.resume()
             }
@@ -2849,10 +2854,13 @@ final class AttachmentDownloadProgressDelegate: NSObject, URLSessionDownloadDele
         totalBytesWritten: Int64,
         totalBytesExpectedToWrite: Int64
     ) {
-        guard totalBytesExpectedToWrite > 0 else { return }
-        // JHT_MOD_BEGIN CHAT_HISTORY_SYNC_UI_PERF_BEGIN_ATTACHMENT_DOWNLOAD_CALLBACK_THROTTLE_APPLY - 修改开始：合并下载过程中的细碎进度回调，避免图片消息滚动时频繁刷新
-        emitProgress(max(0.02, min(Double(totalBytesWritten) / Double(totalBytesExpectedToWrite), 0.98)))
-        // JHT_MOD_END CHAT_HISTORY_SYNC_UI_PERF_END_ATTACHMENT_DOWNLOAD_CALLBACK_THROTTLE_APPLY - 修改结束：合并下载过程中的细碎进度回调，避免图片消息滚动时频繁刷新
+        // WDT_APP_CONTRACT_20261021_10: unknown length emits bytes, never a fabricated percentage.
+        let total = totalBytesExpectedToWrite > 0 ? totalBytesExpectedToWrite : expectedSizeBytes
+        let snapshot = AttachmentDownloadSnapshot(receivedBytes: totalBytesWritten, totalBytes: total)
+        let fraction = total.flatMap { $0 > 0 ? Double(totalBytesWritten) / Double($0) : nil }
+        guard nextProgressEmission(fraction ?? 0) != nil else { return }
+        byteProgress(snapshot)
+        if let fraction { progress(max(0, min(fraction, 1))) }
     }
 
     func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {

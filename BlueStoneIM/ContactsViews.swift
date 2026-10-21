@@ -2015,10 +2015,7 @@ private struct GroupListRow: View {
                 Text(
                     [
                         state.visibleGroupMemberCount(
-                            group.memberCount,
-                            group.members.count,
-                            conversation?.memberCount ?? 0,
-                            conversation?.participants.count ?? 0
+                            group.memberCount
                         ).map { "\($0) 人" },
                         group.owner.isEmpty ? nil : "群主 \(group.owner)"
                     ]
@@ -2223,6 +2220,8 @@ struct UserProfileView: View {
     @Environment(\.dismiss) private var dismiss
     let user: IMUser
     var onOpenConversation: ((String) -> Void)? = nil
+    var sourceGroupID: String? = nil
+    @State private var sourceScope = ""
     @State private var showRemarkEditor = false
     @State private var showCardShareSheet = false
     @State private var showBlockConfirm = false
@@ -2306,6 +2305,12 @@ struct UserProfileView: View {
         hasPendingFriendRequest || isApplyingFriend
     }
 
+    private var sourceGroupAllowsFriendApply: Bool {
+        guard let sourceGroupID else { return true }
+        return sourceScope == state.contentCacheScopeKey
+            && state.group(id: sourceGroupID)?.memberFriendApplyEnabled == true
+    }
+
     var body: some View {
         ZStack(alignment: .topTrailing) {
             AuroraBackground()
@@ -2346,24 +2351,28 @@ struct UserProfileView: View {
                                     showCardShareSheet = true
                                 }
                                 .accessibilityIdentifier("profile_share_card_button")
-                                ProfileInlineActionButton(title: "拉黑", symbol: "hand.raised.fill", tint: IMColor.danger, isDestructive: true) {
-                                    showBlockConfirm = true
+                                if state.canBlacklistByTenantPolicy {
+                                    ProfileInlineActionButton(title: "拉黑", symbol: "hand.raised.fill", tint: IMColor.danger, isDestructive: true) {
+                                        showBlockConfirm = true
+                                    }
+                                    .accessibilityIdentifier("profile_block_button")
                                 }
-                                .accessibilityIdentifier("profile_block_button")
-                                ProfileInlineActionButton(title: "删除好友", symbol: "trash.fill", tint: IMColor.danger, isDestructive: true) {
-                                    showDeleteConfirm = true
+                                if state.canDeleteFriendByTenantPolicy {
+                                    ProfileInlineActionButton(title: "删除好友", symbol: "trash.fill", tint: IMColor.danger, isDestructive: true) {
+                                        showDeleteConfirm = true
+                                    }
+                                    .accessibilityIdentifier("profile_delete_friend_button")
                                 }
-                                .accessibilityIdentifier("profile_delete_friend_button")
                             }
                         }
                         .plainCard(radius: 24)
                     case .nonFriend, .pendingFriendRequest:
-                        if state.canCurrentUserInitiateFriendRequest || hasPendingFriendRequest {
+                        if sourceGroupAllowsFriendApply && (state.canCurrentUserInitiateFriendRequest || hasPendingFriendRequest) {
                             PrimaryButton(title: addFriendButtonTitle, systemImage: "person.badge.plus", disabled: addFriendButtonDisabled) {
                                 guard !addFriendButtonDisabled else { return }
                                 Task {
                                     isApplyingFriend = true
-                                    let sent = await state.applyFriend(to: liveUser, source: "profile")
+                                    let sent = await state.applyFriend(to: liveUser, source: sourceGroupID == nil ? "profile" : "group", sourceGroupID: sourceGroupID)
                                     isApplyingFriend = false
                                     if sent {
                                         friendRequestSent = true
@@ -2371,7 +2380,7 @@ struct UserProfileView: View {
                                 }
                             }
                             .accessibilityIdentifier("profile_add_friend_button")
-                        } else {
+                        } else if sourceGroupID == nil {
                             Label("管理员已关闭好友申请", systemImage: "person.crop.circle.badge.exclamationmark")
                                 .font(.system(size: 14, weight: .black))
                                 .foregroundStyle(IMColor.muted)
@@ -2432,6 +2441,13 @@ struct UserProfileView: View {
             }
         } message: {
             Text("删除后会从通讯录和单聊入口移除该好友。")
+        }
+        .onAppear {
+            state.refreshAppInteractionPolicy(force: true)
+            if sourceScope.isEmpty { sourceScope = state.contentCacheScopeKey }
+            if let sourceGroupID, sourceScope == state.contentCacheScopeKey {
+                state.loadGroupDetailIfNeeded(groupID: sourceGroupID, force: true, includeSecondaryData: false)
+            }
         }
     }
 
@@ -2992,6 +3008,9 @@ struct GroupDetailView: View {
     var onSearchHistory: (() -> Void)? = nil
     var onPinnedMessages: (() -> Void)? = nil
     @State private var activeSheet: GroupDetailSheet?
+    @State private var previewMember: IMUser?
+    @State private var previewConversationRoute: ContactsConversationRoute?
+    @State private var pendingPreviewConversationID: String?
     @State private var forcedAuthPromptDeferralToken: UUID?
     @State private var showLeaveDetail = false
     @State private var showDissolveDetail = false
@@ -3067,14 +3086,13 @@ struct GroupDetailView: View {
         }.count
     }
 
-    private var roleTitle: String {
-        if currentGroup.isCurrentUserOwner || state.isGroupOwner(state.currentUser, in: currentGroup) {
-            return "群主"
+    private var roleTitle: String? {
+        switch currentGroup.presentedRole {
+        case "owner": return "群主"
+        case "admin": return "管理员"
+        case "member": return "成员"
+        default: return nil
         }
-        if state.canManageGroup(currentGroup) {
-            return "管理员"
-        }
-        return "成员"
     }
 
     private var roleColor: Color {
@@ -3086,164 +3104,181 @@ struct GroupDetailView: View {
             ZStack {
                 AuroraBackground()
                 ScrollView(showsIndicators: false) {
-                    VStack(spacing: 16) {
-	                        VStack(alignment: .leading, spacing: 14) {
-	                            HStack {
-	                                GroupAvatarView(name: currentGroup.name, seed: 0x5D6BFF, size: 64, imageURL: currentGroup.avatarURL, avatarVersion: currentGroup.avatarVersion, avatarUpdatedAt: currentGroup.avatarUpdatedAt, imageCacheKey: state.groupAvatarCacheKey(groupID: currentGroup.id, avatarURL: currentGroup.avatarURL, avatarVersion: currentGroup.avatarVersion, avatarUpdatedAt: currentGroup.avatarUpdatedAt))
-	                                VStack(alignment: .leading, spacing: 6) {
-	                                    Text(currentGroup.name)
-	                                        .font(.system(size: 22, weight: .black))
-	                                        .foregroundStyle(IMColor.ink)
-		                                    Text(
-                                                [
-                                                    state.visibleGroupMemberCount(
-                                                        currentGroup.memberCount,
-                                                        currentGroup.members.count
-                                                    ).map { "\($0) 人" },
-                                                    currentGroup.owner.isEmpty ? nil : "群主 \(currentGroup.owner)"
-                                                ]
-                                                .compactMap { $0 }
-                                                .joined(separator: " · ")
-                                            )
-	                                        .font(.system(size: 13, weight: .semibold))
-	                                        .foregroundStyle(IMColor.muted)
-		                                }
-		                                Spacer()
-                                        HStack(spacing: 8) {
-                                            StatusPill(title: roleTitle, color: roleColor)
-                                            if canManage {
-                                                Button {
-                                                    activeSheet = .profile
-                                                } label: {
-                                                    Image(systemName: "square.and.pencil")
-                                                        .font(.system(size: 15, weight: .black))
-                                                        .foregroundStyle(IMColor.brand)
-                                                        .frame(width: 36, height: 36)
-                                                        .background(Circle().fill(IMColor.brand.opacity(0.10)))
-                                                        .overlay(Circle().stroke(IMColor.brand.opacity(0.14), lineWidth: 1))
-                                                }
-                                                .buttonStyle(.plain)
-                                                .contentShape(Circle())
-                                                .accessibilityLabel("编辑群资料")
-                                            }
-                                        }
-		                            }
-	                            Text(currentGroup.notice)
-	                                .font(.system(size: 13, weight: .semibold))
-	                                .foregroundStyle(IMColor.muted)
-	                                .padding(12)
-	                                .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(IMColor.brand.opacity(0.08)))
-                                if !currentGroup.groupDescription.isEmpty {
-                                    Label(currentGroup.groupDescription, systemImage: "text.alignleft")
-                                        .font(.system(size: 13, weight: .semibold))
-                                        .foregroundStyle(IMColor.muted)
+                    // WDT_GROUP_DETAIL_LAYOUT_20261021: spacing and alignment only.
+                    VStack(spacing: 20) {
+                        VStack(alignment: .leading, spacing: 16) {
+                            HStack(alignment: .top, spacing: 12) {
+                                GroupAvatarView(name: currentGroup.name, seed: 0x5D6BFF, size: 56, imageURL: currentGroup.avatarURL, avatarVersion: currentGroup.avatarVersion, avatarUpdatedAt: currentGroup.avatarUpdatedAt, imageCacheKey: state.groupAvatarCacheKey(groupID: currentGroup.id, avatarURL: currentGroup.avatarURL, avatarVersion: currentGroup.avatarVersion, avatarUpdatedAt: currentGroup.avatarUpdatedAt))
+                                VStack(alignment: .leading, spacing: 8) {
+                                    Text(currentGroup.name)
+                                        .font(.system(size: 20, weight: .bold))
+                                        .foregroundStyle(IMColor.ink)
                                         .fixedSize(horizontal: false, vertical: true)
-                                        .padding(12)
-                                        .frame(maxWidth: .infinity, alignment: .leading)
-                                        .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(IMColor.violet.opacity(0.07)))
+                                    Text(
+                                        [
+                                            state.visibleGroupMemberCount(
+                                                currentGroup.memberCount
+                                            ).map { "\($0) 人" },
+                                            currentGroup.owner.isEmpty ? nil : "群主 \(currentGroup.owner)"
+                                        ]
+                                        .compactMap { $0 }
+                                        .joined(separator: " · ")
+                                    )
+                                    .font(.system(size: 13, weight: .medium))
+                                    .foregroundStyle(IMColor.muted)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                    if let roleTitle {
+                                        StatusPill(title: roleTitle, color: roleColor)
+                                            .fixedSize(horizontal: true, vertical: false)
+                                    }
                                 }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                if canManage {
+                                    Button {
+                                        activeSheet = .profile
+                                    } label: {
+                                        Image(systemName: "square.and.pencil")
+                                            .font(.system(size: 16, weight: .semibold))
+                                            .foregroundStyle(IMColor.brand)
+                                            .frame(width: 44, height: 44)
+                                            .background(Circle().fill(IMColor.brand.opacity(0.10)))
+                                            .overlay(Circle().stroke(IMColor.brand.opacity(0.14), lineWidth: 1))
+                                    }
+                                    .buttonStyle(.plain)
+                                    .contentShape(Circle())
+                                    .accessibilityLabel("编辑群资料")
+                                }
+                            }
+                            // WDT_APP_CONTRACT_20261021_14: placeholders are presentation-only.
+                            VStack(spacing: 10) {
+                                GroupDetailInformationRow(
+                                    symbol: "megaphone.fill",
+                                    text: currentGroup.notice.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "暂无群公告" : currentGroup.notice,
+                                    tint: IMColor.brand
+                                )
+                                GroupDetailInformationRow(
+                                    symbol: "text.alignleft",
+                                    text: currentGroup.groupDescription.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "暂无群描述" : currentGroup.groupDescription,
+                                    tint: IMColor.violet
+                                )
+                            }
                         }
-                        .glassCard(radius: 28)
+                        .glassCard(radius: 24)
 
-			                        VStack(spacing: 12) {
-				                            SettingsRow(symbol: "person.3.fill", title: "群成员", subtitle: canManage ? "邀请、移除、设置管理员" : "查看群成员") {
-				                                activeSheet = .members
-				                            }
-                                        SettingsRow(
-                                            symbol: "person.text.rectangle.fill",
-                                            title: "我的群昵称",
-                                            subtitle: state.myGroupNickname(groupID: currentGroup.id).isEmpty
-                                                ? "未设置，显示全局昵称"
-                                                : state.myGroupNickname(groupID: currentGroup.id)
-                                        ) {
-                                            activeSheet = .myNickname
-                                        }
-			                            SettingsRow(symbol: "megaphone.fill", title: "群公告", subtitle: canManage ? "公告查看、发布" : "公告查看") {
-			                                activeSheet = .announcement
-			                            }
-			                            SettingsRow(symbol: "folder.fill", title: "群文件", subtitle: "文件预览、下载、转发") {
-			                                activeSheet = .files
-			                            }
-                                        SettingsRow(
-                                            symbol: "pin.square.fill",
-                                            title: "群内置顶消息",
-                                            subtitle: pinnedMessageCount > 0 ? "\(pinnedMessageCount) 条置顶消息" : "查看、定位、取消置顶"
-                                        ) {
-                                            onPinnedMessages?()
-                                        }
-	                                        SettingsRow(
-	                                            symbol: isConversationPinned ? "pin.slash.fill" : "pin.fill",
-	                                            title: isConversationPinned ? "取消置顶" : "置顶会话",
-                                            subtitle: isConversationPinned ? "已固定在会话列表顶部" : "固定在会话列表顶部"
-                                        ) {
-                                            state.togglePinned(currentGroup.id)
-                                        }
-                                        if canManage {
-					                                SettingsRow(symbol: "speaker.slash.fill", title: "全员禁言", subtitle: currentGroup.allMuteStatusText()) {
-					                                    activeSheet = .muteAll
-					                                }
-                                        }
-                                        SettingsRow(
-                                            symbol: "person.crop.circle.badge.exclamationmark.fill",
-                                            title: "禁言名单",
-                                            subtitle: currentGroup.muteListStatusText,
-                                            tint: IMColor.warning
-                                        ) {
-                                            activeSheet = .muteList
-                                        }
-			                            SettingsRow(symbol: "bell.slash.fill", title: "群免打扰", subtitle: isNotificationMuted ? "已开启" : "通知开启") {
-			                                activeSheet = .mute
-			                            }
-                                        if canManage {
-                                            SettingsRow(
-                                                symbol: "person.badge.shield.checkmark.fill",
-                                                title: "入群审批",
-                                                subtitle: currentGroup.inviteConfirmRequired ? "已开启" : "未开启"
-                                            ) {
-                                                if forcedAuthPromptDeferralToken == nil {
-                                                    forcedAuthPromptDeferralToken = state.beginForcedAppPolicyAuthPromptDeferral()
-                                                }
-                                                activeSheet = .joinApproval
-                                            }
-                                        }
-                                        SettingsRow(
-                                            symbol: "clock.arrow.circlepath",
-                                            title: "新成员可查看入群前消息",
-                                            subtitle: currentGroup.historyVisibilityStatusText
-                                        ) {
-                                            activeSheet = .historyVisibility
-                                        }
-                                        if isCurrentUserOwner {
-                                            GroupLifecycleActionRow(
-                                                symbol: "xmark.octagon",
-                                                title: "解散群聊"
-                                            ) {
-                                                guard !isLifecycleActionRunning else { return }
-                                                captureLifecycleActionContext(groupID: currentGroup.id)
-                                                lifecycleInlineMessage = nil
-                                                dissolvePreview = nil
-                                                dissolvePreviewScopeKey = nil
-                                                dissolvePreviewError = nil
-                                                showDissolveDetail = true
-                                            }
-                                            .accessibilityIdentifier("group_detail_dissolve_button")
-                                        } else {
-                                            GroupLifecycleActionRow(
-                                                symbol: "rectangle.portrait.and.arrow.right",
-                                                title: "退出群聊"
-                                            ) {
-                                                guard !isLifecycleActionRunning else { return }
-                                                captureLifecycleActionContext(groupID: currentGroup.id)
-                                                lifecycleInlineMessage = nil
-                                                showLeaveDetail = true
-                                            }
-                                            .accessibilityIdentifier("group_detail_leave_button")
-                                        }
-					                        }
-	                        .plainCard(radius: 24)
+                        // WDT_APP_CONTRACT_20261021_11: reuse the summary preview, bounded to 19 members.
+                        GroupDetailMemberGrid(group: currentGroup, onMember: { previewMember = $0 }) {
+                            activeSheet = .members
+                        }
+
+                        VStack(spacing: 0) {
+                            GroupDetailMenuRow(
+                                symbol: "person.text.rectangle.fill",
+                                title: "我的群昵称",
+                                subtitle: state.myGroupNickname(groupID: currentGroup.id).isEmpty
+                                ? "未设置，显示全局昵称"
+                                : state.myGroupNickname(groupID: currentGroup.id)
+                            ) {
+                                activeSheet = .myNickname
+                            }
+                            GroupDetailMenuRow(symbol: "megaphone.fill", title: "群公告", subtitle: canManage ? "公告查看、发布" : "公告查看") {
+                                activeSheet = .announcement
+                            }
+                            GroupDetailMenuRow(symbol: "folder.fill", title: "群文件", subtitle: "文件预览、下载、转发") {
+                                activeSheet = .files
+                            }
+                            GroupDetailMenuRow(
+                                symbol: "pin.square.fill",
+                                title: "群内置顶消息",
+                                subtitle: pinnedMessageCount > 0 ? "\(pinnedMessageCount) 条置顶消息" : "查看、定位、取消置顶"
+                            ) {
+                                onPinnedMessages?()
+                            }
+                            GroupDetailMenuRow(
+                                symbol: isConversationPinned ? "pin.slash.fill" : "pin.fill",
+                                title: isConversationPinned ? "取消置顶" : "置顶会话",
+                                subtitle: isConversationPinned ? "已固定在会话列表顶部" : "固定在会话列表顶部"
+                            ) {
+                                state.togglePinned(currentGroup.id)
+                            }
+                            GroupDetailMenuDivider()
+                            if canManage {
+                                GroupDetailMenuRow(symbol: "speaker.slash.fill", title: "全员禁言", subtitle: currentGroup.allMuteStatusText()) {
+                                    activeSheet = .muteAll
+                                }
+                            }
+                            GroupDetailMenuRow(
+                                symbol: "person.crop.circle.badge.exclamationmark.fill",
+                                title: "禁言名单",
+                                subtitle: currentGroup.muteListStatusText,
+                                tint: IMColor.warning
+                            ) {
+                                activeSheet = .muteList
+                            }
+                            GroupDetailMenuRow(symbol: "bell.slash.fill", title: "群免打扰", subtitle: isNotificationMuted ? "已开启" : "通知开启") {
+                                activeSheet = .mute
+                            }
+                            GroupDetailMenuDivider()
+                            if canManage {
+                                GroupDetailMenuRow(
+                                    symbol: "person.badge.shield.checkmark.fill",
+                                    title: "入群审批",
+                                    subtitle: currentGroup.inviteConfirmRequired ? "已开启" : "未开启"
+                                ) {
+                                    if forcedAuthPromptDeferralToken == nil {
+                                        forcedAuthPromptDeferralToken = state.beginForcedAppPolicyAuthPromptDeferral()
+                                    }
+                                    activeSheet = .joinApproval
+                                }
+                            }
+                            if canManage {
+                                GroupDetailMenuRow(symbol: "person.2.fill", title: "互加好友",
+                                    subtitle: currentGroup.memberFriendApplyEnabled.map { $0 ? "已开启" : "已关闭" } ?? "同步中") {
+                                    activeSheet = .memberFriendApply
+                                }
+                            }
+                            GroupDetailMenuRow(
+                                symbol: "clock.arrow.circlepath",
+                                title: "新成员可查看入群前消息",
+                                subtitle: currentGroup.historyVisibilityStatusText
+                            ) {
+                                activeSheet = .historyVisibility
+                            }
+                            if isCurrentUserOwner {
+                                GroupDetailMenuDivider()
+                                GroupLifecycleActionRow(
+                                    symbol: "xmark.octagon",
+                                    title: "解散群聊"
+                                ) {
+                                    guard !isLifecycleActionRunning else { return }
+                                    captureLifecycleActionContext(groupID: currentGroup.id)
+                                    lifecycleInlineMessage = nil
+                                    dissolvePreview = nil
+                                    dissolvePreviewScopeKey = nil
+                                    dissolvePreviewError = nil
+                                    showDissolveDetail = true
+                                }
+                                .accessibilityIdentifier("group_detail_dissolve_button")
+                            } else if state.canLeaveGroupByTenantPolicy {
+                                GroupDetailMenuDivider()
+                                GroupLifecycleActionRow(
+                                    symbol: "rectangle.portrait.and.arrow.right",
+                                    title: "退出群聊"
+                                ) {
+                                    guard !isLifecycleActionRunning else { return }
+                                    captureLifecycleActionContext(groupID: currentGroup.id)
+                                    lifecycleInlineMessage = nil
+                                    showLeaveDetail = true
+                                }
+                                .accessibilityIdentifier("group_detail_leave_button")
+                            }
+                        }
+                        .plainCard(radius: 24)
                     }
-                    .padding(18)
-                    .padding(.top, 42)
+                    .frame(maxWidth: 640)
+                    .padding(.horizontal, 16)
+                    .padding(.top, 64)
+                    .padding(.bottom, 32)
+                    .frame(maxWidth: .infinity)
                 }
                 VStack {
                     HStack(spacing: 10) {
@@ -3254,7 +3289,7 @@ struct GroupDetailView: View {
                             Image(systemName: "xmark")
                                 .font(.system(size: 13, weight: .black))
                                 .foregroundStyle(IMColor.muted)
-                                .frame(width: 40, height: 40)
+                                .frame(width: 44, height: 44)
                                 .background(Circle().fill(.white.opacity(0.94)))
                                 .overlay(Circle().stroke(IMColor.line, lineWidth: 1))
                                 .shadow(color: IMColor.brand.opacity(0.10), radius: 14, y: 6)
@@ -3296,6 +3331,8 @@ struct GroupDetailView: View {
 		                            }
 	                    case .historyVisibility:
 	                        GroupHistoryVisibilitySheet(group: currentGroup)
+                        case .memberFriendApply:
+                            GroupMemberFriendApplySheet(groupID: currentGroup.id)
 		                    }
 		                }
 	                .onChangeCompat(of: activeSheet) { _, sheet in
@@ -3355,9 +3392,29 @@ struct GroupDetailView: View {
                         beginDissolvePreview()
                     }
 	                }
-	                .onAppear {
-	                    state.loadGroupDetailIfNeeded(groupID: group.id)
-	                }
+                    .sheet(item: $previewMember, onDismiss: {
+                        if let id = pendingPreviewConversationID {
+                            pendingPreviewConversationID = nil
+                            previewConversationRoute = ContactsConversationRoute(id: id)
+                        }
+                    }) { user in
+                        NavigationStackCompat {
+                            UserProfileView(user: user, onOpenConversation: { id in
+                                pendingPreviewConversationID = id
+                                previewMember = nil
+                            }, sourceGroupID: currentGroup.id)
+                        }
+                    }
+                    .navigationDestinationCompat(item: $previewConversationRoute) { route in
+                        ChatView(conversationID: route.conversationID)
+                    }
+                    .task(id: state.contentCacheScopeKey + "|" + group.id) {
+                        state.refreshAppInteractionPolicy(force: true)
+                        await state.refreshGroupBundle(groupID: group.id, silent: true, includeSecondaryData: false)
+                    }
+                    .onChangeCompat(of: state.shouldShowGroupMemberCount) { _, _ in
+                        state.loadGroupDetailIfNeeded(groupID: group.id, force: true, includeSecondaryData: false)
+                    }
 						    }
 					}
 
@@ -3461,6 +3518,7 @@ struct GroupDetailView: View {
     case muteList
     case joinApproval
     case historyVisibility
+    case memberFriendApply
 
     var id: String { rawValue }
 }
@@ -3629,7 +3687,7 @@ private struct GroupLifecycleActionRow: View {
                     .font(.system(size: 12, weight: .bold))
                     .foregroundStyle(IMColor.muted)
             }
-            .frame(minHeight: 44)
+            .frame(minHeight: 72)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -4509,8 +4567,8 @@ private extension UIImage {
 }
 
 enum GroupMemberInviteAffordancePolicy {
-    static func isVisible(canManage: Bool, inviteConfirmRequired: Bool) -> Bool {
-        canManage || inviteConfirmRequired
+    static func isVisible(canManage: Bool, inviteConfirmRequired: Bool, isMember: Bool = false) -> Bool {
+        canManage || isMember
     }
 }
 
@@ -4536,7 +4594,8 @@ struct GroupMemberManagementView: View {
     private var canInviteMembers: Bool {
         GroupMemberInviteAffordancePolicy.isVisible(
             canManage: canManage,
-            inviteConfirmRequired: group.inviteConfirmRequired
+            inviteConfirmRequired: group.inviteConfirmRequired,
+            isMember: state.group(id: groupID)?.presentedRole.map { ["owner", "admin", "member"].contains($0) } == true
         )
     }
 
@@ -4676,11 +4735,15 @@ struct GroupMemberManagementView: View {
     }
 
     var body: some View {
+        // WDT_APP_CONTRACT_20261021_13: reuse one filter/sort result in row appearance callbacks.
+        let ownerSnapshot = filteredOwnerUser
+        let adminSnapshot = filteredAdminUsers
+        let memberSnapshot = filteredMemberUsers
         NavigationStackCompat {
             ZStack {
                 AuroraBackground()
                 ScrollView(showsIndicators: false) {
-                    VStack(alignment: .leading, spacing: 16) {
+                    LazyVStack(alignment: .leading, spacing: 16) {
                         SheetHeader(symbol: "person.3.fill", title: "群成员", subtitle: canManage ? "查看群主、管理员和成员。点按成员可查看资料或管理权限。" : "查看群主、管理员和成员。点按成员可查看资料。", showsCloseButton: true)
                         GroupMemberStatsCard(group: group, ownerName: ownerUser?.name ?? group.owner)
 
@@ -4693,11 +4756,11 @@ struct GroupMemberManagementView: View {
 
                         SearchField(text: $memberFilter, placeholder: "快速筛选姓名、账号、用户ID、手机号或拼音")
 
-                        if hasActiveFilter, !hasFilteredMatches {
+                        if hasActiveFilter, ownerSnapshot == nil, adminSnapshot.isEmpty, memberSnapshot.isEmpty {
                             EmptyStateView(symbol: "person.crop.circle.badge.questionmark", title: "没有匹配的成员", subtitle: "试试姓名、用户ID、角色或拼音首字母。")
                         }
 
-                        if let ownerUser = filteredOwnerUser {
+                        if let ownerUser = ownerSnapshot {
                             GroupMemberSection(title: "群主") {
 		                                GroupMemberRoleRow(user: ownerUser, role: .owner) {
 		                                    selectedMember = ownerUser
@@ -4708,34 +4771,34 @@ struct GroupMemberManagementView: View {
                             }
                         }
 
-                        if !filteredAdminUsers.isEmpty {
+                        if !adminSnapshot.isEmpty {
                             GroupMemberSection(title: "管理员") {
-                                ForEach(filteredAdminUsers) { user in
+                                ForEach(adminSnapshot) { user in
 		                                    GroupMemberRoleRow(user: user, role: .admin) {
 		                                        selectedMember = user
 		                                    }
                                         .onAppear {
-                                            loadMoreMembersIfNeeded(appearing: user, in: filteredAdminUsers)
+                                            loadMoreMembersIfNeeded(appearing: user, in: adminSnapshot)
                                         }
                                 }
                             }
                         }
 
-                        if !hasActiveFilter || !filteredMemberUsers.isEmpty {
+                        if !hasActiveFilter || !memberSnapshot.isEmpty {
 	                        GroupMemberSection(title: "成员") {
-	                            if filteredMemberUsers.isEmpty {
+	                            if memberSnapshot.isEmpty {
                                 Text("暂无普通成员")
                                     .font(.system(size: 13, weight: .semibold))
                                     .foregroundStyle(IMColor.muted)
                                     .frame(maxWidth: .infinity, minHeight: 54)
                                     .background(RoundedRectangle(cornerRadius: 18, style: .continuous).fill(.white.opacity(0.72)))
 	                            } else {
-	                                ForEach(filteredMemberUsers) { user in
+	                                ForEach(memberSnapshot) { user in
 		                                    GroupMemberRoleRow(user: user, role: .member) {
 		                                        selectedMember = user
 		                                    }
                                         .onAppear {
-                                            loadMoreMembersIfNeeded(appearing: user, in: filteredMemberUsers)
+                                            loadMoreMembersIfNeeded(appearing: user, in: memberSnapshot)
                                         }
 		                                }
 		                            }
@@ -4771,7 +4834,7 @@ struct GroupMemberManagementView: View {
                         UserProfileView(user: user, onOpenConversation: { conversationID in
                             pendingProfileConversationID = conversationID
                             profileMember = nil
-                        })
+                        }, sourceGroupID: groupID)
                     }
                 .presentationDetentsCompat([.large])
                 .presentationDragIndicatorCompat(.visible)
@@ -4785,9 +4848,12 @@ struct GroupMemberManagementView: View {
                 GroupInviteMembersSheet(group: group)
                     .presentationDetentsCompat([.medium, .large])
             }
-            .onAppear {
+            .task(id: state.contentCacheScopeKey + "|" + groupID) {
+                state.refreshAppInteractionPolicy(force: true)
+                await state.refreshGroupBundle(groupID: groupID, silent: true)
+            }
+            .onChangeCompat(of: state.shouldShowGroupMemberCount) { _, _ in
                 state.loadGroupDetailIfNeeded(groupID: groupID, force: true)
-                state.loadNextGroupMembersPageIfNeeded(groupID: groupID)
             }
         }
     }
@@ -4830,11 +4896,14 @@ private struct GroupMemberStatsCard: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            if let memberCount = state.visibleGroupMemberCount(group.memberCount, group.members.count) {
+            if let memberCount = state.visibleGroupMemberCount(group.memberCount) {
                 GroupMemberStat(value: String(memberCount), label: "成员")
             }
             GroupMemberStat(value: ownerName, label: "群主")
-            GroupMemberStat(value: "\(group.admins.count)", label: "管理员")
+            // WDT_APP_CONTRACT_20261021_05: hide all aggregate statistics together.
+            if state.shouldShowGroupMemberCount, let adminCount = group.adminCount, adminCount >= 0 {
+                GroupMemberStat(value: String(adminCount), label: "管理员")
+            }
         }
         .plainCard(radius: 22)
     }
@@ -4871,7 +4940,7 @@ private struct GroupMemberSection<Content: View>: View {
                 .font(.system(size: 15, weight: .black))
                 .foregroundStyle(IMColor.muted)
                 .padding(.horizontal, 4)
-            VStack(spacing: 10) {
+            LazyVStack(spacing: 10) {
                 content
             }
         }
@@ -4947,11 +5016,14 @@ private struct GroupRoleBadge: View {
                 .font(.system(size: 10, weight: .black))
             Text(role.title)
                 .font(.system(size: 11, weight: .black))
+                .lineLimit(1)
         }
         .foregroundStyle(role.color)
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
         .background(Capsule().fill(role.color.opacity(0.12)))
+        // WDT_GROUP_ROLE_BADGE_20261021: keep the original pill from wrapping or compressing beside long names.
+        .fixedSize(horizontal: true, vertical: true)
     }
 }
 
@@ -5378,7 +5450,12 @@ private struct GroupFilesSheet: View {
 	                                    GroupSheetActionButton(title: "转发", symbol: "arrowshape.turn.up.right.fill") {
 	                                        forwardingFile = file
 	                                    }
+                                        .disabled(state.messageActionPolicyUnavailableReason(.forward) != nil)
+                                        .opacity(state.messageActionPolicyUnavailableReason(.forward) == nil ? 1 : 0.45)
 	                                }
+                                if let snapshot = state.fileDownloadSnapshot(file) {
+                                    AttachmentDownloadProgressView(snapshot: snapshot) { state.cancelFileDownload(file) }
+                                }
                             }
                             .plainCard(radius: 22)
                         }
@@ -5521,7 +5598,7 @@ private struct GroupFileForwardTargetSheet: View {
                                     .plainCard(radius: 18)
                                 }
                                 .buttonStyle(.plain)
-                                .disabled(submittingTargetID != nil)
+                                .disabled(submittingTargetID != nil || state.messageActionPolicyUnavailableReason(.forward) != nil)
                             }
                         }
                     }

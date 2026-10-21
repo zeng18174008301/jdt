@@ -783,6 +783,10 @@ extension AppState {
     }
 
     func blockContact(_ user: IMUser) {
+        guard canBlacklistByTenantPolicy else {
+            toast = "当前企业暂不允许拉黑"
+            return
+        }
         let context = apiContext
         guard context.hasIMSession else {
             toast = "登录状态失效，请重新登录后拉黑"
@@ -841,6 +845,10 @@ extension AppState {
     }
 
     func deleteContact(_ user: IMUser) {
+        guard canDeleteFriendByTenantPolicy else {
+            toast = "当前企业暂不允许删除好友"
+            return
+        }
         let context = apiContext
         guard context.hasIMSession else {
             toast = "登录状态失效，请重新登录后删除好友"

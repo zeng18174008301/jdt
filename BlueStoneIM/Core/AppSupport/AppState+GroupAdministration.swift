@@ -990,12 +990,10 @@ extension AppState {
             guard isCurrentRemoteScope(scope) else { return false }
             await refreshInboxSilently()
             guard isCurrentRemoteScope(scope) else { return false }
-            if response.requiresApproval {
-                toast = "已提交入群邀请，等待群主或管理员审核"
-            } else {
+            if !response.requiresApproval {
                 syncConversationMessagesIfNeeded(groupID, force: true)
-                toast = "已邀请 \(max(response.items.count, uniqueIDs.count)) 人入群"
             }
+            toast = response.invitationResultMessage
             return true
         } catch {
             guard isCurrentRemoteScope(scope) else { return false }
@@ -1226,6 +1224,33 @@ extension AppState {
         }
     }
 
+    // WDT_APP_CONTRACT_20261021_09: revisioned setting mutation; all other settings are preserved.
+    func setGroupMemberFriendApply(groupID: String, enabled: Bool) async -> Bool {
+        guard let group = group(id: groupID), canManageGroup(group),
+              let client = api as? IMAPIClient, apiContext.hasIMSession else { return false }
+        let context = apiContext
+        let scope = remoteDataScopeKey(for: context)
+        let generation = interactionPolicyGeneration
+        do {
+            let detail = try await client.updateGroupMemberFriendApply(context: context, groupID: groupID,
+                enabled: enabled, expectedGroupRevision: group.groupRevision)
+            guard isCurrentRemoteScope(scope), interactionPolicyGeneration == generation else { return false }
+            await updateGroupDetail(groupID, from: detail)
+            return true
+        } catch {
+            guard isCurrentRemoteScope(scope), interactionPolicyGeneration == generation else { return false }
+            await refreshGroupBundle(groupID: groupID, silent: true, includeSecondaryData: false)
+            guard isCurrentRemoteScope(scope), interactionPolicyGeneration == generation else { return false }
+            if case IMAPIError.conflict(let code, _) = error,
+               ["group_revision_conflict", "group_revision_required"].contains(code) {
+                toast = "群设置已更新，请核对后重试"
+            } else {
+                handleRemoteError(error, fallback: "互加好友设置失败")
+            }
+            return false
+        }
+    }
+
     func toggleGroupHistoryVisibility(_ groupID: String, enabled: Bool) {
         guard let groupIndex = groups.firstIndex(where: { $0.id == groupID }) else { return }
         guard canManageGroup(groups[groupIndex]) else {
@@ -1369,6 +1394,10 @@ extension AppState {
 
     @discardableResult
     func leaveGroup(groupID: String) async -> Bool {
+        guard canLeaveGroupByTenantPolicy else {
+            toast = "当前企业暂不允许退出群聊"
+            return false
+        }
         guard let group = group(id: groupID) else {
             toast = "该群聊不存在或已解散"
             removeGroupLifecycleLocalState(groupID: groupID, reason: "leave_missing_group")

@@ -627,7 +627,7 @@ struct FilesView: View {
                         }
                         return
                     }
-                    guard let remoteURL = refreshedFile.systemPreviewRemoteURL else {
+                    guard refreshedFile.systemPreviewRemoteURL != nil else {
                         await MainActor.run {
                             guard state.contentCacheScopeKey == cacheScope else {
                                 loadingPreview = false
@@ -639,28 +639,7 @@ struct FilesView: View {
                         }
                         return
                     }
-                    let downloadedURL = try await MediaSignedURLRecovery.perform(
-                        initialURL: remoteURL,
-                        refreshURL: {
-                            let refreshedAgain = try await state.refreshTenantFile(refreshedFile)
-                            guard let refreshedURL = refreshedAgain.systemPreviewRemoteURL else {
-                                throw IMAPIError.server("当前文件暂不支持预览")
-                            }
-                            return refreshedURL
-                        },
-                        operation: { candidateURL in
-                            try await SystemPreviewLoader.download(
-                                candidateURL,
-                                suggestedName: refreshedFile.name,
-                                cacheIdentity: refreshedFile.systemPreviewCacheIdentity(scope: cacheScope)
-                            )
-                        }
-                    )
-                    let localURL = if let cacheContext {
-                        await FilesPreviewCacheAdapter.cacheDownloadedPreview(downloadedURL, for: refreshedFile, state: state, context: cacheContext)
-                    } else {
-                        downloadedURL
-                    }
+                    let localURL = try await state.prepareTenantFileLocalFile(refreshedFile, preview: true)
                     await MainActor.run {
                         guard state.contentCacheScopeKey == cacheScope else {
                             loadingPreview = false
@@ -999,6 +978,7 @@ private struct FavoriteAssetRow: View {
 }
 
 private struct FileRow: View {
+    @EnvironmentObject private var state: AppState
     let item: FileRenderItem
     let isPreparingDownload: Bool
     var actionsEnabled = true
@@ -1051,6 +1031,9 @@ private struct FileRow: View {
                 Spacer(minLength: 0)
             }
             .padding(.trailing, 38)
+            if let snapshot = state.fileDownloadSnapshot(file) {
+                AttachmentDownloadProgressView(snapshot: snapshot) { state.cancelFileDownload(file) }
+            }
         }
         .plainCard(radius: 22)
     }
@@ -1136,6 +1119,12 @@ struct FilePreviewView: View {
                     FilePreviewHero(file: file, isPreparingPreview: isPreparingPreview)
                         .frame(maxHeight: 420)
                         .padding(.horizontal, 18)
+
+                    if let snapshot = state.fileDownloadSnapshot(file) {
+                        AttachmentDownloadProgressView(snapshot: snapshot) { state.cancelFileDownload(file) }
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 18)
+                    }
 
                     VStack(spacing: 12) {
                         HStack {
@@ -1245,7 +1234,7 @@ struct FilePreviewView: View {
                     }
                     return
                 }
-                guard let remoteURL = refreshedFile.systemPreviewRemoteURL else {
+                guard refreshedFile.systemPreviewRemoteURL != nil else {
                     await MainActor.run {
                         guard state.contentCacheScopeKey == cacheScope else {
                             isPreparingPreview = false
@@ -1257,28 +1246,7 @@ struct FilePreviewView: View {
                     }
                     return
                 }
-                let downloadedURL = try await MediaSignedURLRecovery.perform(
-                    initialURL: remoteURL,
-                    refreshURL: {
-                        let refreshedAgain = try await state.refreshTenantFile(refreshedFile)
-                        guard let refreshedURL = refreshedAgain.systemPreviewRemoteURL else {
-                            throw IMAPIError.server("当前文件暂不支持预览")
-                        }
-                        return refreshedURL
-                    },
-                    operation: { candidateURL in
-                        try await SystemPreviewLoader.download(
-                            candidateURL,
-                            suggestedName: refreshedFile.name,
-                            cacheIdentity: refreshedFile.systemPreviewCacheIdentity(scope: cacheScope)
-                        )
-                    }
-                )
-                let localURL = if let cacheContext {
-                    await FilesPreviewCacheAdapter.cacheDownloadedPreview(downloadedURL, for: refreshedFile, state: state, context: cacheContext)
-                } else {
-                    downloadedURL
-                }
+                let localURL = try await state.prepareTenantFileLocalFile(refreshedFile, preview: true)
                 await MainActor.run {
                     guard state.contentCacheScopeKey == cacheScope else {
                         isPreparingPreview = false
@@ -1726,57 +1694,8 @@ struct DismissibleQuickLookPreview: View {
 enum TenantFileSharePreparer {
     @MainActor
     static func prepare(file: FileItem, state: AppState, scope: String) async throws -> URL {
-        let cacheContext = state.mediaCacheScopeContext
-        if let cacheContext {
-            let metadata = file.mediaResourceMetadata(scope: cacheContext.scopeHash)
-            let integrity = MediaFileIntegrityAuthority(
-                expectedSizeBytes: file.sizeBytes,
-                expectedSHA256: file.checksum
-            )
-            if let cached = await state.lookupIndexedMediaCache(
-                metadata: metadata,
-                messageID: file.remoteLookupID,
-                resourceKind: .original,
-                integrity: integrity,
-                context: cacheContext,
-                offline: true
-            ) {
-                return cached
-            }
-        }
-        let resolved = try await state.resolveTenantFileURL(file, preview: false)
-        let identity = resolved.file.systemPreviewCacheIdentity(scope: scope).map { "\($0)|share" }
-        let downloadedURL = try await MediaSignedURLRecovery.perform(
-            initialURL: resolved.url,
-            refreshURL: {
-                let refreshed = try await state.resolveTenantFileURL(resolved.file, preview: false)
-                return refreshed.url
-            },
-            operation: { candidateURL in
-                try await SystemPreviewLoader.download(
-                    candidateURL,
-                    suggestedName: resolved.file.name,
-                    cacheIdentity: identity
-                )
-            }
-        )
-        guard let cacheContext else { return downloadedURL }
-        let metadata = resolved.file.mediaResourceMetadata(scope: cacheContext.scopeHash)
-        let committed = try await state.commitIndexedMediaCache(
-            temporaryURL: downloadedURL,
-            metadata: metadata,
-            resourceKind: .original,
-            integrity: MediaFileIntegrityAuthority(
-                expectedSizeBytes: resolved.file.sizeBytes,
-                expectedSHA256: resolved.file.checksum
-            ),
-            messageID: resolved.file.remoteLookupID,
-            conversationID: "__files__",
-            authorityVersion: "0",
-            context: cacheContext
-        )
-        SystemPreviewLoader.discardTransient(downloadedURL)
-        return committed
+        guard state.contentCacheScopeKey == scope else { throw CancellationError() }
+        return try await state.prepareTenantFileLocalFile(file)
     }
 }
 

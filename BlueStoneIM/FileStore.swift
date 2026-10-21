@@ -1,5 +1,27 @@
 import Foundation
 
+// WDT_APP_CONTRACT_20261021_10: actual transport bytes; receiving is not a committed cache hit.
+struct AttachmentDownloadSnapshot: Equatable, Sendable {
+    var receivedBytes: Int64 = 0
+    var totalBytes: Int64? = nil
+    var isCommitting = false
+
+    var fraction: Double? {
+        guard !isCommitting, let totalBytes, totalBytes > 0, receivedBytes < totalBytes else { return nil }
+        return max(0, Double(receivedBytes) / Double(totalBytes))
+    }
+
+    var label: String {
+        let received = ByteCountFormatter.string(fromByteCount: receivedBytes, countStyle: .file)
+        if isCommitting || (totalBytes.map { $0 > 0 && receivedBytes >= $0 } ?? false) { return "校验/保存中" }
+        if let totalBytes, let fraction {
+            let total = ByteCountFormatter.string(fromByteCount: totalBytes, countStyle: .file)
+            return "\(Int(fraction * 100))% · \(received)/\(total)"
+        }
+        return "已下载 \(received)"
+    }
+}
+
 @MainActor
 final class FileStore: ObservableObject {
     @Published private var files: [FileItem] = []
@@ -7,6 +29,7 @@ final class FileStore: ObservableObject {
     @Published private var syncErrorMessage: String?
     @Published private var uploadConfig: FileUploadConfig = .defaultValue
     @Published private var downloadProgressByID: [String: Double] = [:]
+    @Published private var downloadSnapshots: [String: AttachmentDownloadSnapshot] = [:]
     @Published private var downloadFailedIDs: Set<String> = []
     @Published private var groupFiles: [String: [FileItem]] = [:]
     @Published private var groupSyncingIDs: Set<String> = []
@@ -16,6 +39,7 @@ final class FileStore: ObservableObject {
     private var attachmentUploadCheckpoints: [String: AttachmentUploadCheckpoint] = [:]
     private var attachmentUploadTasks: [String: Task<Void, Never>] = [:]
     private var attachmentDownloadTasks: [String: Task<URL, Error>] = [:]
+    private var attachmentDownloadTokens: [String: UUID] = [:]
     private var localAttachmentResourcesByID: [String: LocalAttachmentPreviewResources] = [:]
     // JHT_MOD_BEGIN CHAT_HISTORY_SYNC_UI_PERF_BEGIN_ATTACHMENT_DOWNLOAD_PROGRESS_THROTTLE_STATE - 修改开始：附件下载进度刷新节流状态，降低图片加载时聊天列表重绘压力
     private var attachmentDownloadProgressUpdateTimes: [String: Date] = [:]
@@ -185,6 +209,8 @@ final class FileStore: ObservableObject {
     func cancelAttachmentDownloadTasks() {
         attachmentDownloadTasks.values.forEach { $0.cancel() }
         attachmentDownloadTasks.removeAll()
+        attachmentDownloadTokens.removeAll()
+        downloadSnapshots.removeAll()
     }
 
     func attachmentDownloadTask(attachmentID: String) -> Task<URL, Error>? {
@@ -195,13 +221,33 @@ final class FileStore: ObservableObject {
         attachmentDownloadTasks[attachmentID] != nil
     }
 
-    func replaceAttachmentDownloadTask(attachmentID: String, with task: Task<URL, Error>) {
+    func replaceAttachmentDownloadTask(attachmentID: String, with task: Task<URL, Error>, token: UUID = UUID()) {
         attachmentDownloadTasks[attachmentID]?.cancel()
         attachmentDownloadTasks[attachmentID] = task
+        attachmentDownloadTokens[attachmentID] = token
     }
 
     func finishAttachmentDownloadTask(attachmentID: String) {
-        attachmentDownloadTasks[attachmentID] = nil
+        let token = attachmentDownloadTokens[attachmentID]
+        let keys = token.map { value in attachmentDownloadTokens.filter { $0.value == value }.map(\.key) } ?? [attachmentID]
+        for key in keys {
+            attachmentDownloadTasks[key] = nil
+            attachmentDownloadTokens[key] = nil
+            downloadSnapshots[key] = nil
+        }
+    }
+
+    // An unknown/stale version resolves to an authoritative version before starting the body GET.
+    func coalesceAttachmentDownload(from source: String, to resolved: String, token: UUID) -> Task<URL, Error>? {
+        if let existing = attachmentDownloadTasks[resolved], attachmentDownloadTokens[resolved] != token {
+            return existing
+        }
+        guard attachmentDownloadTokens[source] == token else { return nil }
+        attachmentDownloadTasks[resolved] = attachmentDownloadTasks[source]
+        attachmentDownloadTokens[resolved] = token
+        downloadSnapshots[resolved] = downloadSnapshots[source]
+        downloadFailedIDs.remove(resolved)
+        return nil
     }
 
     func cancelAttachmentDownloadTask(attachmentID: String) {
@@ -211,6 +257,25 @@ final class FileStore: ObservableObject {
 
     func attachmentDownloadProgress(attachmentID: String) -> Double? {
         downloadProgressByID[attachmentID]
+    }
+
+    func isCurrentAttachmentDownload(attachmentID: String, token: UUID) -> Bool {
+        attachmentDownloadTokens[attachmentID] == token
+    }
+
+    func attachmentDownloadSnapshot(attachmentID: String) -> AttachmentDownloadSnapshot? {
+        downloadSnapshots[attachmentID]
+    }
+
+    func setAttachmentDownloadSnapshot(_ snapshot: AttachmentDownloadSnapshot, attachmentID: String, token: UUID) {
+        guard isCurrentAttachmentDownload(attachmentID: attachmentID, token: token),
+              !(downloadSnapshots[attachmentID]?.isCommitting == true && !snapshot.isCommitting),
+              downloadSnapshots[attachmentID] != snapshot else { return }
+        var snapshots = downloadSnapshots
+        for (key, owner) in attachmentDownloadTokens where owner == token {
+            snapshots[key] = snapshot
+        }
+        downloadSnapshots = snapshots
     }
 
     func setAttachmentDownloadProgress(_ progress: Double, attachmentID: String) {
@@ -230,6 +295,7 @@ final class FileStore: ObservableObject {
     }
 
     func clearAttachmentDownloadProgress(attachmentID: String) {
+        downloadSnapshots[attachmentID] = nil
         // JHT_MOD_BEGIN CHAT_HISTORY_SYNC_UI_PERF_BEGIN_ATTACHMENT_DOWNLOAD_PROGRESS_THROTTLE_CLEAR - 修改开始：清理下载进度时同步清理节流状态，完成/失败/取消仍即时生效
         attachmentDownloadProgressUpdateTimes[attachmentID] = nil
         downloadProgressByID[attachmentID] = nil
@@ -248,6 +314,9 @@ final class FileStore: ObservableObject {
 
     func markAttachmentDownloadFailed(attachmentID: String) {
         downloadFailedIDs.insert(attachmentID)
+        if let token = attachmentDownloadTokens[attachmentID] {
+            downloadFailedIDs.formUnion(attachmentDownloadTokens.filter { $0.value == token }.map(\.key))
+        }
     }
 
     func clearAttachmentDownloadFailed(attachmentID: String) {

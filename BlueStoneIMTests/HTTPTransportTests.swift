@@ -6,6 +6,46 @@ import OSLog
 
 @MainActor
 final class HTTPTransportTests: XCTestCase {
+    private func configureOrdinaryActionPolicyForExistingFlowTest(_ state: AppState) {
+        state.currentEnterprise = Enterprise(id: "tenant-1", name: "Fixture", code: "T1", role: "member",
+            status: "正常", memberCount: 1, isDefault: false, accentHex: 0)
+        state.interactionPolicyScope = state.remoteDataScopeKey(for: state.apiContext)
+        state.interactionPolicy.allowMemberBlacklist = true
+        state.interactionPolicy.allowMemberFriendDelete = true
+    }
+
+    func testContractDisabledOrUnknownRelationshipActionsNeverMutateOrSendRequests() {
+        let transport = FakeHTTPTransport(results: [])
+        let state = AppState(api: makeClient(transport: transport), apiContextOverride: makeContext())
+        configureOrdinaryActionPolicyForExistingFlowTest(state)
+        state.interactionPolicy.allowMemberBlacklist = false
+        state.interactionPolicy.allowMemberFriendDelete = nil
+        let peer = makeUser(id: "uid-2", name: "Peer")
+        state.contacts = [peer]
+        state.blockContact(peer)
+        state.deleteContact(peer)
+        XCTAssertEqual(state.contacts.map(\.id), [peer.id])
+        XCTAssertTrue(state.blacklist.isEmpty)
+        XCTAssertTrue(transport.requests().isEmpty)
+    }
+
+    func testContractGroupFriendSettingSendsOnlySettingAndExpectedRevision() async throws {
+        let transport = FakeHTTPTransport(results: [
+            HTTPTransportResult(data: Data(#"{"ok":true,"data":{"group_id":"g1"}}"#.utf8), isHTTPResponse: true, statusCode: 200),
+            HTTPTransportResult(data: Data(#"{"ok":true,"data":{"group":{"group_id":"g1"},"my_role":"admin","settings":{"web_member_friend_apply_enabled":false,"group_revision":8}}}"#.utf8), isHTTPResponse: true, statusCode: 200)
+        ])
+        let response = try await makeClient(transport: transport).updateGroupMemberFriendApply(
+            context: makeContext(), groupID: "g1", enabled: false, expectedGroupRevision: 7)
+        XCTAssertFalse(response.memberFriendApplyEnabled)
+        let requests = transport.requests()
+        XCTAssertEqual(requests.first?.url?.path, "/api/tenant/groups/g1/settings")
+        XCTAssertEqual(requests.first?.httpMethod, "PATCH")
+        let body = try requestJSONObject(XCTUnwrap(requests.first))
+        XCTAssertEqual(body["expected_group_revision"] as? Int, 7)
+        XCTAssertEqual(body["web_member_friend_apply_enabled"] as? Bool, false)
+        XCTAssertEqual(Set(body.keys), ["expected_group_revision", "web_member_friend_apply_enabled"])
+    }
+
     @MainActor
     func testConversationCredentialRotationDiscardsStalePageAndRestartsWithFreshToken() async throws {
         var current = makeProtectedSessionContext()
@@ -4573,6 +4613,8 @@ final class HTTPTransportTests: XCTestCase {
             )
         ])
         let state = AppState(api: makeClient(transport: transport), apiContextOverride: makeContext())
+        state.interactionPolicyScope = state.remoteDataScopeKey(for: state.apiContext)
+        state.messageActionsPolicy.forwardEnabled = true
         let file = FileItem(
             id: "file-1",
             name: "report.pdf",
@@ -7451,6 +7493,7 @@ final class HTTPTransportTests: XCTestCase {
             )
         ])
         let blockState = AppState(api: makeClient(transport: blockTransport), apiContextOverride: makeContext())
+        configureOrdinaryActionPolicyForExistingFlowTest(blockState)
         blockState.isAuthenticated = true
         blockState.contacts = [peer]
         blockState.contactRemarks = [peer.id: "Private Remark"]
@@ -7524,6 +7567,7 @@ final class HTTPTransportTests: XCTestCase {
             api: makeClient(transport: FakeHTTPTransport(results: [failure])),
             apiContextOverride: makeContext()
         )
+        configureOrdinaryActionPolicyForExistingFlowTest(blockState)
         blockState.isAuthenticated = true
         blockState.contacts = [peer]
         blockState.contactRemarks = [peer.id: "Private Remark"]

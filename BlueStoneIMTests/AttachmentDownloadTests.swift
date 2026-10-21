@@ -4,6 +4,30 @@ import XCTest
 @testable import BlueStoneIM
 
 final class AttachmentDownloadTests: XCTestCase {
+    @MainActor
+    func testDownloadAliasesShareStateAndRejectCallbacksFromCancelledOwner() async throws {
+        let store = FileStore()
+        let first = UUID()
+        let task = Task<URL, Error> { URL(fileURLWithPath: "/tmp/contract-download-test") }
+        store.replaceAttachmentDownloadTask(attachmentID: "unknown-version", with: task, token: first)
+        XCTAssertNil(store.coalesceAttachmentDownload(from: "unknown-version", to: "version-2", token: first))
+        store.setAttachmentDownloadSnapshot(AttachmentDownloadSnapshot(receivedBytes: 25, totalBytes: 100), attachmentID: "unknown-version", token: first)
+        XCTAssertEqual(store.attachmentDownloadSnapshot(attachmentID: "version-2")?.receivedBytes, 25)
+        store.cancelAttachmentDownloadTask(attachmentID: "version-2")
+        XCTAssertFalse(store.hasAttachmentDownloadTask(attachmentID: "unknown-version"))
+        let second = UUID()
+        let replacement = Task<URL, Error> { URL(fileURLWithPath: "/tmp/contract-download-test") }
+        store.replaceAttachmentDownloadTask(attachmentID: "version-2", with: replacement, token: second)
+        store.setAttachmentDownloadSnapshot(AttachmentDownloadSnapshot(receivedBytes: 99), attachmentID: "version-2", token: first)
+        XCTAssertNil(store.attachmentDownloadSnapshot(attachmentID: "version-2"))
+        store.setAttachmentDownloadSnapshot(AttachmentDownloadSnapshot(receivedBytes: 50, isCommitting: true), attachmentID: "version-2", token: second)
+        store.setAttachmentDownloadSnapshot(AttachmentDownloadSnapshot(receivedBytes: 40), attachmentID: "version-2", token: second)
+        XCTAssertEqual(store.attachmentDownloadSnapshot(attachmentID: "version-2")?.isCommitting, true)
+        store.cancelAttachmentDownloadTasks()
+        _ = try? await task.value
+        _ = try? await replacement.value
+    }
+
     func testGIFPresentationRequiresGIFIdentityAndRejectsRecalledDeletedOrOversizedMedia() {
         var message = makeEndpointOnlyAttachmentMessage()
         message.attachmentMimeType = "image/gif"
@@ -115,6 +139,18 @@ final class AttachmentDownloadTests: XCTestCase {
         XCTAssertFalse(AttachmentDownloadCachePolicy.canReuseCachedDownload(at: cacheURL, expectedSizeBytes: nil))
     }
 
+    func testDownloadSnapshotUsesBytesAndNeverCompletesBeforeCommit() {
+        let unknown = AttachmentDownloadSnapshot(receivedBytes: 1_024)
+        XCTAssertNil(unknown.fraction)
+        XCTAssertFalse(unknown.label.contains("%"))
+        let known = AttachmentDownloadSnapshot(receivedBytes: 25, totalBytes: 100)
+        XCTAssertEqual(known.fraction, 0.25)
+        let received = AttachmentDownloadSnapshot(receivedBytes: 100, totalBytes: 100)
+        XCTAssertNil(received.fraction)
+        XCTAssertEqual(received.label, "校验/保存中")
+        XCTAssertNil(AttachmentDownloadSnapshot(receivedBytes: 25, totalBytes: 100, isCommitting: true).fraction)
+    }
+
     func testAttachmentDownloadProgressDelegateUsesInjectedSessionAndStoresDownload() async throws {
         let payload = Data("downloaded-attachment".utf8)
         AttachmentDownloadURLProtocol.reset(statusCode: 200, data: payload)
@@ -149,7 +185,7 @@ final class AttachmentDownloadTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: localURL), payload)
         XCTAssertEqual(AttachmentDownloadURLProtocol.recordedRequests().map(\.url), [remoteURL])
         let progressValues = progress.snapshot()
-        XCTAssertEqual(progressValues.first, 0.02)
+        XCTAssertEqual(progressValues.first, 0)
         XCTAssertEqual(progressValues.last, 1)
     }
 

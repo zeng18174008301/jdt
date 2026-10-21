@@ -333,6 +333,18 @@ final class IdentityPresentationTests: XCTestCase {
         XCTAssertTrue(preview.contains("maxPixelSize: nil"))
     }
 
+    // WDT_GROUP_ROLE_BADGE_20261021
+    func testGroupRoleBadgeRetainsSingleLineCapsuleBesideLongNames() throws {
+        let contacts = try sourceText(relativePath: "../BlueStoneIM/ContactsViews.swift")
+        let badge = try sourceSection(contacts, startingAt: "private struct GroupRoleBadge")
+
+        XCTAssertTrue(badge.contains("Image(systemName: role.symbol)"))
+        XCTAssertTrue(badge.contains("Text(role.title)"))
+        XCTAssertTrue(badge.contains(".lineLimit(1)"))
+        XCTAssertTrue(badge.contains(".background(Capsule().fill(role.color.opacity(0.12)))"))
+        XCTAssertTrue(badge.contains(".fixedSize(horizontal: true, vertical: true)"))
+    }
+
     func testRemarkPresentationSurfacesUseLiveViewerResolver() throws {
         let contacts = try sourceText(relativePath: "../BlueStoneIM/ContactsViews.swift")
         let chat = try sourceText(relativePath: "../BlueStoneIM/ChatViews.swift")
@@ -594,17 +606,76 @@ final class IdentityPresentationTests: XCTestCase {
         XCTAssertTrue(control.contains("accessibilityHint"))
     }
 
+    // WDT_CHAT_READ_TRIGGER_20261021_BEGIN
+    func testChatBottomTargetIncludesTrailingPaddingForStrictReadVisibility() throws {
+        let chat = try sourceText(relativePath: "../BlueStoneIM/ChatViews.swift")
+        let scrollStart = try XCTUnwrap(chat.range(of: "private func messageScrollView(")?.lowerBound)
+        let scrollEnd = try XCTUnwrap(chat[scrollStart...].range(of: "private var messageHistoryStatusOverlay:")?.lowerBound)
+        let scroll = chat[scrollStart..<scrollEnd]
+        XCTAssertFalse(scroll.contains(".padding(.bottom, 12)"))
+        XCTAssertTrue(scroll.contains("contentMaxY: frame.maxY"))
+
+        let anchorStart = try XCTUnwrap(chat.range(of: "private var messageListBottomAnchor:")?.lowerBound)
+        let anchorEnd = try XCTUnwrap(chat[anchorStart...].range(of: "private var messageTranscriptTapGesture:")?.lowerBound)
+        let anchor = chat[anchorStart..<anchorEnd]
+        let height = try XCTUnwrap(anchor.range(of: ".frame(height: messageListBottomAnchorHeight)"))
+        let padding = try XCTUnwrap(anchor.range(of: ".padding(.bottom, 12)"))
+        let identity = try XCTUnwrap(anchor.range(of: ".id(bottomAnchorID)"))
+        XCTAssertLessThan(height.lowerBound, padding.lowerBound)
+        XCTAssertLessThan(padding.lowerBound, identity.lowerBound)
+        XCTAssertTrue(chat.contains("private let messageListBottomAnchorHeight: CGFloat = 24"))
+    }
+
+    func testChatDepartureReleasesReadRequestFlagsWithoutClearingUnread() throws {
+        let chat = try sourceText(relativePath: "../BlueStoneIM/ChatViews.swift")
+        let start = try XCTUnwrap(chat.range(of: "// JHT_MOD_BEGIN CHAT_BACK_STUCK_DIAG_BEGIN_DISAPPEAR")?.lowerBound)
+        let end = try XCTUnwrap(chat[start...].range(of: ".sheet(isPresented: $showGroupAnnouncementDetail)")?.lowerBound)
+        let departure = chat[start..<end]
+        let epoch = try XCTUnwrap(departure.range(of: "readVisibilityEpoch &+= 1"))
+        let reset = try XCTUnwrap(departure.range(of: "isClearingUnreadReminder = false"))
+        XCTAssertLessThan(epoch.lowerBound, reset.lowerBound)
+        XCTAssertTrue(departure.contains("lastVisibleReadAckToken = \"\""))
+        XCTAssertTrue(departure.contains("scrollMetricsMeasurements.removeAll()"))
+        XCTAssertFalse(departure.contains("markConversationRead("))
+        XCTAssertFalse(departure.contains("clearUnreadReminderLocally("))
+        XCTAssertFalse(departure.contains("clearConversationUnreadLocally("))
+    }
+    // WDT_CHAT_READ_TRIGGER_20261021_END
+
     func testChatTranscriptOwnsKeyboardDismissalWithoutWrappingComposerControls() throws {
         let chat = try sourceText(relativePath: "../BlueStoneIM/ChatViews.swift")
         let timeline = try sourceSection(chat, startingAt: "private func messageTimeline(")
         XCTAssertTrue(timeline.contains("simultaneousGesture(messageTranscriptTapGesture)"))
-        XCTAssertTrue(timeline.contains("chatScrollDismissesKeyboardInteractively()"))
+        XCTAssertTrue(timeline.contains("chatScrollDismissesKeyboardOnDrag()"))
         XCTAssertTrue(timeline.contains("dismissChatKeyboardFromTranscript(trigger: .tap)"))
         XCTAssertTrue(timeline.contains("dismissChatKeyboardFromTranscript(trigger: .longPress)"))
         let composer = try sourceSection(chat, startingAt: "struct ChatComposer: View")
         XCTAssertFalse(composer.contains("messageTranscriptTapGesture"))
         XCTAssertFalse(composer.contains("messageTranscriptDragGesture"))
     }
+
+    // WDT_CHAT_KEYBOARD_INSET_20261021_BEGIN
+    func testChatKeyboardDismissalRestoresLayoutAndUsesImmediateScrollDismissal() throws {
+        let chat = try sourceText(relativePath: "../BlueStoneIM/ChatViews.swift")
+        let scrollDismissal = try sourceSection(chat, startingAt: "func chatScrollDismissesKeyboardOnDrag()")
+        XCTAssertTrue(scrollDismissal.contains("scrollDismissesKeyboard(.immediately)"))
+        let drag = try sourceSection(chat, startingAt: "private var messageTranscriptDragGesture")
+        XCTAssertTrue(drag.contains("dismissChatKeyboardFromTranscript(trigger: .verticalScroll)"))
+        XCTAssertFalse(drag.contains("#unavailable(iOS 16.0)"))
+        let beginEditing = try sourceSection(chat, startingAt: "func textViewDidBeginEditing(_ textView: UITextView)")
+        XCTAssertTrue(beginEditing.contains("parent.onEditingChanged(true)"))
+        let endEditing = try sourceSection(chat, startingAt: "func textViewDidEndEditing(_ textView: UITextView)")
+        XCTAssertTrue(endEditing.contains("parent.onEditingChanged(false)"))
+        XCTAssertFalse(endEditing.contains("parent.text ="))
+        let shell = try sourceSection(chat, startingAt: "private var unlockedBody: some View")
+        XCTAssertTrue(shell.contains(".ignoresSafeArea(.keyboard, edges: chatIgnoredKeyboardEdges("))
+        XCTAssertTrue(shell.contains("searchIsFocused: isHistorySearchFocused"))
+        let composer = try sourceSection(chat, startingAt: "struct ChatComposer: View")
+        XCTAssertTrue(composer.contains("onEditingChanged: onEditingChanged"))
+        let inputBox = try sourceSection(chat, startingAt: "private struct ComposerInputBox: View")
+        XCTAssertTrue(inputBox.contains("onEditingChanged: onEditingChanged"))
+    }
+    // WDT_CHAT_KEYBOARD_INSET_20261021_END
 
     @MainActor
     func testImmediateMuteListProjectionMergesSelectedIdentityAndReasonIntoSparseResponse() throws {

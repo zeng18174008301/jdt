@@ -321,6 +321,13 @@ extension AppState {
         silent: Bool = false,
         rtcMedia: RTCCapabilityMedia = .generic
     ) {
+        // WDT_APP_CONTRACT_20261021_01_09: refresh stale policy, but retain the original failure UI.
+        if case let IMAPIError.businessForbidden(code, _, _) = error,
+           ["message_recall_disabled_by_policy", "message_edit_disabled_by_policy",
+            "message_forward_disabled_by_policy", "message_actions_policy_unavailable",
+            "ordinary_action_disabled", "settings_unavailable"].contains(code) {
+            refreshAppInteractionPolicy(force: true)
+        }
         #if DEBUG
         if authPolicyScreenshotModeEnabled {
             return

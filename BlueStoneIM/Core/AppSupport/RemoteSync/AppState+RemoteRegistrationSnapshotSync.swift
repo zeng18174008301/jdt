@@ -3466,6 +3466,7 @@ extension AppState {
     }
 
     func resetAuthenticatedRemoteData(invalidateRefresh: Bool = true, showLoading: Bool? = nil) {
+        resetAppInteractionPolicy()
         isLoadingMoreConversations = false
         isConversationSnapshotPartial = false
         purgeCertificationIdentityRoot(rebindCurrentScope: false)
@@ -5571,6 +5572,7 @@ extension AppState {
             return
         }
         let scope = remoteDataScopeKey(for: context)
+        refreshAppInteractionPolicy()
         let incoming = policy ?? RemoteTenantClientPolicy(
             showGroupMemberCount: false,
             groupMemberCountPolicyAuthoritative: false,

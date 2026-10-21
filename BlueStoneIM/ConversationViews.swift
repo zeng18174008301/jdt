@@ -57,9 +57,47 @@ func conversationListDisplayTimestamp(_ time: String, now: Date = Date(), calend
     return nil
 }
 
-func conversationListDisplayTime(for conversation: Conversation, now: Date = Date(), calendar: Calendar = .current) -> String {
-    conversationListDisplayTime(rawTime: conversation.time, sortTimestamp: conversation.sortTimestamp, now: now, calendar: calendar)
+// WDT_CONVERSATION_LIST_SORT_20261021_BEGIN: read-only list projection; never change stored summaries or sync cursors.
+func conversationListMessageTimestamp(_ conversation: Conversation) -> TimeInterval? {
+    guard conversation.kind != .system,
+          let tail = conversation.messages.last(where: { !$0.isPinnedContextOnly }),
+          tail.status != .sending,
+          tail.status != .failed,
+          tail.channelSeq >= conversation.lastMsgSeq else { return nil }
+
+    var expectedSeq = tail.channelSeq
+    let visibleFromSeq = max(1, conversation.historyVisibleFromSeq)
+    for message in conversation.messages.reversed() {
+        guard !message.isPinnedContextOnly,
+              message.status != .sending,
+              message.status != .failed else { continue }
+        // A gap may contain a newer surviving message. Keep the existing summary time until loaded.
+        guard expectedSeq <= 0 || message.channelSeq == expectedSeq else { return nil }
+        if !message.isDeletedLocally {
+            // Recall keeps the original message time, not the time of the recall operation.
+            guard let timestamp = message.createdAt?.timeIntervalSince1970,
+                  timestamp.isFinite, timestamp > 0 else { return nil }
+            return timestamp
+        }
+        guard expectedSeq > 0 else { return nil }
+        expectedSeq -= 1
+        if expectedSeq < visibleFromSeq {
+            return 0
+        }
+    }
+    return nil
 }
+
+func conversationListDisplayTime(for conversation: Conversation, now: Date = Date(), calendar: Calendar = .current) -> String {
+    let messageTimestamp = conversationListMessageTimestamp(conversation)
+    return conversationListDisplayTime(
+        rawTime: messageTimestamp == 0 ? "" : conversation.time,
+        sortTimestamp: messageTimestamp ?? conversation.sortTimestamp,
+        now: now,
+        calendar: calendar
+    )
+}
+// WDT_CONVERSATION_LIST_SORT_20261021_END
 
 // JHT_MOD_BEGIN CONVERSATION_LIST_DATA_SCALE_PERF_20260912 - 修改开始：列表行时间格式化支持轻量展示模型，避免把完整会话对象带入行视图
 private func conversationListDisplayTime(rawTime: String, sortTimestamp: TimeInterval, now: Date = Date(), calendar: Calendar = .current) -> String {
@@ -554,6 +592,22 @@ struct ConversationListView: View {
         }
         .onReceive(state.conversationStore.$conversations) { _ in
             scheduleConversationStoreChangeHandling()
+        }
+        // WDT_APP_CONTRACT_20261021_05: policy and directory totals invalidate cached row badges.
+        .onChangeCompat(of: state.shouldShowGroupMemberCount) { _, showCount in
+            invalidateConversationRenderInputSignature()
+            rebuildConversationRenderCaches()
+            if showCount {
+                Task { await state.refreshGroupDirectory(silent: true) }
+            }
+        }
+        .onChangeCompat(of: state.shouldShowMessageProcessingNotices) { _, _ in
+            invalidateConversationRenderInputSignature()
+            rebuildConversationRenderCaches()
+        }
+        .onReceive(state.contactStore.$groups) { _ in
+            invalidateConversationRenderInputSignature()
+            scheduleConversationRenderCacheRebuild()
         }
         .onChangeCompat(of: state.inboxItems) { _, _ in
             rebuildAnnouncementCache()
@@ -1223,7 +1277,11 @@ struct ConversationListView: View {
         return 0
     }
 
-    private func conversationSortScore(_ conversation: Conversation) -> Double {
+    // WDT_CONVERSATION_LIST_SORT_20261021: confirmed message time takes precedence only in the list.
+    private func conversationSortScore(_ conversation: Conversation, messageTimestamp: TimeInterval?) -> Double {
+        if let messageTimestamp {
+            return conversationListNormalizedTimestamp(messageTimestamp, now: listClockTick)
+        }
         if conversation.sortTimestamp > 0 {
             return conversationListNormalizedTimestamp(conversation.sortTimestamp, now: listClockTick)
         }
@@ -1323,6 +1381,11 @@ struct ConversationListView: View {
         matching.reserveCapacity(state.conversations.count)
         pinned.reserveCapacity(state.conversations.count / 8)
         regular.reserveCapacity(state.conversations.count)
+        let groupCounts = state.groups.reduce(into: [String: Int]()) { counts, group in
+            if let count = state.visibleGroupMemberCount(group.memberCount) {
+                counts[group.id] = count
+            }
+        }
         for conversation in state.conversations {
             guard conversationMatchesCurrentList(conversation, keyword: keyword) else { continue }
             // JHT_MOD_BEGIN CONVERSATION_LIST_SCROLL_PERF_BEGIN_ROW_PRESENTATION_BUILD - 修改开始：会话列表行展示数据提前缓存，减少滑动时逐行查全局状态
@@ -1373,26 +1436,31 @@ struct ConversationListView: View {
                 }
             }()
             // JHT_MOD_END CONVERSATION_LIST_SCROLL_PERF_END_ROW_PRESENTATION_BUILD - 修改结束：会话列表行展示数据提前缓存，减少滑动时逐行查全局状态
+            // WDT_CONVERSATION_LIST_SORT_20261021: row time and ordering share one projection; stored data is untouched.
+            let messageTimestamp = conversationListMessageTimestamp(conversation)
             let item = ConversationRenderItem(
                 conversation: conversation,
                 displayTitle: displayTitle,
                 unreadMention: latestUnreadMention(in: conversation),
-                sortScore: conversationSortScore(conversation),
+                sortScore: conversationSortScore(conversation, messageTimestamp: messageTimestamp),
                 rowPresentation: rowPresentation,
                 // JHT_MOD_BEGIN CONVERSATION_LIST_DATA_SCALE_PERF_20260912 - 修改开始：预构建轻量行模型，滚动渲染不再持有完整消息数组
                 rowModel: ConversationRowModel(
                     id: conversation.id,
                     kind: conversation.kind,
                     displayTitle: displayTitle,
-                    lastMessage: conversation.lastMessage,
-                    time: conversation.time,
+                    groupMemberCount: conversation.kind == .group && state.shouldShowGroupMemberCount
+                        ? groupCounts[state.remoteChannelID(for: conversation)] ?? groupCounts[conversation.id]
+                        : nil,
+                    lastMessage: state.visibleConversationLastMessage(conversation),
+                    time: messageTimestamp == 0 ? "" : conversation.time,
                     unread: conversation.unread,
                     isPinned: conversation.isPinned,
                     isMuted: conversation.isMuted,
                     accentHex: conversation.accentHex,
                     hasUnreadReaction: conversation.hasUnreadReaction,
                     unreadReactionCount: conversation.unreadReactionCount,
-                    sortTimestamp: conversation.sortTimestamp,
+                    sortTimestamp: messageTimestamp ?? conversation.sortTimestamp,
                     rowPresentation: rowPresentation
                 )
                 // JHT_MOD_END CONVERSATION_LIST_DATA_SCALE_PERF_20260912 - 修改结束
@@ -1818,6 +1886,7 @@ struct ConversationListView: View {
 }
 
 private struct TenantGlobalSearchResultsView: View {
+    @EnvironmentObject private var state: AppState
     let query: String
     let response: RemoteTenantSearchResponse?
     let excludedResultIDs: Set<String>
@@ -1853,6 +1922,7 @@ private struct TenantGlobalSearchResultsView: View {
         response?.resultsByType[type]?.items.filter { item in
             !excludedResultIDs.contains(item.id)
                 && !invalidations.contains(where: { item.matchesSearchInvalidation($0) })
+                && state.shouldDisplaySearchResult(item)
         } ?? []
     }
 
@@ -2271,6 +2341,7 @@ private struct ConversationRowModel: Equatable, Identifiable {
     let id: String
     let kind: ConversationKind
     let displayTitle: String
+    let groupMemberCount: Int?
     let lastMessage: String
     let time: String
     let unread: Int
@@ -2330,6 +2401,8 @@ private struct ConversationRenderConversationInputSignature: Equatable {
     let mentionSummaryMessageID: String
     let mentionSummaryChannelSeq: Int64
     let sortTimestamp: TimeInterval
+    // WDT_CONVERSATION_LIST_SORT_20261021: deletions must invalidate the cache even if the stored sort time is unchanged.
+    let messageTimestamp: TimeInterval?
     let participants: [ConversationRenderUserInputSignature]
     let latestIncomingPeerMessage: ConversationRenderPeerMessageInputSignature?
     let unreadMentionCandidateMessages: [ConversationRenderMessageInputSignature]
@@ -2358,6 +2431,8 @@ private struct ConversationRenderConversationInputSignature: Equatable {
         mentionSummaryMessageID = conversation.mentionSummaryMessageID
         mentionSummaryChannelSeq = conversation.mentionSummaryChannelSeq
         sortTimestamp = conversation.sortTimestamp
+        // WDT_CONVERSATION_LIST_SORT_20261021
+        messageTimestamp = conversationListMessageTimestamp(conversation)
         participants = conversation.participants.map(ConversationRenderUserInputSignature.init)
         if conversation.kind == .direct {
             latestIncomingPeerMessage = conversation.messages
@@ -4073,6 +4148,19 @@ private struct ConversationRow: View {
                         .font(.system(size: 16, weight: .black))
                         .foregroundStyle(IMColor.ink)
                         .lineLimit(1)
+                    // WDT_APP_CONTRACT_20261021_05: the count has its own untruncated layout.
+                    if let count = rowModel.groupMemberCount {
+                        Text(String(count))
+                            .font(.system(size: 11, weight: .bold))
+                            .monospacedDigit()
+                            .foregroundStyle(IMColor.brand)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 3)
+                            .background(Capsule().fill(IMColor.brand.opacity(0.10)))
+                            .fixedSize(horizontal: true, vertical: false)
+                            .layoutPriority(2)
+                            .accessibilityLabel("群成员 \(count) 人")
+                    }
                     if rowModel.kind == .direct {
                         CertificationPillView(
                             exactUID: rowPresentation.directCertificationUID,

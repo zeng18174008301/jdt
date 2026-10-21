@@ -547,7 +547,7 @@ extension AppState {
     }
 
     @discardableResult
-    func applyFriend(to user: IMUser, message: String = "你好，我想添加你为好友", source: String = "profile") async -> Bool {
+    func applyFriend(to user: IMUser, message: String = "你好，我想添加你为好友", source: String = "profile", sourceGroupID: String? = nil) async -> Bool {
         let targetID = user.id.trimmingCharacters(in: .whitespacesAndNewlines)
         let context = apiContext
         guard context.hasIMSession else {
@@ -575,13 +575,20 @@ extension AppState {
             toast = "管理员已关闭好友申请"
             return false
         }
+        if let sourceGroupID, group(id: sourceGroupID)?.memberFriendApplyEnabled != true {
+            toast = "当前群暂不允许从群内添加好友"
+            return false
+        }
         do {
-            let applyResult = try await api.applyFriend(
-                context: context,
-                targetUID: targetID,
-                message: message.trimmingCharacters(in: .whitespacesAndNewlines),
-                source: source
-            )
+            let applyResult: RemoteFriendApplyResult
+            if let sourceGroupID {
+                guard let client = api as? IMAPIClient else { return false }
+                applyResult = try await client.applyFriend(context: context, targetUID: targetID,
+                    message: message.trimmingCharacters(in: .whitespacesAndNewlines), source: "group", sourceGroupID: sourceGroupID)
+            } else {
+                applyResult = try await api.applyFriend(context: context, targetUID: targetID,
+                    message: message.trimmingCharacters(in: .whitespacesAndNewlines), source: source)
+            }
             guard isCurrentRemoteScope(scope) else { return false }
             let resolution = Self.friendApplyResolution(applyResult)
             switch resolution {

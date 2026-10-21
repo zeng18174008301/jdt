@@ -23,6 +23,12 @@ struct ChatTranscriptKeyboardDismissalPlan: Equatable {
     let requestsScrollTarget: Bool
 }
 
+// WDT_CHAT_KEYBOARD_INSET_20261021_BEGIN: release stale keyboard insets only when neither chat editor is active.
+func chatIgnoredKeyboardEdges(composerIsEditing: Bool, searchIsFocused: Bool) -> Edge.Set {
+    composerIsEditing || searchIsFocused ? [] : .bottom
+}
+// WDT_CHAT_KEYBOARD_INSET_20261021_END
+
 func chatTranscriptKeyboardDismissalPlan(
     trigger: ChatTranscriptKeyboardDismissalTrigger
 ) -> ChatTranscriptKeyboardDismissalPlan {
@@ -49,9 +55,10 @@ private func dismissActiveChatKeyboard() {
 
 private extension View {
     @ViewBuilder
-    func chatScrollDismissesKeyboardInteractively() -> some View {
+    // WDT_CHAT_KEYBOARD_INSET_20261021: any transcript scroll dismisses, not just a completed interactive pull.
+    func chatScrollDismissesKeyboardOnDrag() -> some View {
         if #available(iOS 16.0, *) {
-            scrollDismissesKeyboard(.interactively)
+            scrollDismissesKeyboard(.immediately)
         } else {
             self
         }
@@ -208,12 +215,28 @@ struct ConversationScrollArbiter: Equatable {
     }
 }
 
-func chatTimelineMessagesForRendering(_ messages: [ChatMessage]) -> [ChatMessage] {
+func chatTimelineMessagesForRendering(_ messages: [ChatMessage], showsProcessingNotices: Bool = true) -> [ChatMessage] {
+    // WDT_APP_CONTRACT_20261021_08: presentation only; retain tombstones in the store.
+    if !showsProcessingNotices {
+        return messages.filter { !$0.isPinnedContextOnly && !$0.isDeletedLocally && $0.status != .recalled }
+    }
     // JHT_MOD_BEGIN CHAT_PAGE_INPUT_LAG_FIX_TIMELINE_FILTER - 修改开始：普通输入重绘时避免无 pinned-context 消息的数组重分配
     guard messages.contains(where: { $0.isPinnedContextOnly }) else { return messages }
     // JHT_MOD_END CHAT_PAGE_INPUT_LAG_FIX_TIMELINE_FILTER - 修改结束
     return messages.filter { !$0.isPinnedContextOnly }
 }
+
+// WDT_CHAT_DELETE_REFRESH_20261021_BEGIN: validate deletion across all rows without deep message comparisons.
+func chatMessageDeletionStateMatches<Cached: Collection, Current: Collection>(
+    cachedMessages: Cached,
+    messages: Current
+) -> Bool where Cached.Element == ChatMessage, Current.Element == ChatMessage {
+    guard cachedMessages.count == messages.count else { return false }
+    return zip(cachedMessages, messages).allSatisfy { cached, current in
+        cached.id == current.id && cached.isDeletedLocally == current.isDeletedLocally
+    }
+}
+// WDT_CHAT_DELETE_REFRESH_20261021_END
 
 // JHT_MOD_BEGIN CHAT_PAGE_SEND_KEYBOARD_SCROLL_PERF_20260912 - 修改开始：聊天滚动定位复用轻量 seq 遍历，避免 map/filter 临时数组
 private func chatLatestPositiveChannelSeq(in messages: [ChatMessage]) -> Int64? {
@@ -529,6 +552,19 @@ struct ChatIncomingRowGeometry: Equatable {
     let epoch: Int
     static let empty = ChatIncomingRowGeometry(token: "", frame: .null, epoch: -1)
 }
+
+// WDT_CHAT_UNREAD_BADGE_20261021_BEGIN: a visible outgoing tail also proves the user reached the latest messages.
+func chatReadAcknowledgementTarget<Messages: BidirectionalCollection>(in messages: Messages) -> ChatMessage?
+where Messages.Element == ChatMessage {
+    messages.last { message in
+        message.channelSeq > 0
+            && message.kind != .system
+            && !message.isPinnedContextOnly
+            && message.status != .sending
+            && message.status != .failed
+    }
+}
+// WDT_CHAT_UNREAD_BADGE_20261021_END
 
 /// A scroll request and lazy onAppear are not evidence of visibility. Only a
 /// layout carrying the current rendered token/scene epoch may advance read state.
@@ -958,6 +994,8 @@ struct ChatView: View {
     private static let messageTimeSeparatorThreshold: TimeInterval = 5 * 60
     private static let searchSelectionJumpDelayNanoseconds: UInt64 = 320_000_000
     @State private var input = ""
+    // WDT_CHAT_KEYBOARD_INSET_20261021: UIKit editor lifetime controls keyboard avoidance, not draft contents.
+    @State private var isComposerEditing = false
     @State private var showTools = false
     @State private var showEmoji = false
     @State private var actionMessage: ChatMessage?
@@ -1127,7 +1165,7 @@ struct ChatView: View {
     }
 
     private var timelineMessages: [ChatMessage] {
-        chatTimelineMessagesForRendering(conversation.messages)
+        chatTimelineMessagesForRendering(conversation.messages, showsProcessingNotices: state.shouldShowMessageProcessingNotices)
     }
 
     private var backUnreadCount: Int {
@@ -1334,9 +1372,8 @@ struct ChatView: View {
             return group
         }
         let fallbackMemberCount = state.visibleGroupMemberCount(
-            conversation.memberCount,
-            conversation.participants.count
-        ) ?? 0
+            conversation.memberCount
+        )
         return GroupInfo(
             id: conversation.id,
             name: conversation.title,
@@ -1356,9 +1393,7 @@ struct ChatView: View {
     private var groupMemberSubtitleText: String? {
         state.visibleGroupMemberCount(
             currentGroup.memberCount,
-            currentGroup.members.count,
-            conversation.memberCount,
-            conversation.participants.count
+            conversation.memberCount
         ).map { "\($0) 人" }
     }
 
@@ -1580,10 +1615,10 @@ struct ChatView: View {
         )
     }
 
-    private var latestReadableIncomingMessageReadToken: String {
-        guard let message = latestReadableIncomingMessage() else { return "" }
-        let sequenceToken = message.channelSeq > 0 ? String(message.channelSeq) : message.id
-        return "\(conversationID):\(sequenceToken)"
+    // WDT_CHAT_UNREAD_BADGE_20261021: use the same target for layout and read validation.
+    private var latestReadAcknowledgementToken: String {
+        guard let message = chatReadAcknowledgementTarget(in: timelineMessages) else { return "" }
+        return "\(conversationID):\(message.channelSeq)"
     }
 
     private var isReadOnlySystemConversation: Bool {
@@ -2217,6 +2252,12 @@ struct ChatView: View {
                             scrollToLatestMessageForComposerFocus()
                         },
                         // JHT_MOD_END CHAT_INPUT_FOCUS_SCROLL_END_CALL - 修改结束：ChatView 传入输入框聚焦滚动回调
+                        // WDT_CHAT_KEYBOARD_INSET_20261021: no message, read-state or scroll side effects.
+                        onEditingChanged: { isEditing in
+                            if isComposerEditing != isEditing {
+                                isComposerEditing = isEditing
+                            }
+                        },
                         // JHT_MOD_BEGIN CHAT_COMPOSER_ACTION_SCROLL_BEGIN_CALL - 修改开始：ChatView 传入 composer 操作滚动回调
                         onRequestLatestScroll: {
                             scrollToLatestMessageForComposerFocus()
@@ -2448,6 +2489,11 @@ struct ChatView: View {
         .safeAreaInset(edge: .top, spacing: 0) {
             conversationHeader
         }
+        // WDT_CHAT_KEYBOARD_INSET_20261021: keep the device safe area; only release the inactive keyboard region.
+        .ignoresSafeArea(.keyboard, edges: chatIgnoredKeyboardEdges(
+            composerIsEditing: isComposerEditing,
+            searchIsFocused: isHistorySearchFocused
+        ))
         .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
         .navigationBarBackButtonHidden(true)
@@ -2519,6 +2565,10 @@ struct ChatView: View {
             )
             // JHT_MOD_END CHAT_BACK_STUCK_DIAG_END_DISAPPEAR - 修改结束：记录返回后 ChatView 是否真正退出
             readVisibilityEpoch &+= 1
+            // WDT_CHAT_READ_TRIGGER_20261021_BEGIN: obsolete callbacks cannot release these flags on reappearance.
+            isClearingUnreadReminder = false
+            lastVisibleReadAckToken = ""
+            // WDT_CHAT_READ_TRIGGER_20261021_END
             _ = nextAutomaticBottomScrollGeneration()
             scrollMetricsMeasurements.removeAll()
             finishMessageTranscriptDrag()
@@ -2594,7 +2644,7 @@ struct ChatView: View {
             UserProfileView(user: user, onOpenConversation: { conversationID in
                 pendingProfileConversationID = conversationID
                 selectedUserProfile = nil
-            })
+            }, sourceGroupID: conversation.kind == .group ? state.remoteChannelID(for: conversation) : nil)
                 .presentationDetentsCompat([.large])
         }
         .sheet(item: $editMessage) { message in
@@ -2811,7 +2861,7 @@ struct ChatView: View {
                     autofillOlderHistoryIfUnderfilled()
                 }
             }
-            .onChangeCompat(of: latestReadableIncomingMessageReadToken) { _, _ in
+            .onChangeCompat(of: latestReadAcknowledgementToken) { _, _ in
                 markVisibleIncomingMessagesReadIfNeeded()
             }
             .onChangeCompat(of: scrollTargetID) { _, targetID in
@@ -2855,13 +2905,10 @@ struct ChatView: View {
     ) -> some View {
         // Bind the observation to the rows participating in this layout, not a
         // newer conversation snapshot arriving before SwiftUI displays it.
-        let incoming = renderMessageRows.last { row in
-            row.message.kind != .system && row.message.status != .recalled
-                && !row.message.isDeletedLocally && !isMessageAuthoredByCurrentUser(row.message)
-                && row.message.channelSeq > 0
-        }?.message
-        let renderedReadSeq = incoming?.channelSeq ?? 0
-        let renderedReadToken = incoming.map { "\(conversationID):\($0.channelSeq)" } ?? ""
+        // WDT_CHAT_UNREAD_BADGE_20261021: do not require an older incoming row to remain onscreen below our replies.
+        let readTarget = chatReadAcknowledgementTarget(in: renderMessageRows.lazy.map(\.message))
+        let renderedReadSeq = readTarget?.channelSeq ?? 0
+        let renderedReadToken = readTarget.map { "\(conversationID):\($0.channelSeq)" } ?? ""
         return GeometryReader { viewportProxy in
             ScrollView(showsIndicators: false) {
                 LazyVStack(spacing: 0) {
@@ -2871,12 +2918,12 @@ struct ChatView: View {
                         // JHT_MOD_BEGIN CHAT_PAGE_INPUT_LAG_FIX_LIST_SIGNATURE_PASS - 修改开始：列表内容使用行缓存快照生成稳定 item
                         renderMessageRowsSnapshot: renderMessageRowsSnapshot,
                         // JHT_MOD_END CHAT_PAGE_INPUT_LAG_FIX_LIST_SIGNATURE_PASS - 修改结束
-                        latestIncomingID: incoming?.id
+                        readTargetID: readTarget?.id
                     )
                 }
                 .padding(.horizontal, 14)
                 .padding(.top, 12)
-                .padding(.bottom, 12)
+                // WDT_CHAT_READ_TRIGGER_20261021: bottom padding belongs inside the scroll target below.
                 .background(
                     GeometryReader { contentProxy in
                         let frame = contentProxy.frame(in: .named(chatScrollCoordinateSpaceName))
@@ -2895,7 +2942,7 @@ struct ChatView: View {
                 )
             }
             .environment(\.stickerGIFPlaybackViewport, previewImageAttachment == nil ? viewportProxy.frame(in: .global) : .zero)
-            .chatScrollDismissesKeyboardInteractively()
+            .chatScrollDismissesKeyboardOnDrag()
             .coordinateSpace(name: chatScrollCoordinateSpaceName)
             .overlay(alignment: .top) {
                 messageHistoryStatusOverlay
@@ -2948,7 +2995,7 @@ struct ChatView: View {
         // JHT_MOD_BEGIN CHAT_PAGE_INPUT_LAG_FIX_LIST_SIGNATURE_PARAM - 修改开始：传入消息行缓存快照生成时间线 item
         renderMessageRowsSnapshot: ChatMessageRenderRowsSnapshot,
         // JHT_MOD_END CHAT_PAGE_INPUT_LAG_FIX_LIST_SIGNATURE_PARAM - 修改结束
-        latestIncomingID: String?
+        readTargetID: String?
     ) -> some View {
         if shouldShowDirectEmptyHistoryState {
             DirectChatEmptyHistoryView(
@@ -2975,7 +3022,7 @@ struct ChatView: View {
             // Each item has one directly addressable list leaf. Building the
             // expensive bubble stays inside the lazy leaf's body, not ID discovery.
             ChatMessageLazyLeaf {
-                messageTimelineItemView(item, messageCount: renderMessages.count, latestIncomingID: latestIncomingID)
+                messageTimelineItemView(item, messageCount: renderMessages.count, readTargetID: readTargetID)
             }
             .frame(height: item.isSpacing ? 8 : nil)
             .id(item.id)
@@ -3021,7 +3068,7 @@ struct ChatView: View {
     // JHT_MOD_END CHAT_PAGE_INPUT_LAG_FIX_TIMELINE_ITEM_CACHE_ENTRY - 修改结束
 
     @ViewBuilder
-    private func messageTimelineItemView(_ item: ChatMessageTimelineItem, messageCount: Int, latestIncomingID: String?) -> some View {
+    private func messageTimelineItemView(_ item: ChatMessageTimelineItem, messageCount: Int, readTargetID: String?) -> some View {
         switch item.kind {
         case .timeSeparator(let text):
             MessageTimeSeparator(text: text)
@@ -3030,7 +3077,7 @@ struct ChatView: View {
         case .historyAnchor:
             messageHistoryAnchor(item.row)
         case .message:
-            messageRowView(item.row, messageCount: messageCount, latestIncomingID: latestIncomingID)
+            messageRowView(item.row, messageCount: messageCount, readTargetID: readTargetID)
         case .spacing:
             Color.clear.frame(height: 8)
         }
@@ -3057,7 +3104,7 @@ struct ChatView: View {
     }
 
     @ViewBuilder
-    private func messageRowView(_ row: ChatMessageRenderRow, messageCount: Int, latestIncomingID: String?) -> some View {
+    private func messageRowView(_ row: ChatMessageRenderRow, messageCount: Int, readTargetID: String?) -> some View {
         let batchDisabledReason = isBatchForwardSelectionActive
             ? batchForwardDisabledReason(for: row.message)
             : nil
@@ -3121,6 +3168,7 @@ struct ChatView: View {
                     }
                     UIImpactFeedbackGenerator(style: .medium).impactOccurred()
                     withAnimation(.spring(response: 0.28, dampingFraction: 0.88)) {
+                        state.refreshAppInteractionPolicy(force: true)
                         actionMessage = row.message
                     }
                 } onReadTap: {
@@ -3171,9 +3219,8 @@ struct ChatView: View {
             }
         }
         .background {
-            // Measure only the latest incoming bubble. The content rectangle of
-            // a lazy stack alone can include estimated, unmounted message rows.
-            if row.message.id == latestIncomingID, row.message.channelSeq > 0 {
+            // WDT_CHAT_UNREAD_BADGE_20261021: measure the actual confirmed tail row, not just the lazy stack bounds.
+            if row.message.id == readTargetID, row.message.channelSeq > 0 {
                 GeometryReader { proxy in
                     Color.clear.preference(
                         key: ChatIncomingRowPreferenceKey.self,
@@ -3211,6 +3258,8 @@ struct ChatView: View {
         // change bottom/history state; onAppear would fight a user's history drag.
         Color.clear
             .frame(height: messageListBottomAnchorHeight)
+            // WDT_CHAT_READ_TRIGGER_20261021: include the existing gap before assigning the bottom target ID.
+            .padding(.bottom, 12)
             .id(bottomAnchorID)
     }
 
@@ -3239,9 +3288,8 @@ struct ChatView: View {
                     oldestHistoryLoadAnchorID = nil
                     oldestHistoryLoadAnchorMinY = nil
                     didUserInteractWithMessageScroll = true
-                    if #unavailable(iOS 16.0) {
-                        dismissChatKeyboardFromTranscript(trigger: .verticalScroll)
-                    }
+                    // WDT_CHAT_KEYBOARD_INSET_20261021: also handles short/underfilled transcripts on every supported iOS.
+                    dismissChatKeyboardFromTranscript(trigger: .verticalScroll)
                     _ = evaluateScrollRequest(source: .userGesture, targetID: nil, anchor: nil, userInitiated: true)
                 }
                 didTriggerOlderHistoryLoadForScrollIntent = false
@@ -3780,7 +3828,9 @@ struct ChatView: View {
                 )
             }
             if cachedMessageRowSignatures.first == messages.first.map({ messageRowCacheSignature(for: $0) }),
-               cachedMessageRowSignatures.last == messages.last.map({ messageRowCacheSignature(for: $0) }) {
+               cachedMessageRowSignatures.last == messages.last.map({ messageRowCacheSignature(for: $0) }),
+               // WDT_CHAT_DELETE_REFRESH_20261021: unchanged endpoints do not rule out a deleted middle row.
+               chatMessageDeletionStateMatches(cachedMessages: cachedMessageRows.lazy.map(\.message), messages: messages) {
                 return messageRowsSnapshot(
                     rows: cachedMessageRows,
                     version: cachedMessageRowsVersion,
@@ -3861,7 +3911,9 @@ struct ChatView: View {
               cachedMessageRows.first?.message.id == messages[prependedCount].id,
               cachedMessageRows.last?.message.id == messages.last?.id,
               cachedMessageRowSignatures.first == messageRowCacheSignature(for: messages[prependedCount]),
-              cachedMessageRowSignatures.last == messages.last.map({ messageRowCacheSignature(for: $0) }) else {
+              cachedMessageRowSignatures.last == messages.last.map({ messageRowCacheSignature(for: $0) }),
+              // WDT_CHAT_DELETE_REFRESH_20261021: a concurrent deletion must invalidate reused history rows too.
+              chatMessageDeletionStateMatches(cachedMessages: cachedMessageRows.lazy.map(\.message), messages: messages.dropFirst(prependedCount)) else {
             return nil
         }
         // JHT_MOD_BEGIN CHAT_PAGE_SEND_KEYBOARD_SCROLL_PERF_20260912 - 修改开始：旧消息 prepend 行缓存用单数组追加，减少滚动加载时临时数组和拷贝
@@ -5318,7 +5370,7 @@ struct ChatView: View {
     }
 
     private func clearUnreadReminderLocally(readToken: String) {
-        let token = latestReadableIncomingMessageReadToken
+        let token = latestReadAcknowledgementToken
         let resolvedToken = readToken.isEmpty ? token : readToken
         if !resolvedToken.isEmpty {
             lastVisibleReadAckToken = resolvedToken
@@ -5345,7 +5397,7 @@ struct ChatView: View {
                   epoch == readVisibilityEpoch else { return }
             isClearingUnreadReminder = false
             if success, conversation.lastReadSeq >= observation.seq {
-                if token == latestReadableIncomingMessageReadToken {
+                if token == latestReadAcknowledgementToken {
                     clearUnreadReminderLocally(readToken: token)
                 } else {
                     markVisibleIncomingMessagesReadIfNeeded()
@@ -5437,7 +5489,7 @@ struct ChatView: View {
         guard let seq = chatVisibleIncomingReadSequence(
             metrics: metrics,
             row: scrollMetricsMeasurements.incomingRow,
-            expectedToken: latestReadableIncomingMessageReadToken,
+            expectedToken: latestReadAcknowledgementToken,
             epoch: readVisibilityEpoch,
             isActive: scenePhase == .active,
             scopeMatches: scrollStateConversationID == conversationID
@@ -6077,6 +6129,7 @@ struct ChatSearchDismissalCoordinator: Equatable {
 }
 
 private struct ChatHistorySearchPanel: View {
+    @EnvironmentObject private var state: AppState
     @Binding var keyword: String
     @Binding var dateText: String
     let results: [RemoteTenantSearchResult]
@@ -6248,7 +6301,7 @@ private struct ChatHistorySearchPanel: View {
             } else if !results.isEmpty {
                 ScrollView(showsIndicators: true) {
                     LazyVStack(spacing: 8) {
-                        ForEach(results, id: \.id) { hit in
+                        ForEach(results.filter { state.shouldDisplaySearchResult($0) }, id: \.id) { hit in
                             Button {
                                 onSelect(hit)
                             } label: {
@@ -7457,6 +7510,7 @@ private func resolvedVisibleReplyPresentation(
     guard var context = message.replyContext else {
         return (fallbackQuote, nil)
     }
+    if !state.shouldShowMessageProcessingNotices && context.isUnavailable { return nil }
     let sourceMessageID = context.messageID.trimmingCharacters(in: .whitespacesAndNewlines)
     let source = conversation.messages.first { candidate in
         if !sourceMessageID.isEmpty, candidate.id == sourceMessageID {
@@ -7468,6 +7522,7 @@ private func resolvedVisibleReplyPresentation(
         return (fallbackQuote, context)
     }
     let sourceUnavailable = source.status == .recalled || source.isDeletedLocally
+    if !state.shouldShowMessageProcessingNotices && sourceUnavailable { return nil }
     context.isUnavailable = sourceUnavailable
     context.summary = sourceUnavailable
         ? "原消息不可见/已删除"
@@ -8072,7 +8127,7 @@ struct MessageBubble: View {
                 )
                 .fixedSize(horizontal: false, vertical: true)
             }
-            if message.isEdited, !isGroupEventSystemMessage, !message.isStickerMessage {
+                if state.shouldShowMessageProcessingNotices, message.isEdited, !isGroupEventSystemMessage, !message.isStickerMessage {
                 MessageEditedBadge(outgoing: isBubbleOutgoing)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -8918,9 +8973,11 @@ private struct FileBubbleContent: View {
                 .accessibilityLabel("文件 \(fileName)，\(fileSizeText)，\(attachmentActionLabel)")
             }
 
-            if !isBorderlessGIF || progress != nil || uploadStageLabel != nil || message.status == .failed || state.attachmentDownloadFailed(message) {
+            if !isBorderlessGIF || progress != nil || state.attachmentDownloadSnapshot(for: message) != nil || uploadStageLabel != nil || message.status == .failed || state.attachmentDownloadFailed(message) {
                 HStack(spacing: 8) {
-                    if let progress {
+                    if let snapshot = state.attachmentDownloadSnapshot(for: message), !isUploadTransfer {
+                        AttachmentDownloadProgressView(snapshot: snapshot) { state.cancelAttachmentDownload(message) }
+                    } else if let progress {
                         ProgressView(value: progress)
                             .tint(usesOutgoingFill ? .white : IMColor.brand)
                             .frame(width: 96)
@@ -9112,7 +9169,9 @@ private struct VoiceBubbleContent: View {
             }
 
             HStack(spacing: 8) {
-                if let progress {
+                if let snapshot = state.attachmentDownloadSnapshot(for: message), !isUploadTransfer {
+                    AttachmentDownloadProgressView(snapshot: snapshot) { state.cancelAttachmentDownload(message) }
+                } else if let progress {
                     ProgressView(value: progress)
                         .tint(outgoing ? .white : IMColor.brand)
                         .frame(width: 92)
@@ -9740,7 +9799,7 @@ func messageActionMenuDescriptors(
             MessageActionMenuDescriptor(
                 kind: .forward,
                 symbol: "arrowshape.turn.up.right",
-                title: forwardDisabledReason,
+                title: "转发",
                 tone: .muted,
                 showsDividerBefore: false,
                 disabledReason: forwardDisabledReason
@@ -9757,22 +9816,21 @@ func messageActionMenuDescriptors(
         items.append(MessageActionMenuDescriptor(
             kind: .edit,
             symbol: "pencil",
-            title: editDisabledReason == nil ? "编辑" : "编辑（不可用）",
+            title: "编辑",
             tone: editDisabledReason == nil ? .normal : .muted,
             showsDividerBefore: false,
             disabledReason: editDisabledReason
         ))
     }
     if message.isOutgoing {
-        let recallTitle = recallDisabledReason == nil
-            ? "撤回"
-            : (recallDisabledReason?.contains("超过") == true ? "撤回（已超时）" : "撤回（不可用）")
+        let recallTitle = "撤回"
         items.append(MessageActionMenuDescriptor(
             kind: .recall,
             symbol: "arrow.uturn.backward.circle",
             title: recallTitle,
             tone: recallDisabledReason == nil ? .danger : .muted,
-            showsDividerBefore: true
+            showsDividerBefore: true,
+            disabledReason: recallDisabledReason
         ))
     }
     if canAdminDeleteForAll {
@@ -10257,6 +10315,8 @@ private struct ComposerInputBox: View {
     // JHT_MOD_BEGIN CHAT_INPUT_FOCUS_SCROLL_BEGIN_INPUT_BOX - 修改开始：输入框暴露开始编辑回调
     let onBeginEditing: () -> Void
     // JHT_MOD_END CHAT_INPUT_FOCUS_SCROLL_END_INPUT_BOX - 修改结束：输入框暴露开始编辑回调
+    // WDT_CHAT_KEYBOARD_INSET_20261021
+    let onEditingChanged: (Bool) -> Void
 
     var body: some View {
         ZStack(alignment: .topLeading) {
@@ -10266,9 +10326,10 @@ private struct ComposerInputBox: View {
                 selection: $selection,
                 isEditable: !isDisabled,
                 // JHT_MOD_BEGIN CHAT_INPUT_FOCUS_SCROLL_BEGIN_INPUT_BOX_PASS - 修改开始：传递开始编辑回调
-                onBeginEditing: onBeginEditing
+                onBeginEditing: onBeginEditing,
                 // JHT_MOD_END CHAT_INPUT_FOCUS_SCROLL_END_INPUT_BOX_PASS - 修改结束：传递开始编辑回调
-
+                // WDT_CHAT_KEYBOARD_INSET_20261021
+                onEditingChanged: onEditingChanged
             )
                 .frame(height: dynamicHeight)
                 .padding(.horizontal, 10)
@@ -10294,6 +10355,8 @@ private struct ComposerTextView: UIViewRepresentable {
     // JHT_MOD_BEGIN CHAT_INPUT_FOCUS_SCROLL_BEGIN_TEXT_VIEW - 修改开始：UITextView 暴露开始编辑回调
     let onBeginEditing: () -> Void
     // JHT_MOD_END CHAT_INPUT_FOCUS_SCROLL_END_TEXT_VIEW - 修改结束：UITextView 暴露开始编辑回调
+    // WDT_CHAT_KEYBOARD_INSET_20261021
+    let onEditingChanged: (Bool) -> Void
 
     private let minHeight: CGFloat = 42
     private let maxHeight: CGFloat = 96
@@ -10451,10 +10514,18 @@ private struct ComposerTextView: UIViewRepresentable {
 //            parent.recalculateHeight(textView)
         }
         func textViewDidBeginEditing(_ textView: UITextView) {
+            // WDT_CHAT_KEYBOARD_INSET_20261021
+            parent.onEditingChanged(true)
             // JHT_MOD_BEGIN CHAT_INPUT_FOCUS_SCROLL_BEGIN_DELEGATE - 修改开始：UITextView 开始编辑时通知父级滚动
             parent.onBeginEditing()
             // JHT_MOD_END CHAT_INPUT_FOCUS_SCROLL_END_DELEGATE - 修改结束：UITextView 开始编辑时通知父级滚动
         }
+
+        // WDT_CHAT_KEYBOARD_INSET_20261021_BEGIN
+        func textViewDidEndEditing(_ textView: UITextView) {
+            parent.onEditingChanged(false)
+        }
+        // WDT_CHAT_KEYBOARD_INSET_20261021_END
 
         func textViewDidChangeSelection(_ textView: UITextView) {
             guard textView.markedTextRange == nil else { return }
@@ -11204,6 +11275,7 @@ private struct VoiceRecordPad: View {
 }
 
 private struct BatchForwardSelectionBar: View {
+    @EnvironmentObject private var state: AppState
     let selectedCount: Int
     let onCancel: () -> Void
     let onForward: () -> Void
@@ -11237,7 +11309,8 @@ private struct BatchForwardSelectionBar: View {
                     .background(Capsule().fill(IMColor.brand))
             }
             .buttonStyle(.plain)
-            .disabled(selectedCount == 0)
+            .disabled(selectedCount == 0 || state.messageActionPolicyUnavailableReason(.forward) != nil)
+            .opacity(state.messageActionPolicyUnavailableReason(.forward) == nil ? 1 : 0.45)
             .accessibilityIdentifier("batch_forward_choose_targets")
         }
         .padding(.horizontal, 14)
@@ -11395,6 +11468,8 @@ struct ChatComposer: View {
     // JHT_MOD_BEGIN CHAT_INPUT_FOCUS_SCROLL_BEGIN_COMPOSER_PARAM - 修改开始：ChatComposer 接收输入框聚焦回调
     var onBeginEditing: () -> Void = {}
     // JHT_MOD_END CHAT_INPUT_FOCUS_SCROLL_END_COMPOSER_PARAM - 修改结束：ChatComposer 接收输入框聚焦回调
+    // WDT_CHAT_KEYBOARD_INSET_20261021
+    var onEditingChanged: (Bool) -> Void = { _ in }
     // JHT_MOD_BEGIN CHAT_COMPOSER_ACTION_SCROLL_BEGIN_PARAM - 修改开始：Composer 操作触发滚动到最新消息回调
     var onRequestLatestScroll: () -> Void = {}
     // JHT_MOD_END CHAT_COMPOSER_ACTION_SCROLL_END_PARAM - 修改结束：Composer 操作触发滚动到最新消息回调
@@ -11841,8 +11916,10 @@ struct ChatComposer: View {
                         selection: $inputSelection,
                         isDisabled: isDisabled,
                         // JHT_MOD_BEGIN CHAT_INPUT_FOCUS_SCROLL_BEGIN_COMPOSER_PASS - 修改开始：ChatComposer 透传输入框聚焦回调
-                        onBeginEditing: onBeginEditing
+                        onBeginEditing: onBeginEditing,
                         // JHT_MOD_END CHAT_INPUT_FOCUS_SCROLL_END_COMPOSER_PASS - 修改结束：ChatComposer 透传输入框聚焦回调
+                        // WDT_CHAT_KEYBOARD_INSET_20261021
+                        onEditingChanged: onEditingChanged
                     )
                         .disabled(isDisabled)
                         .accessibilityIdentifier("chat_message_input")
@@ -14490,7 +14567,7 @@ private struct ForwardMessageTargetSheet: View {
                         .background(
                             RoundedRectangle(cornerRadius: 17, style: .continuous)
                                 .fill(
-                                    selectedSourceCount > 0 && selectedTargetCount > 0
+                                    selectedSourceCount > 0 && selectedTargetCount > 0 && state.messageActionPolicyUnavailableReason(.forward) == nil
                                         ? IMColor.brand
                                         : IMColor.muted.opacity(0.45)
                                 )
@@ -14501,6 +14578,7 @@ private struct ForwardMessageTargetSheet: View {
                         isSubmitting
                             || selectedSourceCount == 0
                             || selectedTargetCount == 0
+                            || state.messageActionPolicyUnavailableReason(.forward) != nil
                     )
                     .accessibilityIdentifier("batch_forward_submit")
                     .accessibilityHint("消息将按原会话顺序发送")
@@ -14715,6 +14793,28 @@ private struct ForwardMessageTargetSheet: View {
     }
 }
 
+// WDT_APP_CONTRACT_20261021_10: shared byte/indeterminate progress, including the final commit phase.
+struct AttachmentDownloadProgressView: View {
+    let snapshot: AttachmentDownloadSnapshot
+    let onCancel: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            ProgressView(value: snapshot.fraction)
+                .tint(IMColor.brand)
+            HStack(spacing: 8) {
+                Text(snapshot.label)
+                    .font(.system(size: 11, weight: .semibold))
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+                Button("取消", action: onCancel)
+                    .font(.system(size: 11, weight: .semibold))
+                    .buttonStyle(.plain)
+            }
+        }
+    }
+}
+
 struct AttachmentDetailSheet: View {
     @EnvironmentObject private var state: AppState
     @Environment(\.dismiss) private var dismiss
@@ -14836,7 +14936,10 @@ struct AttachmentDetailSheet: View {
                         )
 
                         fileSummary
-                        if let progress {
+                        if let snapshot = state.attachmentDownloadSnapshot(for: message), !state.isAttachmentUploadInProgress(message) {
+                            AttachmentDownloadProgressView(snapshot: snapshot) { state.cancelAttachmentDownload(message) }
+                                .plainCard(radius: 22)
+                        } else if let progress {
                             progressCard(progress)
                         }
                         if let failureMessage = state.attachmentUploadFailureMessage(for: message) {
@@ -14977,7 +15080,7 @@ struct AttachmentDetailSheet: View {
             if let onForward {
                 if let batchForwardDisabledReason {
                     attachmentActionTile(
-                        batchForwardDisabledReason,
+                        "转发",
                         symbol: "arrowshape.turn.up.right.fill",
                         enabled: false,
                         accessibilityLabel: batchForwardDisabledReason

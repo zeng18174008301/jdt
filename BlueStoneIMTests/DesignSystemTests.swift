@@ -23,17 +23,20 @@ final class DesignSystemTests: XCTestCase {
         XCTAssertTrue(
             GroupMemberInviteAffordancePolicy.isVisible(
                 canManage: false,
-                inviteConfirmRequired: true
+                inviteConfirmRequired: true,
+                isMember: true
             ),
             "An ordinary member must be able to submit an invite for approval when approval is required"
         )
-        XCTAssertFalse(
+        XCTAssertTrue(
             GroupMemberInviteAffordancePolicy.isVisible(
                 canManage: false,
-                inviteConfirmRequired: false
+                inviteConfirmRequired: false,
+                isMember: true
             ),
-            "An ordinary member must not gain direct-invite authority when approval is disabled"
+            "Confirmed members can invite their friends even when approval is disabled"
         )
+        XCTAssertFalse(GroupMemberInviteAffordancePolicy.isVisible(canManage: false, inviteConfirmRequired: true))
     }
 
     func testEnterpriseSwitcherDismissalFenceRequiresOneFreshSuccess() {

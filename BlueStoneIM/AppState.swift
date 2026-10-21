@@ -420,6 +420,13 @@ final class AppState: ObservableObject {
     @Published var myInviteCodeErrorMessage: String?
     @Published var tenantDepartmentEnabled = false
     @Published var tenantClientPolicy: RemoteTenantClientPolicy?
+    // WDT_APP_CONTRACT_20261021_01_08: current-session UI permissions, independent of RTC capabilities.
+    @Published var interactionPolicy = TenantInteractionPolicy()
+    @Published var messageActionsPolicy = MessageActionsPolicy()
+    var interactionPolicyScope = ""
+    var interactionPolicyGeneration = UUID()
+    var interactionPolicyRefreshTask: Task<Void, Never>?
+    var interactionPolicyRefreshedAt: Date?
     @Published var tenantDeviceMultiplicityPolicyState: TenantDeviceMultiplicityPolicyState = .unavailable
     @Published var organizationTree: RemoteOrganizationTree?
     @Published var organizationMembersByDepartmentID: [String: [IMUser]] = [:]

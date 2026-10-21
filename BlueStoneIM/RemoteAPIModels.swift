@@ -9017,6 +9017,8 @@ struct RemoteIMReadAckTarget: Decodable {
 }
 
 struct RemoteUserGroup: Decodable {
+    let explicitMyRole: String?
+    let memberFriendApplyEnabled: Bool?
     let groupID: String
     let groupRevision: Int64
     let name: String
@@ -9107,11 +9109,15 @@ struct RemoteUserGroup: Decodable {
         case muteListCount = "mute_list_count"
         case muteListCountCamel = "muteListCount"
         case createdAt = "created_at"
+        case settings
+        case memberFriendApplyEnabled = "web_member_friend_apply_enabled"
     }
 
     static let empty = RemoteUserGroup()
 
     init() {
+        memberFriendApplyEnabled = nil
+        explicitMyRole = nil
         groupID = ""
         groupRevision = 0
         name = ""
@@ -9187,7 +9193,13 @@ struct RemoteUserGroup: Decodable {
                 .total
             ]
         )
-        myRole = try c.decodeIfPresent(String.self, forKey: .myRole) ?? "member"
+        let groupSettings = try? c.nestedContainer(keyedBy: CodingKeys.self, forKey: .settings)
+        memberFriendApplyEnabled = groupSettings.map {
+            $0.contains(.memberFriendApplyEnabled)
+                ? ($0.decodeStrictBoolIfPresent(forKey: .memberFriendApplyEnabled) ?? false) : true
+        }
+        explicitMyRole = try c.decodeIfPresent(String.self, forKey: .myRole)
+        myRole = explicitMyRole ?? "member"
         muted = try c.decodeIfPresent(Bool.self, forKey: .muted) ?? false
         allMuted = try c.decodeIfPresent(Bool.self, forKey: .allMuted) ?? false
         allMutedMode = try c.decodeIfPresent(String.self, forKey: .allMutedMode) ?? ""
@@ -9240,6 +9252,8 @@ struct RemoteUserGroup: Decodable {
 }
 
 struct RemoteGroupDetail: Decodable {
+    let explicitMyRole: String?
+    let memberFriendApplyEnabled: Bool
     let summary: RemoteUserGroup
     let myRole: String
     let owner: RemoteUserGroupMember?
@@ -9288,7 +9302,8 @@ struct RemoteGroupDetail: Decodable {
         let groupCandidate = try c.decodeIfPresent(RemoteUserGroup.self, forKey: .group)
         let decodedSummary = summaryCandidate ?? groupCandidate ?? .empty
         summary = decodedSummary
-        myRole = try c.decodeIfPresent(String.self, forKey: .myRole) ?? decodedSummary.myRole
+        explicitMyRole = try c.decodeIfPresent(String.self, forKey: .myRole) ?? decodedSummary.explicitMyRole
+        myRole = explicitMyRole ?? decodedSummary.myRole
         owner = try c.decodeIfPresent(RemoteUserGroupMember.self, forKey: .owner)
         admins = try c.decodeIfPresent([RemoteUserGroupMember].self, forKey: .admins) ?? []
         memberCount = Self.decodeFlexibleInt(
@@ -9309,7 +9324,9 @@ struct RemoteGroupDetail: Decodable {
             ]
         ) ?? decodedSummary.memberCount
         currentAnnouncement = try c.decodeIfPresent(RemoteGroupAnnouncement.self, forKey: .currentAnnouncement)
-        settings = try c.decodeIfPresent(RemoteGroupSettings.self, forKey: .settings) ?? .empty
+        let decodedSettings = try c.decodeIfPresent(RemoteGroupSettings.self, forKey: .settings)
+        settings = decodedSettings ?? .empty
+        memberFriendApplyEnabled = decodedSettings?.memberFriendApplyEnabled ?? decodedSummary.memberFriendApplyEnabled ?? true
         groupMuted = c.decodeLossyBoolIfPresent(forKey: .groupMuted)
             ?? c.decodeLossyBoolIfPresent(forKey: .groupMutedCamel)
             ?? decodedSummary.groupMuted
@@ -9341,7 +9358,7 @@ struct RemoteGroupDetail: Decodable {
 
 struct RemoteGroupSummaryCounts: Decodable {
     let memberCount: Int?
-    let adminCount: Int
+    let adminCount: Int?
     let pendingJoinRequestCount: Int
     let fileCount: Int
 
@@ -9358,12 +9375,12 @@ struct RemoteGroupSummaryCounts: Decodable {
 
     init() {
         memberCount = nil
-        adminCount = 0
+        adminCount = nil
         pendingJoinRequestCount = 0
         fileCount = 0
     }
 
-    init(memberCount: Int?, adminCount: Int, pendingJoinRequestCount: Int, fileCount: Int) {
+    init(memberCount: Int?, adminCount: Int?, pendingJoinRequestCount: Int, fileCount: Int) {
         self.memberCount = memberCount
         self.adminCount = adminCount
         self.pendingJoinRequestCount = pendingJoinRequestCount
@@ -9376,7 +9393,6 @@ struct RemoteGroupSummaryCounts: Decodable {
             ?? c.decodeLossyIntIfPresent(forKey: .memberCountCamel)
         adminCount = c.decodeLossyIntIfPresent(forKey: .adminCount)
             ?? c.decodeLossyIntIfPresent(forKey: .adminCountCamel)
-            ?? 0
         pendingJoinRequestCount = c.decodeLossyIntIfPresent(forKey: .pendingJoinRequestCount)
             ?? c.decodeLossyIntIfPresent(forKey: .pendingJoinRequestCountCamel)
             ?? 0
@@ -9387,6 +9403,8 @@ struct RemoteGroupSummaryCounts: Decodable {
 }
 
 struct RemoteGroupSummary: Decodable {
+    let explicitMyRole: String?
+    let memberFriendApplyEnabled: Bool
     let summary: RemoteUserGroup
     let myRole: String
     let memberCount: Int?
@@ -9442,6 +9460,8 @@ struct RemoteGroupSummary: Decodable {
         counts: RemoteGroupSummaryCounts,
         currentAnnouncement: RemoteGroupAnnouncement?,
         settings: RemoteGroupSettings,
+        explicitMyRole: String? = nil,
+        memberFriendApplyEnabled: Bool? = nil,
         historyVisibleFromSeq: Int64 = 1,
         historyLimited: Bool = false,
         groupMuted: Bool = false,
@@ -9450,6 +9470,8 @@ struct RemoteGroupSummary: Decodable {
     ) {
         self.summary = summary
         self.myRole = myRole
+        self.explicitMyRole = explicitMyRole
+        self.memberFriendApplyEnabled = memberFriendApplyEnabled ?? settings.memberFriendApplyEnabled
         self.memberCount = memberCount
         self.owner = owner
         self.memberPreview = memberPreview
@@ -9469,7 +9491,8 @@ struct RemoteGroupSummary: Decodable {
         let groupCandidate = try c.decodeIfPresent(RemoteUserGroup.self, forKey: .group)
         let decodedSummary = summaryCandidate ?? groupCandidate ?? .empty
         summary = decodedSummary
-        myRole = try c.decodeIfPresent(String.self, forKey: .myRole) ?? decodedSummary.myRole
+        explicitMyRole = try c.decodeIfPresent(String.self, forKey: .myRole) ?? decodedSummary.explicitMyRole
+        myRole = explicitMyRole ?? decodedSummary.myRole
         let decodedCounts = try c.decodeIfPresent(RemoteGroupSummaryCounts.self, forKey: .counts) ?? RemoteGroupSummaryCounts()
         counts = decodedCounts
         let decodedMemberCount = Self.decodeFlexibleInt(
@@ -9482,7 +9505,9 @@ struct RemoteGroupSummary: Decodable {
             ?? c.decodeIfPresent([RemoteUserGroupMember].self, forKey: .memberPreviewCamel)
             ?? []
         currentAnnouncement = try c.decodeIfPresent(RemoteGroupAnnouncement.self, forKey: .currentAnnouncement)
-        settings = try c.decodeIfPresent(RemoteGroupSettings.self, forKey: .settings) ?? .empty
+        let decodedSettings = try c.decodeIfPresent(RemoteGroupSettings.self, forKey: .settings)
+        settings = decodedSettings ?? .empty
+        memberFriendApplyEnabled = decodedSettings?.memberFriendApplyEnabled ?? decodedSummary.memberFriendApplyEnabled ?? true
         historyVisibleFromSeq = max(
             1,
             c.decodeLossyInt64IfPresent(forKey: .historyVisibleFromSeq)
@@ -9744,6 +9769,7 @@ struct RemoteGroupDissolveResult: Decodable, Sendable {
 }
 
 struct RemoteGroupSettings: Decodable {
+    let memberFriendApplyEnabled: Bool
     let groupRevision: Int64
     let groupDescription: String?
     let muted: Bool
@@ -9767,6 +9793,7 @@ struct RemoteGroupSettings: Decodable {
     enum CodingKeys: String, CodingKey {
         case groupRevision = "group_revision"
         case groupDescription = "description"
+        case memberFriendApplyEnabled = "web_member_friend_apply_enabled"
         case muted
         case historyVisible = "history_visible"
         case historyVisibleCamel = "historyVisible"
@@ -9796,6 +9823,7 @@ struct RemoteGroupSettings: Decodable {
     static let empty = RemoteGroupSettings()
 
     init() {
+        memberFriendApplyEnabled = true
         groupRevision = 0
         groupDescription = nil
         muted = false
@@ -9821,6 +9849,8 @@ struct RemoteGroupSettings: Decodable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         groupRevision = max(0, c.decodeLossyInt64IfPresent(forKey: .groupRevision) ?? 0)
         groupDescription = try c.decodeIfPresent(String.self, forKey: .groupDescription)
+        memberFriendApplyEnabled = c.contains(.memberFriendApplyEnabled)
+            ? (c.decodeStrictBoolIfPresent(forKey: .memberFriendApplyEnabled) ?? false) : true
         muted = try c.decodeIfPresent(Bool.self, forKey: .muted) ?? false
         inviteConfirmRequired = c.decodeLossyBoolIfPresent(forKey: .inviteConfirmRequired)
             ?? c.decodeLossyBoolIfPresent(forKey: .inviteConfirmRequiredCamel)
@@ -10410,6 +10440,7 @@ struct RemoteSplashConfiguration: Equatable, Sendable {
 }
 
 struct RemoteFileUploadConfig: Decodable {
+    let messageActionsPolicy: MessageActionsPolicy
     let maxBytes: Int64
     let maxMB: Int
     let source: String
@@ -10513,6 +10544,7 @@ struct RemoteFileUploadConfig: Decodable {
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        messageActionsPolicy = try MessageActionsPolicy(from: decoder)
         let features = try? c.nestedContainer(keyedBy: FeatureCodingKeys.self, forKey: .features)
         let splash = try? c.nestedContainer(keyedBy: SplashCodingKeys.self, forKey: .splash)
 
@@ -11411,6 +11443,7 @@ struct RemoteCreateGroupResponse: Decodable {
 }
 
 struct RemoteInviteGroupMembersResponse: Decodable {
+    let alreadyMemberCount: Int
     let items: [RemoteGroupMember]
     let systemMessages: [RemoteMessage]
     let status: String
@@ -11420,6 +11453,7 @@ struct RemoteInviteGroupMembersResponse: Decodable {
 
     enum CodingKeys: String, CodingKey {
         case items
+        case alreadyMembers = "already_members"
         case systemMessages = "system_messages"
         case status
         case joinRequests = "join_requests"
@@ -11430,6 +11464,7 @@ struct RemoteInviteGroupMembersResponse: Decodable {
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        alreadyMemberCount = (try? c.decode([JSONValue].self, forKey: .alreadyMembers))?.count ?? 0
         items = try c.decodeIfPresent([RemoteGroupMember].self, forKey: .items) ?? []
         systemMessages = try c.decodeIfPresent([RemoteMessage].self, forKey: .systemMessages) ?? []
         status = try c.decodeIfPresent(String.self, forKey: .status) ?? ""
@@ -11445,6 +11480,18 @@ struct RemoteInviteGroupMembersResponse: Decodable {
         return pendingApproval
             || !joinRequests.isEmpty
             || ["pending", "pending_approval", "waiting_approval", "submitted"].contains(normalizedStatus)
+    }
+
+    // WDT_APP_CONTRACT_20261021_12: report server results, never count requested IDs as joined.
+    var invitationResultMessage: String {
+        var parts: [String] = []
+        if !items.isEmpty { parts.append("已邀请 \(items.count) 人入群") }
+        if requiresApproval {
+            parts.append(joinRequests.isEmpty ? "已提交入群邀请，等待审核" : "\(joinRequests.count) 人等待审核")
+        }
+        if alreadyMemberCount > 0 { parts.append("\(alreadyMemberCount) 人已在群中") }
+        if parts.isEmpty && status == "already_member" { return "所选成员已在群中" }
+        return parts.isEmpty ? "邀请结果已同步" : parts.joined(separator: "，")
     }
 }
 

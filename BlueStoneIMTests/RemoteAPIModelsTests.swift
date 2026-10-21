@@ -2,6 +2,60 @@ import XCTest
 @testable import BlueStoneIM
 
 final class RemoteAPIModelsTests: XCTestCase {
+    // WDT_APP_CONTRACT_20261021: explicit false, unknown and legacy projections stay distinct.
+    func testMessageActionsPreferEffectiveAndFailClosedForMalformedValues() throws {
+        let decoder = JSONDecoder()
+        let policy = try decoder.decode(MessageActionsPolicy.self, from: Data(#"{"message_recall_enabled":true,"message_edit_enabled":true,"message_forward_enabled":false,"message_actions":{"effective":{"recall_enabled":false,"edit_enabled":"true"}}}"#.utf8))
+        XCTAssertEqual(policy.recallEnabled, false)
+        XCTAssertNil(policy.editEnabled)
+        XCTAssertEqual(policy.forwardEnabled, false)
+        for json in [#"{}"#, #"{"message_actions":{"effective":null},"message_recall_enabled":true}"#,
+                     #"{"message_actions":false,"message_recall_enabled":true}"#] {
+            XCTAssertNil(try decoder.decode(MessageActionsPolicy.self, from: Data(json.utf8)).recallEnabled)
+        }
+        let legacy = try decoder.decode(MessageActionsPolicy.self, from: Data(#"{"message_edit_enabled":true}"#.utf8))
+        XCTAssertEqual(legacy.editEnabled, true)
+        XCTAssertNil(legacy.forwardEnabled)
+    }
+
+    func testInteractionProjectionDoesNotTreatStringsOrAdminAsOrdinaryExemptions() throws {
+        let policy = try JSONDecoder().decode(TenantInteractionPolicy.self, from: Data(#"{"group":{"allow_member_group_leave":false},"relationship":{"allow_member_friend_delete":"true","allow_member_blacklist":true},"message":{"processing_notice_enabled":false}}"#.utf8))
+        XCTAssertEqual(policy.allowMemberGroupLeave, false)
+        XCTAssertNil(policy.allowMemberFriendDelete)
+        XCTAssertEqual(policy.allowMemberBlacklist, true)
+        XCTAssertEqual(policy.processingNoticeEnabled, false)
+        XCTAssertFalse(TenantInteractionPolicy.permitsOrdinaryAction(role: "member", enabled: nil))
+        XCTAssertFalse(TenantInteractionPolicy.permitsOrdinaryAction(role: "admin", enabled: true))
+        XCTAssertTrue(TenantInteractionPolicy.permitsOrdinaryAction(role: " INTERNAL ", enabled: false))
+        XCTAssertTrue(TenantInteractionPolicy.permitsOrdinaryAction(role: "member", enabled: true))
+        XCTAssertNil(try JSONDecoder().decode(TenantInteractionPolicy.self, from: Data("{}".utf8)).processingNoticeEnabled)
+    }
+
+    func testGroupSummaryPreservesUnknownCountsRoleAndGroupFriendApplyPolicy() throws {
+        let decoder = JSONDecoder()
+        let empty = try decoder.decode(RemoteGroupSummary.self, from: Data(#"{"group":{"group_id":"g1"}}"#.utf8))
+        XCTAssertNil(empty.memberCount)
+        XCTAssertNil(empty.counts.adminCount)
+        XCTAssertNil(empty.explicitMyRole)
+        XCTAssertTrue(empty.memberFriendApplyEnabled)
+        let nested = try decoder.decode(RemoteGroupSummary.self, from: Data(#"{"group":{"group_id":"g1","settings":{"web_member_friend_apply_enabled":false}},"my_role":"member","counts":{"admin_count":0}}"#.utf8))
+        XCTAssertFalse(nested.memberFriendApplyEnabled)
+        XCTAssertEqual(nested.explicitMyRole, "member")
+        XCTAssertEqual(nested.counts.adminCount, 0)
+        let malformed = try decoder.decode(RemoteGroupSettings.self, from: Data(#"{"web_member_friend_apply_enabled":"true"}"#.utf8))
+        XCTAssertFalse(malformed.memberFriendApplyEnabled)
+    }
+
+    func testInvitationsDistinguishApprovalAndAlreadyMemberResults() throws {
+        let decoder = JSONDecoder()
+        let approval = try decoder.decode(RemoteInviteGroupMembersResponse.self, from: Data(#"{"items":[],"status":"pending_approval"}"#.utf8))
+        XCTAssertTrue(approval.requiresApproval)
+        XCTAssertEqual(approval.invitationResultMessage, "已提交入群邀请，等待审核")
+        let existing = try decoder.decode(RemoteInviteGroupMembersResponse.self, from: Data(#"{"items":[],"status":"already_member","already_members":["u1"]}"#.utf8))
+        XCTAssertFalse(existing.requiresApproval)
+        XCTAssertEqual(existing.invitationResultMessage, "1 人已在群中")
+    }
+
     func testRTCPolicyRejectsPartialInvalidAndUnnegotiatedMedia() throws {
         let decoder = JSONDecoder()
         let legacy = try decoder.decode(RemoteRTCMedia.self, from: Data("{}".utf8))

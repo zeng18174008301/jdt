@@ -2970,6 +2970,165 @@ final class DomainStoreTests: XCTestCase {
         XCTAssertNil(store.localUploadDraft(id: uploadID))
     }
 
+    // WDT_CONVERSATION_LIST_SORT_20261021_BEGIN
+    func testConversationListMessageTimeAfterDeleteDoesNotMutateBusinessState() throws {
+        let store = ConversationStore()
+        var conversation = makeConversation(id: "sort-delete", unread: 2, lastMsgSeq: 2, lastReadSeq: 0)
+        var older = makeMessage(id: "m1", seq: 1)
+        older.createdAt = Date(timeIntervalSince1970: 100)
+        var latest = makeMessage(id: "m2", seq: 2)
+        latest.createdAt = Date(timeIntervalSince1970: 200)
+        conversation.messages = [older, latest]
+        conversation.sortTimestamp = 200
+        conversation.isPinned = true
+        store.conversations = [conversation]
+
+        XCTAssertTrue(store.applyAdminDeletedMessage(messageID: "m2", channelIDForConversation: { $0.id }))
+        let afterDelete = try XCTUnwrap(store.conversations.first)
+        XCTAssertEqual(afterDelete.sortTimestamp, 200)
+        XCTAssertEqual(afterDelete.lastMessage, "m1")
+        XCTAssertEqual(afterDelete.lastMsgSeq, 2)
+        XCTAssertEqual(afterDelete.unread, 2)
+        XCTAssertTrue(afterDelete.isPinned)
+        XCTAssertEqual(conversationListMessageTimestamp(afterDelete), 100)
+        XCTAssertEqual(store.conversations.first, afterDelete)
+    }
+
+    func testConversationListRecallKeepsOriginalMessageTime() {
+        let store = ConversationStore()
+        var conversation = makeConversation(id: "sort-recall", unread: 2, lastMsgSeq: 2, lastReadSeq: 0)
+        var older = makeMessage(id: "m1", seq: 1)
+        older.createdAt = Date(timeIntervalSince1970: 100)
+        var latest = makeMessage(id: "m2", seq: 2)
+        latest.createdAt = Date(timeIntervalSince1970: 200)
+        conversation.messages = [older, latest]
+        conversation.sortTimestamp = 900
+        store.conversations = [conversation]
+
+        XCTAssertTrue(store.applyRecall(messageID: "m1"))
+        XCTAssertEqual(conversationListMessageTimestamp(store.conversations[0]), 200)
+        XCTAssertTrue(store.applyRecall(messageID: "m2"))
+        XCTAssertEqual(conversationListMessageTimestamp(store.conversations[0]), 200)
+        XCTAssertEqual(store.conversations[0].messages[1].status, .recalled)
+        XCTAssertEqual(store.conversations[0].sortTimestamp, 900)
+        XCTAssertEqual(store.conversations[0].lastMsgSeq, 2)
+    }
+
+    func testConversationListRemovingFailedOutgoingRestoresRemainingMessageTime() {
+        let store = ConversationStore()
+        var conversation = makeConversation(id: "sort-failed", unread: 0, lastMsgSeq: 1, lastReadSeq: 1)
+        var sent = makeMessage(id: "m1", seq: 1)
+        sent.createdAt = Date(timeIntervalSince1970: 100)
+        var pending = makeMessage(id: "local_failed", seq: 0, status: .failed, isOutgoing: true)
+        pending.createdAt = Date(timeIntervalSince1970: 200)
+        conversation.messages = [sent, pending]
+        conversation.sortTimestamp = 200
+        store.conversations = [conversation]
+
+        XCTAssertNil(conversationListMessageTimestamp(store.conversations[0]))
+        XCTAssertTrue(store.removeMessage(messageID: pending.id, conversationID: conversation.id))
+        XCTAssertEqual(conversationListMessageTimestamp(store.conversations[0]), 100)
+        XCTAssertEqual(store.conversations[0].sortTimestamp, 200)
+        XCTAssertEqual(store.conversations[0].lastMsgSeq, 1)
+    }
+
+    func testConversationListMessageTimestampProtectsIncompleteHistoryAndPendingMessages() {
+        var conversation = makeConversation(id: "sort-guards", unread: 0, lastMsgSeq: 3, lastReadSeq: 0)
+        var older = makeMessage(id: "m1", seq: 1)
+        older.createdAt = Date(timeIntervalSince1970: 100)
+        var latest = makeMessage(id: "m3", seq: 3)
+        latest.createdAt = Date(timeIntervalSince1970: 300)
+        conversation.sortTimestamp = 900
+
+        conversation.messages = []
+        XCTAssertNil(conversationListMessageTimestamp(conversation))
+        conversation.messages = [older]
+        XCTAssertNil(conversationListMessageTimestamp(conversation))
+        latest.isDeletedLocally = true
+        conversation.messages = [older, latest]
+        XCTAssertNil(conversationListMessageTimestamp(conversation), "Sequence 2 is unknown, not necessarily deleted")
+        conversation.messages = [latest]
+        XCTAssertNil(conversationListMessageTimestamp(conversation), "An all-deleted page is not an empty conversation")
+        latest.isDeletedLocally = false
+        latest.createdAt = nil
+        conversation.messages = [older, latest]
+        XCTAssertNil(conversationListMessageTimestamp(conversation), "Do not use an older date when the latest date is missing")
+        latest.createdAt = Date(timeIntervalSince1970: 300)
+        for status in [MessageDelivery.sending, .failed] {
+            conversation.messages = [older, latest, makeMessage(id: "local", seq: 0, status: status, isOutgoing: true)]
+            XCTAssertNil(conversationListMessageTimestamp(conversation))
+        }
+    }
+
+    func testConversationListMessageTimestampIgnoresPinnedContextAndOlderDeletion() {
+        var conversation = makeConversation(id: "sort-existing", unread: 0, lastMsgSeq: 2, lastReadSeq: 0)
+        var older = makeMessage(id: "m1", seq: 1, isDeletedLocally: true)
+        older.createdAt = Date(timeIntervalSince1970: 100)
+        var latest = makeMessage(id: "m2", seq: 2)
+        latest.createdAt = Date(timeIntervalSince1970: 200)
+        var context = makeMessage(id: "pin", seq: 4, isPinned: true)
+        context.createdAt = Date(timeIntervalSince1970: 400)
+        context.isPinnedContextOnly = true
+        conversation.messages = [older, latest, context]
+        conversation.sortTimestamp = 900
+
+        XCTAssertEqual(conversationListMessageTimestamp(conversation), 200)
+        conversation.isPinned = true
+        XCTAssertEqual(conversationListMessageTimestamp(conversation), 200)
+        var incoming = makeMessage(id: "m3", seq: 3)
+        incoming.createdAt = Date(timeIntervalSince1970: 300)
+        conversation.messages.append(incoming)
+        conversation.lastMsgSeq = 3
+        XCTAssertEqual(conversationListMessageTimestamp(conversation), 300)
+    }
+
+    func testConversationListAllDeletedMessagesUseZeroOnlyThroughKnownHistoryBoundary() {
+        var conversation = makeConversation(id: "sort-empty", unread: 0, lastMsgSeq: 3, lastReadSeq: 0)
+        conversation.messages = [
+            makeMessage(id: "m1", seq: 1, isDeletedLocally: true),
+            makeMessage(id: "m2", seq: 2, isDeletedLocally: true),
+            makeMessage(id: "m3", seq: 3, isDeletedLocally: true)
+        ]
+        conversation.time = "昨天 10:00"
+        conversation.sortTimestamp = 900
+        XCTAssertEqual(conversationListMessageTimestamp(conversation), 0)
+        XCTAssertEqual(conversationListDisplayTime(for: conversation), "")
+
+        conversation.messages.removeFirst()
+        XCTAssertNil(conversationListMessageTimestamp(conversation))
+        conversation.historyVisibleFromSeq = 2
+        conversation.historyBoundaryConfirmed = true
+        XCTAssertEqual(conversationListMessageTimestamp(conversation), 0)
+    }
+
+    func testConversationListDisplayTimeMatchesRemainingMessageSortDate() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let now = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 10, day: 21, hour: 10)))
+        let yesterday = now.addingTimeInterval(-86400)
+        var conversation = makeConversation(id: "sort-time", unread: 0, lastMsgSeq: 2, lastReadSeq: 0)
+        var older = makeMessage(id: "m1", seq: 1)
+        older.createdAt = yesterday
+        conversation.messages = [older, makeMessage(id: "m2", seq: 2, isDeletedLocally: true)]
+        conversation.sortTimestamp = now.timeIntervalSince1970
+        conversation.time = "10:00"
+
+        XCTAssertEqual(conversationListMessageTimestamp(conversation), yesterday.timeIntervalSince1970)
+        XCTAssertEqual(conversationListDisplayTime(for: conversation, now: now, calendar: calendar), "昨天 10:00")
+        XCTAssertEqual(conversation.sortTimestamp, now.timeIntervalSince1970)
+        XCTAssertEqual(conversation.time, "10:00")
+    }
+
+    func testConversationListMessageTimestampLeavesSystemConversationUnchanged() {
+        var conversation = makeConversation(id: "system_notification", kind: .system, unread: 0, lastMsgSeq: 1, lastReadSeq: 0)
+        var message = makeMessage(id: "notice", seq: 1)
+        message.createdAt = Date(timeIntervalSince1970: 100)
+        conversation.messages = [message]
+        conversation.sortTimestamp = 900
+        XCTAssertNil(conversationListMessageTimestamp(conversation))
+    }
+    // WDT_CONVERSATION_LIST_SORT_20261021_END
+
     func testConversationListTimeOnlyAfterMidnightFallsBackToYesterday() throws {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!
@@ -3272,6 +3431,83 @@ final class DomainStoreTests: XCTestCase {
             "已读状态同步失败，请稍后重试"
         )
     }
+
+    // WDT_CHAT_UNREAD_BADGE_20261021_BEGIN
+    func testReadTargetUsesVisibleOutgoingTailWhenIncomingRowIsAboveViewport() throws {
+        let messages = [
+            makeMessage(id: "incoming", seq: 1),
+            makeMessage(id: "reply-2", seq: 2, isOutgoing: true),
+            makeMessage(id: "reply-3", seq: 3, isOutgoing: true)
+        ]
+        let target = try XCTUnwrap(chatReadAcknowledgementTarget(in: messages))
+        XCTAssertEqual(target.id, "reply-3")
+        let metrics = ChatScrollMetricsSnapshot(viewportHeight: 600, contentMinY: -700, contentMaxY: 600,
+            renderedReadToken: "chat:3", renderedReadSeq: target.channelSeq, readVisibilityEpoch: 4)
+        let incomingRow = ChatIncomingRowGeometry(token: "chat:1", frame: CGRect(x: 0, y: -200, width: 300, height: 80), epoch: 4)
+        let tailRow = ChatIncomingRowGeometry(token: "chat:3", frame: CGRect(x: 0, y: 500, width: 300, height: 80), epoch: 4)
+        XCTAssertNil(chatVisibleIncomingReadSequence(metrics: metrics, row: incomingRow, expectedToken: "chat:3",
+            epoch: 4, isActive: true, scopeMatches: true))
+        XCTAssertEqual(chatVisibleIncomingReadSequence(metrics: metrics, row: tailRow, expectedToken: "chat:3",
+            epoch: 4, isActive: true, scopeMatches: true), 3)
+        XCTAssertNil(chatVisibleIncomingReadSequence(metrics: metrics, row: tailRow, expectedToken: "chat:4",
+            epoch: 4, isActive: true, scopeMatches: true))
+    }
+
+    func testReadTargetExcludesUnconfirmedSystemAndPinnedContextRows() {
+        var pinned = makeMessage(id: "pinned", seq: 9, isPinned: true)
+        pinned.isPinnedContextOnly = true
+        let messages = [
+            makeMessage(id: "confirmed", seq: 1),
+            makeMessage(id: "sending", seq: 2, status: .sending, isOutgoing: true),
+            makeMessage(id: "failed", seq: 3, status: .failed, isOutgoing: true),
+            makeMessage(id: "local", seq: 0, isOutgoing: true),
+            makeMessage(id: "system", seq: 4, kind: .system),
+            pinned
+        ]
+        XCTAssertEqual(chatReadAcknowledgementTarget(in: messages.lazy.map { $0 })?.id, "confirmed")
+        XCTAssertNil(chatReadAcknowledgementTarget(in: messages.dropFirst()))
+    }
+
+    func testReadTargetHonorsExistingTombstonePresentationPolicy() {
+        let messages = [
+            makeMessage(id: "incoming", seq: 1),
+            makeMessage(id: "outgoing", seq: 2, isOutgoing: true),
+            makeMessage(id: "recalled", seq: 3, status: .recalled),
+            makeMessage(id: "deleted", seq: 4, status: .recalled, isDeletedLocally: true)
+        ]
+        XCTAssertEqual(chatReadAcknowledgementTarget(in: chatTimelineMessagesForRendering(messages))?.id, "deleted")
+        XCTAssertEqual(chatReadAcknowledgementTarget(in: chatTimelineMessagesForRendering(messages, showsProcessingNotices: false))?.id, "outgoing")
+        XCTAssertTrue(messages[3].isDeletedLocally)
+        XCTAssertEqual(messages[2].status, .recalled)
+    }
+    // WDT_CHAT_UNREAD_BADGE_20261021_END
+
+    // WDT_CHAT_READ_TRIGGER_20261021_BEGIN
+    func testReadObservationRequiresContentBottomIncludingTrailingSpace() {
+        for viewport: CGFloat in [320, 600, 900] {
+            // The old scroll target left 12pt beyond its ID even after alignment.
+            let oldMetrics = ChatScrollMetricsSnapshot(viewportHeight: viewport, contentMinY: -700,
+                contentMaxY: viewport + 12, renderedReadToken: "chat:21", renderedReadSeq: 21, readVisibilityEpoch: 4)
+            let oldRow = ChatIncomingRowGeometry(token: "chat:21",
+                frame: CGRect(x: 0, y: viewport - 24 - 8 - 80, width: 300, height: 80), epoch: 4)
+            XCTAssertTrue(chatScrollVisibility(metrics: oldMetrics).isAtBottom)
+            XCTAssertNil(chatVisibleIncomingReadSequence(metrics: oldMetrics, row: oldRow,
+                expectedToken: "chat:21", epoch: 4, isActive: true, scopeMatches: true))
+
+            // Including the same padding inside the target aligns the entire content.
+            let metrics = ChatScrollMetricsSnapshot(viewportHeight: viewport, contentMinY: -712,
+                contentMaxY: viewport, renderedReadToken: "chat:21", renderedReadSeq: 21, readVisibilityEpoch: 4)
+            let row = ChatIncomingRowGeometry(token: "chat:21", frame: oldRow.frame.offsetBy(dx: 0, dy: -12), epoch: 4)
+            XCTAssertEqual(metrics.contentHeight, oldMetrics.contentHeight)
+            XCTAssertEqual(chatVisibleIncomingReadSequence(metrics: metrics, row: row,
+                expectedToken: "chat:21", epoch: 4, isActive: true, scopeMatches: true), 21)
+            XCTAssertNil(chatVisibleIncomingReadSequence(metrics: metrics, row: .empty,
+                expectedToken: "chat:21", epoch: 4, isActive: true, scopeMatches: true))
+            XCTAssertNil(chatVisibleIncomingReadSequence(metrics: metrics, row: row,
+                expectedToken: "chat:22", epoch: 4, isActive: true, scopeMatches: true))
+        }
+    }
+    // WDT_CHAT_READ_TRIGGER_20261021_END
 
     func testReadObservationAdvancesWhenBottomBooleanStaysUnchanged() {
         let visibleRow = ChatIncomingRowGeometry(token: "chat:21", frame: CGRect(x: 0, y: 500, width: 300, height: 80), epoch: 4)
@@ -3585,6 +3821,22 @@ final class DomainStoreTests: XCTestCase {
             XCTAssertFalse(plan.requestsScrollTarget)
         }
     }
+
+    // WDT_CHAT_KEYBOARD_INSET_20261021_BEGIN
+    func testChatKeyboardAvoidanceReleasesOnlyTheIdleKeyboardRegion() {
+        XCTAssertEqual(chatIgnoredKeyboardEdges(composerIsEditing: false, searchIsFocused: false), .bottom)
+        XCTAssertEqual(chatIgnoredKeyboardEdges(composerIsEditing: true, searchIsFocused: false), [])
+        XCTAssertEqual(chatIgnoredKeyboardEdges(composerIsEditing: false, searchIsFocused: true), [])
+        XCTAssertEqual(chatIgnoredKeyboardEdges(composerIsEditing: true, searchIsFocused: true), [])
+    }
+
+    func testChatKeyboardAvoidanceCanResumeAfterRepeatedEditing() {
+        for _ in 0..<3 {
+            XCTAssertEqual(chatIgnoredKeyboardEdges(composerIsEditing: true, searchIsFocused: false), [])
+            XCTAssertEqual(chatIgnoredKeyboardEdges(composerIsEditing: false, searchIsFocused: false), .bottom)
+        }
+    }
+    // WDT_CHAT_KEYBOARD_INSET_20261021_END
 
     func testChatMessageTopMeasurementStoreDoesNotPublishGeometryWrites() {
         let store = ChatMessageTopMeasurementStore()
@@ -6517,6 +6769,8 @@ final class DomainStoreTests: XCTestCase {
         message.senderProvenance = .authoritativeStored
         source.messages = [message]
         state.conversationStore.conversations = [source]
+        state.interactionPolicyScope = state.remoteDataScopeKey(for: state.apiContext)
+        state.messageActionsPolicy.forwardEnabled = true
         state.beginBatchForward(
             conversationID: source.id,
             initialMessageID: message.id
@@ -6605,6 +6859,8 @@ final class DomainStoreTests: XCTestCase {
             lastReadSeq: 0
         )
         state.conversationStore.conversations = [source, target]
+        state.interactionPolicyScope = state.remoteDataScopeKey(for: state.apiContext)
+        state.messageActionsPolicy.forwardEnabled = true
         state.beginBatchForward(
             conversationID: source.id,
             initialMessageID: message.id
@@ -6662,6 +6918,8 @@ final class DomainStoreTests: XCTestCase {
             lastReadSeq: 0
         )
         state.conversationStore.conversations = [source, target]
+        state.interactionPolicyScope = state.remoteDataScopeKey(for: state.apiContext)
+        state.messageActionsPolicy.forwardEnabled = true
         state.beginBatchForward(
             conversationID: source.id,
             initialMessageID: message.id
@@ -6729,6 +6987,8 @@ final class DomainStoreTests: XCTestCase {
         source.messages = [message]
         state.conversationStore.conversations = [source]
 
+        state.interactionPolicyScope = state.remoteDataScopeKey(for: state.apiContext)
+        state.messageActionsPolicy.forwardEnabled = true
         state.beginBatchForward(
             conversationID: source.id,
             initialMessageID: message.id
@@ -7070,6 +7330,71 @@ final class DomainStoreTests: XCTestCase {
         XCTAssertEqual(result.conversation.title, "Known Peer")
         XCTAssertEqual(result.conversation.participants.map(\.id), ["current-user", "peer-user"])
     }
+
+    // WDT_CHAT_UNREAD_BADGE_20261021_BEGIN
+    func testRepeatedConfirmedTailAckClearsStaleUnreadWithoutTouchingOtherConversations() {
+        let store = ConversationStore()
+        var conversation = makeConversation(id: "read", unread: 4, lastMsgSeq: 3, lastReadSeq: 3)
+        conversation.messages = (1...3).map { makeMessage(id: "m\($0)", seq: Int64($0), isOutgoing: $0 > 1) }
+        conversation.hasUnreadReaction = false
+        conversation.unreadReactionCount = 0
+        let other = makeConversation(id: "other", unread: 7, lastMsgSeq: 9, lastReadSeq: 2)
+        store.conversations = [conversation, other]
+        var publications = 0
+        let observation = store.$conversations.dropFirst().sink { _ in publications += 1 }
+        defer { observation.cancel() }
+
+        store.advanceRead(conversationID: "read", through: 3)
+        XCTAssertEqual(store.conversations[0].lastReadSeq, 3)
+        XCTAssertEqual(store.conversations[0].unread, 0)
+        XCTAssertEqual(store.conversations[0].firstUnreadSeq, 0)
+        XCTAssertEqual(store.conversations[0].firstUnreadMessageID, "")
+        XCTAssertEqual(store.conversations[0].unreadAnchorSeq, 0)
+        XCTAssertEqual(store.conversations[0].unreadAnchorState, "none")
+        XCTAssertEqual(store.conversations[0].messages, conversation.messages)
+        XCTAssertEqual(store.conversations[1], other)
+        let settledPublications = publications
+        store.advanceRead(conversationID: "read", through: 3)
+        XCTAssertEqual(publications, settledPublications)
+    }
+
+    func testRepeatedAckDoesNotClearNewIncomingOrCrossCoverageGap() {
+        let store = ConversationStore()
+        var conversation = makeConversation(id: "read", unread: 4, lastMsgSeq: 5, lastReadSeq: 3)
+        conversation.messages = (1...5).map { makeMessage(id: "m\($0)", seq: Int64($0)) }
+        conversation.hasUnreadReaction = false
+        conversation.unreadReactionCount = 0
+        store.conversations = [conversation]
+        store.advanceRead(conversationID: "read", through: 3)
+        XCTAssertEqual(store.conversations[0], conversation)
+        store.advanceRead(conversationID: "read", through: 2)
+        XCTAssertEqual(store.conversations[0], conversation)
+
+        conversation.messageCoveredThroughSeq = 3
+        conversation.messageCoverageRequiresRecovery = true
+        conversation.messages.removeAll { $0.channelSeq == 4 }
+        store.conversations = [conversation]
+        store.advanceRead(conversationID: "read", through: 5)
+        XCTAssertEqual(store.conversations[0], conversation)
+
+        conversation.messageCoveredThroughSeq = 0
+        conversation.lastReadSeq = 0
+        store.conversations = [conversation]
+        store.advanceRead(conversationID: "read", through: 5)
+        XCTAssertEqual(store.conversations[0], conversation)
+    }
+
+    func testRepeatedTailAckPreservesUnacknowledgedReactionState() {
+        let store = ConversationStore()
+        var conversation = makeConversation(id: "reactions", unread: 4, lastMsgSeq: 3, lastReadSeq: 3)
+        conversation.messages = (1...3).map { makeMessage(id: "m\($0)", seq: Int64($0)) }
+        conversation.hasUnreadReaction = true
+        conversation.unreadReactionCount = 4
+        store.conversations = [conversation]
+        store.advanceRead(conversationID: conversation.id, through: 3)
+        XCTAssertEqual(store.conversations[0], conversation)
+    }
+    // WDT_CHAT_UNREAD_BADGE_20261021_END
 
     func testConversationStoreAdvanceReadPreservesTailAcrossCoverageGapAndConvergesAfterRecovery() {
         let store = ConversationStore()
@@ -16104,7 +16429,7 @@ final class DomainStoreTests: XCTestCase {
         ))
     }
 
-    func testConversationStoreGroupMemberCountZeroPreservesKnownCount() {
+    func testConversationStoreGroupMemberCountZeroDoesNotRestoreCachedOrLoadedTotals() {
         let store = ConversationStore()
         var existing = makeConversation(id: "group-1", kind: .group, unread: 0, lastMsgSeq: 1, lastReadSeq: 1)
         existing.title = "Team Blue"
@@ -16125,7 +16450,7 @@ final class DomainStoreTests: XCTestCase {
             accentHex: 42,
             channelIDForConversation: { $0.id }
         ))
-        XCTAssertEqual(store.conversations[0].memberCount, 91)
+        XCTAssertNil(store.conversations[0].memberCount)
 
         XCTAssertTrue(store.setGroupConversationParticipants(
             groupID: "group-1",
@@ -16134,7 +16459,7 @@ final class DomainStoreTests: XCTestCase {
             memberCount: 0
         ))
         XCTAssertEqual(store.conversations[0].participants.map(\.id), ["u1", "u2"])
-        XCTAssertEqual(store.conversations[0].memberCount, 91)
+        XCTAssertNil(store.conversations[0].memberCount)
     }
 
     func testGroupInfoMemberCountDisplayDistinguishesUnknownFromZero() {
@@ -16186,7 +16511,7 @@ final class DomainStoreTests: XCTestCase {
             memberCount: 0
         ))
         XCTAssertEqual(store.conversations[1].participants.map(\.id), ["old-2"])
-        XCTAssertEqual(store.conversations[1].memberCount, 1)
+        XCTAssertNil(store.conversations[1].memberCount)
     }
 
     func testConversationStoreSetGroupConversationParticipantsIgnoresEmptyOrMissingTarget() {
@@ -17538,6 +17863,82 @@ final class DomainStoreTests: XCTestCase {
         )
 
         XCTAssertEqual(dividerID, "m501")
+    }
+
+    // WDT_CHAT_DELETE_REFRESH_20261021_BEGIN
+    func testChatDeletionCacheInvalidatesMiddleTombstoneWithoutCountOrEndpointChanges() {
+        let store = ConversationStore()
+        var conversation = makeConversation(id: "c1", unread: 0, lastMsgSeq: 3, lastReadSeq: 3)
+        conversation.messages = (1...3).map { makeMessage(id: "m\($0)", seq: Int64($0)) }
+        store.conversations = [conversation]
+        let cachedMessages = conversation.messages
+
+        XCTAssertTrue(chatMessageDeletionStateMatches(cachedMessages: cachedMessages, messages: cachedMessages))
+        XCTAssertTrue(store.applyAdminDeletedMessage(
+            messageID: "m2",
+            conversationID: "c1",
+            channelIDForConversation: { $0.id }
+        ))
+        let updated = store.conversations[0].messages
+        XCTAssertEqual(updated.count, cachedMessages.count)
+        XCTAssertEqual(updated.first, cachedMessages.first)
+        XCTAssertEqual(updated.last, cachedMessages.last)
+        XCTAssertFalse(chatMessageDeletionStateMatches(cachedMessages: cachedMessages, messages: updated))
+        XCTAssertTrue(chatMessageDeletionStateMatches(cachedMessages: updated, messages: updated))
+        XCTAssertFalse(cachedMessages[1].isDeletedLocally)
+        XCTAssertTrue(updated[1].isDeletedLocally)
+        XCTAssertEqual(updated[1].text, "原消息已删除")
+        XCTAssertEqual(chatTimelineMessagesForRendering(updated).map(\.id), ["m1", "m2", "m3"])
+        XCTAssertEqual(chatTimelineMessagesForRendering(updated, showsProcessingNotices: false).map(\.id), ["m1", "m3"])
+    }
+
+    func testChatDeletionCacheInvalidatesRemovalAndSameCountReplacement() {
+        let cached = (1...4).map { makeMessage(id: "m\($0)", seq: Int64($0)) }
+        let removed = cached.filter { $0.id != "m2" }
+        XCTAssertFalse(chatMessageDeletionStateMatches(cachedMessages: cached, messages: removed))
+
+        var replaced = cached
+        replaced[1] = makeMessage(id: "replacement", seq: 2)
+        XCTAssertFalse(chatMessageDeletionStateMatches(cachedMessages: cached, messages: replaced))
+
+        let empty: [ChatMessage] = []
+        XCTAssertFalse(chatMessageDeletionStateMatches(cachedMessages: cached, messages: empty))
+        XCTAssertTrue(chatMessageDeletionStateMatches(cachedMessages: empty, messages: empty))
+    }
+
+    func testChatDeletionCacheChecksReusedHistorySuffixWithoutChangingOtherFields() {
+        let cached = (3...5).map { makeMessage(id: "m\($0)", seq: Int64($0)) }
+        let older = (1...2).map { makeMessage(id: "m\($0)", seq: Int64($0)) }
+        var prepended = older + cached
+        XCTAssertTrue(chatMessageDeletionStateMatches(
+            cachedMessages: cached.lazy.map { $0 },
+            messages: prepended.dropFirst(older.count)
+        ))
+        prepended[3].isDeletedLocally = true
+        XCTAssertFalse(chatMessageDeletionStateMatches(
+            cachedMessages: cached.lazy.map { $0 },
+            messages: prepended.dropFirst(older.count)
+        ))
+        XCTAssertEqual(prepended.map(\.channelSeq), [1, 2, 3, 4, 5])
+        XCTAssertFalse(cached[1].isDeletedLocally)
+    }
+    // WDT_CHAT_DELETE_REFRESH_20261021_END
+
+    func testProcessingNoticeVisibilityDoesNotDestroyTombstonesOrMatchUserText() {
+        var recalled = makeMessage(id: "recalled", seq: 1, text: "某某撤回了一条消息")
+        recalled.status = .recalled
+        var deleted = makeMessage(id: "deleted", seq: 2, text: "原消息已删除")
+        deleted.isDeletedLocally = true
+        var edited = makeMessage(id: "edited", seq: 3, text: "新正文")
+        edited.isEdited = true
+        edited.editRevision = 4
+        let userText = makeMessage(id: "user-text", seq: 4, text: "已删除")
+        let messages = [recalled, deleted, edited, userText]
+        XCTAssertEqual(chatTimelineMessagesForRendering(messages, showsProcessingNotices: false).map(\.id), ["edited", "user-text"])
+        XCTAssertEqual(chatTimelineMessagesForRendering(messages).map(\.id), messages.map(\.id))
+        XCTAssertEqual(messages[0].status, .recalled)
+        XCTAssertTrue(messages[1].isDeletedLocally)
+        XCTAssertEqual(messages[2].editRevision, 4)
     }
 
     func testChatTimelineRenderingFiltersPinnedContextOnlyMessagesFromAnchorInput() throws {

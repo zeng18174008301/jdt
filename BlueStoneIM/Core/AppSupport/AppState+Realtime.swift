@@ -75,6 +75,7 @@ extension AppState {
     }
 
     func appDidEnterForeground() {
+        refreshAppInteractionPolicy(force: true)
 		(api as? IMAPIClient)?.runtimeColdLaunchSceneDidBecomeAvailable(isActive: true)
         isApplicationBackgroundedForRTC = false
         // WDT_RTC_LOCKSCREEN_INTERFACE_LOGS_20260924_BEGIN: log unlock/foreground boundaries for RTC interface diagnosis only.
@@ -1611,6 +1612,12 @@ extension AppState {
         let currentGroupRevision = groups[index].groupRevision
         if incomingGroupRevision > 0 {
             guard incomingGroupRevision > currentGroupRevision else { return }
+            // WDT_APP_CONTRACT_20261021_09: invalidate only this group's friend-apply setting.
+            if changedFields.contains("web_member_friend_apply_enabled") {
+                groups[index].memberFriendApplyEnabled = nil
+                refreshAuthoritativeState()
+                return
+            }
             if changedFields.contains("name") || changedFields.contains("avatar") {
                 refreshAuthoritativeState()
                 return

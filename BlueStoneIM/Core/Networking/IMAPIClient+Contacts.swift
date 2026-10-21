@@ -225,17 +225,19 @@ extension IMAPIClient {
     }
 
     func applyFriend(context: IMAPIContext, targetUID: String, message: String, source: String) async throws -> RemoteFriendApplyResult {
+        try await applyFriend(context: context, targetUID: targetUID, message: message, source: source, sourceGroupID: nil)
+    }
+
+    func applyFriend(context: IMAPIContext, targetUID: String, message: String, source: String, sourceGroupID: String?) async throws -> RemoteFriendApplyResult {
         try requireIM(context)
+        var body = ["target_uid": targetUID, "message": message, "source": source]
+        if let sourceGroupID { body["source_group_id"] = sourceGroupID }
         return try await request(
             base: tenantBase(for: context),
             path: "/api/tenant/friends/apply",
             method: "POST",
             bearer: context.imToken,
-            body: [
-                "target_uid": targetUID,
-                "message": message,
-                "source": source
-            ]
+            body: body
         )
     }
 

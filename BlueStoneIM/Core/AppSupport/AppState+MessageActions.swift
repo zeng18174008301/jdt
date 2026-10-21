@@ -541,7 +541,7 @@ extension AppState {
                 toast = "服务端编辑结果尚未收敛，请刷新后重试"
                 return false
             }
-			toast = "消息编辑已同步"
+			toast = shouldShowMessageProcessingNotices ? "消息编辑已同步" : nil
 			return true
 		} catch {
 			guard isCurrentRemoteScope(scope), activeRealtimeConversationID == conversationID else { return false }
@@ -551,6 +551,7 @@ extension AppState {
     }
 
 	func messageEditUnavailableReason(_ message: ChatMessage) -> String? {
+        if let reason = messageActionPolicyUnavailableReason(.edit) { return reason }
 		guard message.isOutgoing, isCurrentMessageSender(message.senderId) else { return "只能编辑自己发送的消息" }
 		let messageID = message.id.trimmingCharacters(in: .whitespacesAndNewlines)
 		guard !messageID.isEmpty, !messageID.hasPrefix("local_") else { return "消息尚未完成服务端同步" }
@@ -564,6 +565,10 @@ extension AppState {
 	}
 
 	private func messageEditFailureMessage(_ error: Error) -> String {
+        if case let IMAPIError.businessForbidden(code, _, _) = error,
+           ["message_edit_disabled_by_policy", "message_actions_policy_unavailable"].contains(code) {
+            refreshAppInteractionPolicy(force: true)
+        }
 		if let apiError = error as? IMAPIError {
 			let code: String
 			let message: String
@@ -630,7 +635,7 @@ extension AppState {
                     conversationID: conversationID,
                     recallText: "\(senderName)撤回了一条消息"
                 )
-                toast = "消息已撤回"
+                toast = shouldShowMessageProcessingNotices ? "消息已撤回" : nil
             } catch {
                 guard isCurrentRemoteScope(scope) else { return }
                 handleRemoteError(error, fallback: "消息撤回失败")
@@ -687,7 +692,7 @@ extension AppState {
                 await syncMessageExtrasForConversation(channelID: groupID, channelType: channelType)
                 guard isCurrentRemoteScope(scope) else { return }
                 syncConversationMessagesIfNeeded(conversationID, force: true, silent: true)
-                toast = "已对全员删除该消息"
+                toast = shouldShowMessageProcessingNotices ? "已对全员删除该消息" : nil
             } catch {
                 guard isCurrentRemoteScope(scope) else { return }
                 if let message = adminDeleteFailureMessage(error) {
@@ -764,6 +769,7 @@ extension AppState {
     }
 
     func messageRecallUnavailableReason(_ message: ChatMessage) -> String? {
+        if let reason = messageActionPolicyUnavailableReason(.recall) { return reason }
         guard message.isOutgoing else { return "只能撤回自己发送的消息" }
         guard message.status != .recalled else { return "消息已撤回" }
         guard message.status != .failed else { return "消息未发送成功，无需撤回" }
@@ -961,6 +967,7 @@ extension AppState {
         for message: ChatMessage,
         in conversationID: String
     ) -> BatchForwardEligibility {
+        if let reason = messageActionPolicyUnavailableReason(.forward) { return .disabled(reason) }
         guard let conversation = conversations.first(where: { $0.id == conversationID }),
               let snapshot = batchForwardSnapshot(message, in: conversation) else {
             return .disabled("消息不存在或尚未加载")
@@ -982,6 +989,10 @@ extension AppState {
         }
         guard let scope = batchForwardScope(for: conversation) else {
             toast = "登录会话不可用，请重新登录"
+            return
+        }
+        if let reason = messageActionPolicyUnavailableReason(.forward) {
+            toast = reason
             return
         }
         var next: BatchForwardState
@@ -1034,6 +1045,7 @@ extension AppState {
         messageID: String,
         conversationID: String
     ) {
+        guard messageActionPolicyUnavailableReason(.forward) == nil else { return }
         guard batchForwardSourceConversationID == conversationID,
               var next = batchForwardState else {
             return
@@ -1093,6 +1105,10 @@ extension AppState {
     }
 
     func forwardTenantFile(_ file: FileItem, to target: BatchForwardTarget) async -> Bool {
+        if let reason = messageActionPolicyUnavailableReason(.forward) {
+            toast = reason
+            return false
+        }
         let fileID = file.remoteLookupID
         let actorUID = batchForwardActorUID()
         let channelID = target.canonicalChannelID(actorUID: actorUID)
@@ -1373,6 +1389,10 @@ extension AppState {
     }
 
     func submitBatchForward() {
+        if let reason = messageActionPolicyUnavailableReason(.forward) {
+            toast = reason
+            return
+        }
         guard var next = batchForwardState else { return }
         let begin = next.beginSubmission { UUID().uuidString }
         batchForwardState = next
@@ -1589,6 +1609,10 @@ extension AppState {
     }
 
     func forwardMessage(_ message: ChatMessage, to target: Conversation) {
+        if let reason = messageActionPolicyUnavailableReason(.forward) {
+            toast = reason
+            return
+        }
         guard message.isForwardSupported else {
             toast = "该消息类型暂不支持转发"
             return

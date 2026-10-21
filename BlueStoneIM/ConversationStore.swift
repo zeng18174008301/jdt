@@ -1687,10 +1687,9 @@ final class ConversationStore: ObservableObject {
     }
 
     private func resolvedGroupMemberCount(incoming: Int?, existing: Int?, participants: [IMUser]) -> Int? {
-        guard let incoming else { return nil }
-        if incoming > 0 { return incoming }
-        if let existing, existing > 0 { return existing }
-        return participants.isEmpty ? nil : participants.count
+        // WDT_APP_CONTRACT_20261021_05: no inference from loaded members or stale aggregates.
+        guard let incoming, incoming > 0 else { return nil }
+        return incoming
     }
 
     func latestConfirmedMessage(in messages: [ChatMessage]) -> ChatMessage? {
@@ -3537,9 +3536,8 @@ final class ConversationStore: ObservableObject {
         let latestSeq = latestReadableSequence(in: conversations[index])
         let boundedSeq = min(confirmedSeq, latestSeq)
         let previousReadSeq = conversations[index].lastReadSeq
-        guard boundedSeq > previousReadSeq else { return }
-
-        conversations[index].lastReadSeq = boundedSeq
+        // WDT_CHAT_UNREAD_BADGE_20261021_BEGIN: an idempotent tail ACK may still need to reconcile a stale badge.
+        guard boundedSeq > 0, boundedSeq >= previousReadSeq else { return }
         // The readable prefix may stop at a coverage gap before the known tail.
         let knownTailSeq = max(
             conversations[index].lastMsgSeq,
@@ -3548,9 +3546,24 @@ final class ConversationStore: ObservableObject {
             // JHT_MOD_END APPSTATE_CHANNEL_SEQ_SCAN_PERF_20260913 - 修改结束
         )
         guard boundedSeq < max(latestSeq, knownTailSeq) else {
+            let current = conversations[index]
+            // A repeated message ACK is not proof that newly arrived reactions were read.
+            guard boundedSeq > previousReadSeq
+                || (!current.hasUnreadReaction && current.unreadReactionCount == 0) else { return }
+            guard boundedSeq > previousReadSeq
+                || current.unread != 0
+                || current.hasUnreadReaction
+                || current.unreadReactionCount != 0
+                || current.firstUnreadSeq != 0
+                || !current.firstUnreadMessageID.isEmpty
+                || current.unreadAnchorSeq != 0
+                || current.unreadAnchorState != "none" else { return }
             clearUnread(conversationID: conversationID, includeSystemConversations: false)
             return
         }
+        guard boundedSeq > previousReadSeq else { return }
+        conversations[index].lastReadSeq = boundedSeq
+        // WDT_CHAT_UNREAD_BADGE_20261021_END
 
         let previousUnread = conversations[index].unread
         let acknowledgedIncomingCount = conversations[index].messages.filter { message in

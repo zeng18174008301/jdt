@@ -378,6 +378,14 @@ extension IMAPIClient {
         try await updateGroupInviteApproval(context: context, groupID: groupID, required: required, expectedGroupRevision: 0)
     }
 
+    func updateGroupMemberFriendApply(context: IMAPIContext, groupID: String, enabled: Bool, expectedGroupRevision: Int64) async throws -> RemoteGroupDetail {
+        try requireIM(context)
+        let _: RemoteGroup = try await request(base: tenantBase(for: context),
+            path: "/api/tenant/groups/\(groupID.urlPathEncoded)/settings", method: "PATCH", bearer: context.imToken,
+            body: ["web_member_friend_apply_enabled": enabled, "expected_group_revision": max(0, expectedGroupRevision)])
+        return try await groupDetail(context: context, groupID: groupID)
+    }
+
     func updateGroupInviteApproval(context: IMAPIContext, groupID: String, required: Bool, expectedGroupRevision: Int64) async throws -> RemoteGroupDetail {
         let _: RemoteGroup = try await request(
             base: tenantBase(for: context),

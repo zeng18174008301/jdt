@@ -512,6 +512,7 @@ func groupsScrubbingGroupMemberTotals(_ groups: [GroupInfo]) -> [GroupInfo] {
     groups.map { group in
         var scrubbed = group
         scrubbed.memberCount = nil
+        scrubbed.adminCount = nil
         return scrubbed
     }
 }
