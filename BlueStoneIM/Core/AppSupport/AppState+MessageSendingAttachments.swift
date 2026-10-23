@@ -2192,6 +2192,10 @@ extension AppState {
 
     func cachedLocalAttachmentThumbnailURL(for message: ChatMessage) -> URL? {
         guard let resources = cachedLocalAttachmentResources(for: message) else { return nil }
+        // WDT_CHAT_FIX3_VIDEO_COVER_20261023: only a real local poster is a valid video thumbnail fallback.
+        if attachmentMediaCategory(for: message) == "video" {
+            return resources.thumbnailURL?.usableLocalFileURL
+        }
         return [resources.thumbnailURL, resources.previewURL, resources.downloadURL]
             .compactMap { $0?.usableLocalFileURL }
             .first

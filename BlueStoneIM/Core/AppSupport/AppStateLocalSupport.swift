@@ -734,6 +734,7 @@ enum RemotePayloadReader {
         return nil
     }
 
+    // WDT_IOS1_SAFE_NUMERIC_20261023_BEGIN
     static func int64(_ payload: [String: JSONValue], _ keys: [String]) -> Int64? {
         for key in keys {
             guard let value = payload[key] else { continue }
@@ -741,7 +742,7 @@ enum RemotePayloadReader {
             case .int(let intValue):
                 return Int64(intValue)
             case .double(let doubleValue):
-                return Int64(doubleValue)
+                if let parsed = Int64(exactly: doubleValue.rounded(.towardZero)) { return parsed }
             case .string(let stringValue):
                 if let parsed = Int64(stringValue.trimmingCharacters(in: .whitespacesAndNewlines)) {
                     return parsed
@@ -760,9 +761,9 @@ enum RemotePayloadReader {
             case .int(let intValue):
                 return Double(intValue)
             case .double(let doubleValue):
-                return doubleValue
+                if doubleValue.isFinite { return doubleValue }
             case .string(let stringValue):
-                if let parsed = Double(stringValue.trimmingCharacters(in: .whitespacesAndNewlines)) {
+                if let parsed = Double(stringValue.trimmingCharacters(in: .whitespacesAndNewlines)), parsed.isFinite {
                     return parsed
                 }
             default:
@@ -781,7 +782,7 @@ enum RemotePayloadReader {
                 case .int(let intValue):
                     return intValue
                 case .double(let doubleValue):
-                    return Int(round(doubleValue))
+                    return Int(exactly: doubleValue.rounded())
                 case .string(let stringValue):
                     return Int(stringValue.trimmingCharacters(in: .whitespacesAndNewlines))
                 default:
@@ -794,6 +795,8 @@ enum RemotePayloadReader {
         }
         return []
     }
+
+    // WDT_IOS1_SAFE_NUMERIC_20261023_END
 
     static func stringArray(_ payload: [String: JSONValue], _ keys: [String]) -> [String] {
         for key in keys {

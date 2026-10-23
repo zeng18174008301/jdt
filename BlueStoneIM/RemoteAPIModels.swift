@@ -1531,6 +1531,7 @@ struct RemoteLoginSecurityInfo: Decodable, Equatable {
 struct EmptyPayload: Decodable {}
 
 extension KeyedDecodingContainer {
+    // WDT_IOS1_SAFE_NUMERIC_20261023_BEGIN
     func decodeLossyStringIfPresent(forKey key: Key) -> String? {
         if let value = try? decodeIfPresent(String.self, forKey: key) {
             return value
@@ -1542,7 +1543,8 @@ extension KeyedDecodingContainer {
             return String(value)
         }
         if let value = try? decodeIfPresent(Double.self, forKey: key) {
-            return value.rounded() == value ? String(Int64(value)) : String(value)
+            guard value.isFinite else { return nil }
+            return Int64(exactly: value).map(String.init) ?? String(value)
         }
         if let value = try? decodeIfPresent(Bool.self, forKey: key) {
             return value ? "true" : "false"
@@ -1555,7 +1557,7 @@ extension KeyedDecodingContainer {
             return value
         }
         if let value = try? decodeIfPresent(Double.self, forKey: key) {
-            return Int(value)
+            return Int(exactly: value.rounded(.towardZero))
         }
         if let value = try? decodeIfPresent(String.self, forKey: key) {
             return Int(value.trimmingCharacters(in: .whitespacesAndNewlines))
@@ -1571,7 +1573,7 @@ extension KeyedDecodingContainer {
             return Int64(value)
         }
         if let value = try? decodeIfPresent(Double.self, forKey: key) {
-            return Int64(value)
+            return Int64(exactly: value.rounded(.towardZero))
         }
         if let value = try? decodeIfPresent(String.self, forKey: key) {
             return Int64(value.trimmingCharacters(in: .whitespacesAndNewlines))
@@ -1581,7 +1583,7 @@ extension KeyedDecodingContainer {
 
     func decodeLossyDoubleIfPresent(forKey key: Key) -> Double? {
         if let value = try? decodeIfPresent(Double.self, forKey: key) {
-            return value
+            return value.isFinite ? value : nil
         }
         if let value = try? decodeIfPresent(Int.self, forKey: key) {
             return Double(value)
@@ -1590,10 +1592,13 @@ extension KeyedDecodingContainer {
             return Double(value)
         }
         if let value = try? decodeIfPresent(String.self, forKey: key) {
-            return Double(value.trimmingCharacters(in: .whitespacesAndNewlines))
+            guard let parsed = Double(value.trimmingCharacters(in: .whitespacesAndNewlines)), parsed.isFinite else { return nil }
+            return parsed
         }
         return nil
     }
+
+    // WDT_IOS1_SAFE_NUMERIC_20261023_END
 
     func decodeLossyBoolIfPresent(forKey key: Key) -> Bool? {
         if let value = try? decodeIfPresent(Bool.self, forKey: key) {
@@ -12251,7 +12256,6 @@ struct RemoteMessageReadReceiptResponse: Decodable {
             || targetCount != nil
             || !items.isEmpty
             || !unreadItems.isEmpty
-            || !reactions.isEmpty
     }
 
     enum CodingKeys: String, CodingKey {
@@ -12276,13 +12280,16 @@ struct RemoteMessageReadReceiptResponse: Decodable {
         unreadCount = try container.decodeIfPresent(Int.self, forKey: .unreadCount)
         memberCount = try container.decodeIfPresent(Int.self, forKey: .memberCount)
         targetCount = try container.decodeIfPresent(Int.self, forKey: .targetCount)
-        canViewDetails = try container.decodeIfPresent(Bool.self, forKey: .canViewDetails) ?? false
+        // WDT_CHAT_FIX1_RECEIPT_PRIVACY_20261023: explicit denial wins; reactions never grant receipt access.
+        let explicitCanViewDetails = try container.decodeIfPresent(Bool.self, forKey: .canViewDetails)
         readReceiptsEnabled = container.decodeLossyBoolIfPresent(forKey: .readReceiptsEnabled)
         featureStatus = try container.decodeIfPresent(String.self, forKey: .featureStatus) ?? ""
         featureMessage = try container.decodeIfPresent(String.self, forKey: .featureMessage) ?? ""
         items = try container.decodeIfPresent([RemoteMessageReceipt].self, forKey: .items) ?? []
         unreadItems = try container.decodeIfPresent([RemoteMessageReadParticipant].self, forKey: .unreadItems) ?? []
         reactions = try container.decodeIfPresent([RemoteMessageReactionReceipt].self, forKey: .reactions) ?? []
+        canViewDetails = explicitCanViewDetails ?? (readCount != nil || unreadCount != nil
+            || memberCount != nil || targetCount != nil || !items.isEmpty || !unreadItems.isEmpty)
     }
 }
 

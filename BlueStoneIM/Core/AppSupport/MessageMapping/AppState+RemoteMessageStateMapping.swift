@@ -475,6 +475,12 @@ extension AppState {
                     didChange = previous != conversationID.flatMap { conversationStore.conversation(id: $0) } || didChange
                     break
                 }
+                // WDT_CHAT_FIX1_RECEIPT_PRIVACY_20261023: honor visibility even when the response has no items.
+                if let allowed = result.canViewReadReceiptDetails, let conversationID {
+                    didChange = conversationStore.updateReadReceiptDetailsVisibility(
+                        allowed, conversationID: conversationID
+                    ) || didChange
+                }
                 didChange = applyRemoteReadReceipts(
                     result.items, channelID: command.channelID, persistChanges: false
                 ) || didChange
@@ -2011,7 +2017,7 @@ extension AppState {
         }
         if remoteMessageKind(from: message) == .voice {
             if let durationSeconds = attachmentDuration(from: message.payload), durationSeconds > 0 {
-                return VoiceMessagePayload.durationLabel(durationMS: Int((durationSeconds * 1_000).rounded()))
+                return VoiceMessagePayload.durationLabel(durationMS: VoiceMessagePayload.decodedDurationMS(durationSeconds) ?? 0) // WDT_IOS1_SAFE_NUMERIC_20261023
             }
             return ""
         }

@@ -1300,8 +1300,9 @@ private struct AvatarEditSheet: View {
         }
         .sheet(isPresented: $showPhotoPicker) {
             PhotoLibraryPickerCompat(selectionLimit: 1, filter: .images) { items in
-                guard let data = items.first?.data,
-                      let image = UIImage(data: data) else {
+                // WDT_IOS1_AVATAR_MEMORY_20261023: downsample before any orientation redraw.
+                guard let item = items.first,
+                      let image = AvatarCropRenderer.sourceImage(data: item.data, fileURL: item.fileURL) else {
                     state.toast = "无法读取图片"
                     return
                 }
@@ -1353,6 +1354,16 @@ enum AvatarUploadFailurePresentation {
 
 enum AvatarCropRenderer {
     static let maximumJPEGByteCount = 2 * 1024 * 1024
+
+    // WDT_IOS1_AVATAR_MEMORY_20261023_BEGIN
+    nonisolated static func sourceImage(data: Data?, fileURL: URL?) -> UIImage? {
+        if let fileURL {
+            return RemoteImageDecoder.image(fromFileURL: fileURL, maxPixelSize: 2_048)
+        }
+        guard let data else { return nil }
+        return RemoteImageDecoder.image(from: data, maxPixelSize: 2_048)
+    }
+    // WDT_IOS1_AVATAR_MEMORY_20261023_END
 
     static func croppedJPEG(
         image: UIImage,
@@ -1602,13 +1613,23 @@ private struct AvatarCropperView: View {
 }
 
 extension UIImage {
+    // WDT_IOS1_AVATAR_MEMORY_20261023_BEGIN
     func normalizedForAvatarCrop() -> UIImage {
-        guard imageOrientation != .up else { return self }
-        let renderer = UIGraphicsImageRenderer(size: size)
-        return renderer.image { _ in
-            draw(in: CGRect(origin: .zero, size: size))
+        let pixelWidth = size.width * scale
+        let pixelHeight = size.height * scale
+        let longest = max(pixelWidth, pixelHeight)
+        guard longest.isFinite, longest > 0 else { return self }
+        guard imageOrientation != .up || longest > 2_048 else { return self }
+        let ratio = min(1, 2_048 / longest)
+        let outputSize = CGSize(width: max(1, pixelWidth * ratio), height: max(1, pixelHeight * ratio))
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        format.preferredRange = .standard
+        return UIGraphicsImageRenderer(size: outputSize, format: format).image { _ in
+            draw(in: CGRect(origin: .zero, size: outputSize))
         }
     }
+    // WDT_IOS1_AVATAR_MEMORY_20261023_END
 }
 
 private struct ProfileEditSheetSurface<Content: View>: View {

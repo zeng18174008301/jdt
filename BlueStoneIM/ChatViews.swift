@@ -238,6 +238,19 @@ func chatMessageDeletionStateMatches<Cached: Collection, Current: Collection>(
 }
 // WDT_CHAT_DELETE_REFRESH_20261021_END
 
+// WDT_CHAT_FIX2_DELETE_REFRESH_20261023_BEGIN
+func chatNeedsImmediateRemovalRefresh(cachedMessages: [ChatMessage], messages: [ChatMessage]) -> Bool {
+    guard !cachedMessages.isEmpty else { return false }
+    let currentByID = Dictionary(messages.map { ($0.id, (deleted: $0.isDeletedLocally, recalled: $0.status == .recalled)) },
+                                 uniquingKeysWith: { _, latest in latest })
+    return cachedMessages.contains { previous in
+        guard let current = currentByID[previous.id] else { return true }
+        return previous.isDeletedLocally != current.deleted
+            || (previous.status != .recalled && current.recalled)
+    }
+}
+// WDT_CHAT_FIX2_DELETE_REFRESH_20261023_END
+
 // JHT_MOD_BEGIN CHAT_PAGE_SEND_KEYBOARD_SCROLL_PERF_20260912 - 修改开始：聊天滚动定位复用轻量 seq 遍历，避免 map/filter 临时数组
 private func chatLatestPositiveChannelSeq(in messages: [ChatMessage]) -> Int64? {
     var latestSeq: Int64?
@@ -984,7 +997,25 @@ struct ChatDisabledBannerDecision: Equatable {
     }
 }
 
+// WDT_IOS1_CHAT_STATE_20261023_BEGIN
+// Each ChatView owns its state; no global message retention or cross-conversation sharing.
+@MainActor
+final class ChatMessagePresentationState: ObservableObject {
+    @Published var actionMessage: ChatMessage?
+    @Published var reactionMessage: ChatMessage?
+    @Published var receiptMessage: ChatMessage?
+    @Published var editMessage: ChatMessage?
+    @Published var reportMessage: ChatMessage?
+    @Published var adminDeleteCandidate: ChatMessage?
+    @Published var pendingPinnedJumpMessage: ChatMessage?
+    @Published var selectedAttachmentMessage: ChatMessage?
+}
+// WDT_IOS1_CHAT_STATE_20261023_END
+
 struct ChatView: View {
+    // WDT_IOS1_CHAT_STATE_20261023_BEGIN
+    @StateObject private var messagePresentation = ChatMessagePresentationState()
+    // WDT_IOS1_CHAT_STATE_20261023_END
     @EnvironmentObject private var state: AppState
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
@@ -998,13 +1029,43 @@ struct ChatView: View {
     @State private var isComposerEditing = false
     @State private var showTools = false
     @State private var showEmoji = false
-    @State private var actionMessage: ChatMessage?
-    @State private var reactionMessage: ChatMessage?
-    @State private var receiptMessage: ChatMessage?
-    @State private var editMessage: ChatMessage?
-    @State private var reportMessage: ChatMessage?
+    // WDT_IOS1_CHAT_STATE_20261023_BEGIN
+    private var actionMessage: ChatMessage? {
+        get { messagePresentation.actionMessage }
+        nonmutating set { messagePresentation.actionMessage = newValue }
+    }
+    // WDT_IOS1_CHAT_STATE_20261023_END
+    // WDT_IOS1_CHAT_STATE_20261023_BEGIN
+    private var reactionMessage: ChatMessage? {
+        get { messagePresentation.reactionMessage }
+        nonmutating set { messagePresentation.reactionMessage = newValue }
+    }
+    // WDT_IOS1_CHAT_STATE_20261023_END
+    // WDT_IOS1_CHAT_STATE_20261023_BEGIN
+    private var receiptMessage: ChatMessage? {
+        get { messagePresentation.receiptMessage }
+        nonmutating set { messagePresentation.receiptMessage = newValue }
+    }
+    // WDT_IOS1_CHAT_STATE_20261023_END
+    // WDT_IOS1_CHAT_STATE_20261023_BEGIN
+    private var editMessage: ChatMessage? {
+        get { messagePresentation.editMessage }
+        nonmutating set { messagePresentation.editMessage = newValue }
+    }
+    // WDT_IOS1_CHAT_STATE_20261023_END
+    // WDT_IOS1_CHAT_STATE_20261023_BEGIN
+    private var reportMessage: ChatMessage? {
+        get { messagePresentation.reportMessage }
+        nonmutating set { messagePresentation.reportMessage = newValue }
+    }
+    // WDT_IOS1_CHAT_STATE_20261023_END
     @State private var showBatchForwardTargets = false
-    @State private var adminDeleteCandidate: ChatMessage?
+    // WDT_IOS1_CHAT_STATE_20261023_BEGIN
+    private var adminDeleteCandidate: ChatMessage? {
+        get { messagePresentation.adminDeleteCandidate }
+        nonmutating set { messagePresentation.adminDeleteCandidate = newValue }
+    }
+    // WDT_IOS1_CHAT_STATE_20261023_END
     @State private var replyQuote: String?
     @State private var replyContext: MessageReplyContext?
     @State private var showDetail = false
@@ -1014,7 +1075,12 @@ struct ChatView: View {
     @State private var isOpeningGroupAnnouncementDetail = false
     @State private var isMarkingGroupAnnouncementRead = false
     @State private var showPinnedMessages = false
-    @State private var pendingPinnedJumpMessage: ChatMessage?
+    // WDT_IOS1_CHAT_STATE_20261023_BEGIN
+    private var pendingPinnedJumpMessage: ChatMessage? {
+        get { messagePresentation.pendingPinnedJumpMessage }
+        nonmutating set { messagePresentation.pendingPinnedJumpMessage = newValue }
+    }
+    // WDT_IOS1_CHAT_STATE_20261023_END
     @State private var pinnedCarouselIndex = 0
     @State private var scrollTargetID: String?
     @State private var focusedTimelineMessageID: String?
@@ -1035,7 +1101,12 @@ struct ChatView: View {
     @State private var didUserInteractWithMessageScroll = false
     @State private var selectedUserProfile: IMUser?
     @State private var selectedSenderActionUser: IMUser?
-    @State private var selectedAttachmentMessage: ChatMessage?
+    // WDT_IOS1_CHAT_STATE_20261023_BEGIN
+    private var selectedAttachmentMessage: ChatMessage? {
+        get { messagePresentation.selectedAttachmentMessage }
+        nonmutating set { messagePresentation.selectedAttachmentMessage = newValue }
+    }
+    // WDT_IOS1_CHAT_STATE_20261023_END
     @State private var previewImageAttachment: AttachmentMediaPreviewItem?
     @State private var previewVideoAttachment: AttachmentMediaPreviewItem?
     @State private var attachmentShareItem: AttachmentShareItem?
@@ -2135,7 +2206,8 @@ struct ChatView: View {
                     .padding(.bottom, 8)
                     .transition(.move(edge: .top).combined(with: .opacity))
                 }
-                ZStack(alignment: .top) {
+                // WDT_CHAT_FIX5_RETURN_BOTTOM_20261023: overlay only; keep transcript and scroll arbitration unchanged.
+                ZStack(alignment: .bottomTrailing) {
                     ScrollViewReader { reader in
                         messageTimeline(
                             reader: reader,
@@ -2160,7 +2232,7 @@ struct ChatView: View {
                             setScrollTarget(plan.targetID, source: plan.source, anchor: plan.anchor)
                         }
                         .padding(.horizontal, 14)
-                        .padding(.top, 8)
+                        .padding(.bottom, 12)
                         .transition(.opacity)
                         .zIndex(1)
                     }
@@ -2482,7 +2554,7 @@ struct ChatView: View {
 
         }
         .background(
-            ChatBackSwipeInstaller()
+            Color.clear // WDT_IOS1_NAV_COMPAT_20261023: navigation container owns the system gesture.
                 .frame(width: 1, height: 1)
                 .allowsHitTesting(false)
         )
@@ -2593,13 +2665,13 @@ struct ChatView: View {
             )
                 .presentationDetentsCompat([.large])
         }
-        .sheet(item: $reactionMessage) { message in
+        .sheet(item: $messagePresentation.reactionMessage /* WDT_IOS1_CHAT_STATE_20261023 */) { message in
             ReactionPickerView(message: message, conversationID: conversationID)
                 .presentationDetentsCompat([.height(360)])
                 .presentationDragIndicatorCompat(.visible)
                 .presentationCornerRadiusCompat(30)
         }
-        .sheet(item: $receiptMessage) { message in
+        .sheet(item: $messagePresentation.receiptMessage /* WDT_IOS1_CHAT_STATE_20261023 */) { message in
             ReadReceiptSheet(
                 message: conversation.messages.first(where: { $0.id == message.id }) ?? message,
                 conversation: conversation,
@@ -2627,7 +2699,7 @@ struct ChatView: View {
             AttachmentQuickLookPreview(url: document.url)
                 .ignoresSafeArea()
         }
-        .sheet(item: $selectedAttachmentMessage) { message in
+        .sheet(item: $messagePresentation.selectedAttachmentMessage /* WDT_IOS1_CHAT_STATE_20261023 */) { message in
             AttachmentDetailSheet(
                 message: conversation.messages.first(where: { $0.id == message.id }) ?? message,
                 conversationID: conversationID,
@@ -2647,7 +2719,7 @@ struct ChatView: View {
             }, sourceGroupID: conversation.kind == .group ? state.remoteChannelID(for: conversation) : nil)
                 .presentationDetentsCompat([.large])
         }
-        .sheet(item: $editMessage) { message in
+        .sheet(item: $messagePresentation.editMessage /* WDT_IOS1_CHAT_STATE_20261023 */) { message in
             MessageEditSheet(
                 message: message,
                 conversationID: conversationID,
@@ -2668,7 +2740,7 @@ struct ChatView: View {
             )
                 .presentationDetentsCompat([.medium])
         }
-        .sheet(item: $reportMessage) { message in
+        .sheet(item: $messagePresentation.reportMessage /* WDT_IOS1_CHAT_STATE_20261023 */) { message in
             MessageReportSheet(message: message, conversationID: conversationID)
                 .presentationDetentsCompat([.large])
         }
@@ -2822,6 +2894,15 @@ struct ChatView: View {
             .onReceive(state.conversationStore.$conversations) { updatedConversations in
                 captureBottomBeforeMessageGrowth(updatedConversations)
                 refreshHistoryAnchorBeforeMessageGrowth(updatedConversations)
+                // WDT_CHAT_FIX2_DELETE_REFRESH_20261023: @Published emits before storage changes; use its new snapshot.
+                if let updated = updatedConversations.first(where: { $0.id == conversationID }) {
+                    let publishedMessages = chatTimelineMessagesForRendering(
+                        updated.messages, showsProcessingNotices: state.shouldShowMessageProcessingNotices
+                    )
+                    if chatNeedsImmediateRemovalRefresh(cachedMessages: cachedMessageRows.map(\.message), messages: publishedMessages) {
+                        refreshMessageRowCache(for: publishedMessages, allowsPrependReuse: false)
+                    }
+                }
                 scheduleMessageRenderCacheRefreshAfterStoreChange(reader)
             }
             // JHT_MOD_END CHAT_HISTORY_SYNC_UI_PERF_END_MESSAGE_CHANGE_COALESCE - 修改结束：避免监听整个 messages 数组导致历史多时比较卡顿
@@ -4005,7 +4086,7 @@ struct ChatView: View {
             replyUnavailable: message.replyContext?.isUnavailable == true,
             status: message.status,
             time: message.time,
-            createdAtSeconds: message.createdAt.map { Int64($0.timeIntervalSince1970) },
+            createdAtSeconds: message.createdAt.flatMap { Int64(exactly: $0.timeIntervalSince1970.rounded(.towardZero)) } /* WDT_IOS1_SAFE_NUMERIC_20261023 */,
             readCount: message.readCount,
             isPinned: message.isPinned,
             isDeletedLocally: message.isDeletedLocally,
@@ -4044,7 +4125,7 @@ struct ChatView: View {
         hasher.combine(message.senderAvatarSeed)
         hasher.combine(message.text)
         hasher.combine(message.time)
-        hasher.combine(message.createdAt.map { Int64($0.timeIntervalSince1970) } ?? 0)
+        hasher.combine(message.createdAt.flatMap { Int64(exactly: $0.timeIntervalSince1970.rounded(.towardZero)) } /* WDT_IOS1_SAFE_NUMERIC_20261023 */ ?? 0)
         hasher.combine(message.channelSeq)
         hasher.combine(message.isOutgoing)
         hasher.combine(message.status.rawValue)
@@ -6928,27 +7009,28 @@ private struct ReturnToBottomBar: View {
 
     var body: some View {
         Button(action: action) {
+            // WDT_CHAT_FIX5_RETURN_BOTTOM_20261023_BEGIN
             HStack(spacing: 8) {
                 Image(systemName: "arrow.down.circle.fill")
                 Text(messageSummary)
-                    .lineLimit(2)
-                Spacer()
+                    .lineLimit(1)
                 Text("回到底部")
                     .lineLimit(1)
             }
-            .font(.callout.weight(.bold))
+            .font(.system(size: 14, weight: .bold))
             .foregroundStyle(IMColor.brand)
-            .padding(.horizontal, 13)
-            .frame(maxWidth: .infinity, minHeight: 44)
+            .padding(.horizontal, 14)
+            .frame(minHeight: 44)
             .background(
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .fill(.white.opacity(0.92))
+                Capsule()
+                    .fill(.white.opacity(0.96))
                     .overlay(
-                        RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        Capsule()
                             .stroke(IMColor.brand.opacity(0.18), lineWidth: 1)
                     )
-                    .shadow(color: IMColor.brand.opacity(0.10), radius: 12, y: 6)
+                    .shadow(color: IMColor.ink.opacity(0.10), radius: 8, y: 3)
             )
+            // WDT_CHAT_FIX5_RETURN_BOTTOM_20261023_END
         }
         .buttonStyle(.plain)
         .accessibilityIdentifier("chat_return_to_bottom_button")
@@ -7702,7 +7784,9 @@ private struct ReplyQuoteBlock: View {
                 CachedRemoteImage(
                     urlString: resolvedThumbnailURL,
                     cacheKey: "reply-sticker|\(context?.messageID ?? "")|\(context?.thumbnailURL ?? "")",
-                    contentMode: .fit
+                    contentMode: .fit,
+                    // WDT_CHAT_RESOURCE_PERF_20261023: bound the quote preview, not the original asset.
+                    maxPixelSize: Int((compact ? 30 : 34) * UIScreen.main.scale)
                 ) {
                     Image(systemName: "photo")
                         .font(.system(size: 12, weight: .black))
@@ -8443,7 +8527,8 @@ struct MessageBubble: View {
     }
 
     private var readStatusText: String {
-        guard message.canViewReadDetails else { return "已读" }
+        // WDT_CHAT_FIX1_RECEIPT_PRIVACY_20261023
+        guard state.canViewMessageReadDetails(message, in: state.conversation(id: conversationID)) else { return "已读" }
         let isGroupConversation = state.conversation(id: conversationID).kind == .group
         if isGroupConversation && !state.shouldShowGroupMemberCount {
             return "已读"
@@ -8693,7 +8778,9 @@ private struct StickerMessageView: View {
                 CachedRemoteImage(
                     urlString: thumbnailURLString,
                     cacheKey: "sticker-thumbnail|\(snapshot?.cacheIdentity ?? message.id)",
-                    contentMode: .fit
+                    contentMode: .fit,
+                    // WDT_CHAT_RESOURCE_PERF_20261023
+                    maxPixelSize: Int(max(displaySize.width, displaySize.height) * UIScreen.main.scale)
                 ) {
                     Image(systemName: "photo")
                         .font(.system(size: 24, weight: .black))
@@ -9058,11 +9145,8 @@ private struct FileBubbleContent: View {
 
     private func thumbnailRecoveryURL() async -> URL? {
         guard !conversationID.isEmpty else { return nil }
-        do {
-            return try await state.prepareMessageAttachmentLocalFile(message, conversationID: conversationID, preferPreview: true)
-        } catch {
-            return nil
-        }
+        // WDT_CHAT_FIX3_VIDEO_COVER_20261023
+        return await state.refreshedAttachmentThumbnailURL(message, conversationID: conversationID)
     }
 
     @ViewBuilder
@@ -9112,7 +9196,7 @@ private struct VoiceBubbleContent: View {
             return remaining.isEmpty ? "0秒" : remaining
         }
         if let seconds = message.attachmentDurationSeconds, seconds > 0 {
-            return VoiceMessagePayload.durationLabel(durationMS: Int((seconds * 1_000).rounded()))
+            return VoiceMessagePayload.durationLabel(durationMS: VoiceMessagePayload.decodedDurationMS(seconds) ?? 0) // WDT_IOS1_SAFE_NUMERIC_20261023
         }
         let text = message.text.trimmingCharacters(in: .whitespacesAndNewlines)
         return text.isEmpty ? "语音" : text
@@ -9313,19 +9397,16 @@ struct AttachmentThumbnailImage<Placeholder: View, Failure: View>: View {
             applyThumbnailState(image: cached, failed: false)
             return
         }
-        if let requestedIndexedCacheURL,
-           let localURL = await requestedIndexedCacheURL(),
-           !Task.isCancelled,
-           let indexedImage = await AttachmentThumbnailDiskCache.localPreparedImage(from: localURL, maxPixelSize: requestedMaxPixelSize) {
-            AvatarImageCache.shared.storePrepared(indexedImage, for: generationKey, maxPixelSize: requestedMaxPixelSize)
-            applyThumbnailState(image: indexedImage, failed: false)
-            return
-        }
-        applyThumbnailState(image: nil, failed: false)
-        // JHT_MOD_BEGIN CHAT_HISTORY_SYNC_UI_PERF_BEGIN_THUMBNAIL_VISIBLE_DEBOUNCE - 修改开始：快速滑过的图片不进入加载队列，减少历史滚动卡顿
-        try? await Task.sleep(nanoseconds: 90_000_000)
+        // WDT_CHAT_RESOURCE_PERF_20261023_BEGIN: local and remote decodes share the same admission limit.
+        let indexedURL = await requestedIndexedCacheURL?()
         guard !Task.isCancelled else { return }
-        // JHT_MOD_END CHAT_HISTORY_SYNC_UI_PERF_END_THUMBNAIL_VISIBLE_DEBOUNCE - 修改结束：快速滑过的图片不进入加载队列，减少历史滚动卡顿
+        if indexedURL == nil {
+            applyThumbnailState(image: nil, failed: false)
+            // JHT_MOD_BEGIN CHAT_HISTORY_SYNC_UI_PERF_BEGIN_THUMBNAIL_VISIBLE_DEBOUNCE - 修改开始：快速滑过的图片不进入加载队列，减少历史滚动卡顿
+            try? await Task.sleep(nanoseconds: 90_000_000)
+            guard !Task.isCancelled else { return }
+            // JHT_MOD_END CHAT_HISTORY_SYNC_UI_PERF_END_THUMBNAIL_VISIBLE_DEBOUNCE - 修改结束：快速滑过的图片不进入加载队列，减少历史滚动卡顿
+        }
         await AttachmentThumbnailLoadGate.shared.acquire()
         guard !Task.isCancelled else {
             await AttachmentThumbnailLoadGate.shared.release()
@@ -9336,6 +9417,20 @@ struct AttachmentThumbnailImage<Placeholder: View, Failure: View>: View {
                 await AttachmentThumbnailLoadGate.shared.release()
             }
         }
+        if let cached = AvatarImageCache.shared.image(for: generationKey, maxPixelSize: requestedMaxPixelSize) {
+            applyThumbnailState(image: cached, failed: false)
+            return
+        }
+        if let indexedURL,
+           let indexedImage = await AttachmentThumbnailDiskCache.localPreparedImage(from: indexedURL, maxPixelSize: requestedMaxPixelSize) {
+            guard !Task.isCancelled else { return }
+            AvatarImageCache.shared.storePrepared(indexedImage, for: generationKey, maxPixelSize: requestedMaxPixelSize)
+            applyThumbnailState(image: indexedImage, failed: false)
+            return
+        }
+        guard !Task.isCancelled else { return }
+        applyThumbnailState(image: nil, failed: false)
+        // WDT_CHAT_RESOURCE_PERF_20261023_END
         let result: AttachmentThumbnailDownloadResult?
         if let requestedURL {
             result = await AttachmentThumbnailSingleFlight.shared.perform(key: "initial|\(generationKey)") {
@@ -9414,7 +9509,8 @@ private actor AttachmentThumbnailSingleFlight {
     }
 }
 
-private actor AttachmentThumbnailLoadGate {
+// WDT_CHAT_RESOURCE_PERF_20261023_BEGIN
+actor AttachmentThumbnailLoadGate {
     // JHT_MOD_BEGIN CHAT_HISTORY_SYNC_UI_PERF_BEGIN_THUMBNAIL_LOAD_CONCURRENCY - 修改开始：降低聊天缩略图并发，避免图片批量加载拖慢历史滚动
     static let shared = AttachmentThumbnailLoadGate(limit: 2)
     // JHT_MOD_END CHAT_HISTORY_SYNC_UI_PERF_END_THUMBNAIL_LOAD_CONCURRENCY - 修改结束：降低聊天缩略图并发，避免图片批量加载拖慢历史滚动
@@ -9434,17 +9530,18 @@ private actor AttachmentThumbnailLoadGate {
         await withCheckedContinuation { continuation in
             waiters.append(continuation)
         }
-        running += 1
     }
 
     func release() {
-        running = max(0, running - 1)
-        if !waiters.isEmpty, running < limit {
-            let continuation = waiters.removeFirst()
-            continuation.resume()
+        if !waiters.isEmpty {
+            // Transfer the occupied slot; a new arrival must not steal it before the waiter resumes.
+            waiters.removeFirst().resume()
+        } else {
+            running = max(0, running - 1)
         }
     }
 }
+// WDT_CHAT_RESOURCE_PERF_20261023_END
 
 struct AttachmentThumbnailDownloadResult: @unchecked Sendable {
     let image: UIImage?
@@ -9466,16 +9563,32 @@ enum AttachmentThumbnailDiskCache {
 
     // JHT_MOD_BEGIN CHAT_HISTORY_SYNC_UI_PERF_BEGIN_THUMBNAIL_BACKGROUND_DECODE_HELPERS - 修改开始：缩略图文件读取和解码统一放到后台
     static func localPreparedImage(from url: URL, maxPixelSize: Int? = nil) async -> UIImage? {
-        (await localImageResult(from: url, maxPixelSize: maxPixelSize)).image
+        // WDT_CHAT_RESOURCE_PERF_20261023_BEGIN: indexed cache hits need pixels, not another full source Data.
+        await Task.detached(priority: .utility) {
+            autoreleasepool {
+                if let limit = RemoteImageDecoder.boundedMaxPixelSize(maxPixelSize),
+                   let image = RemoteImageDecoder.image(fromFileURL: url, maxPixelSize: limit) {
+                    return image.preparingForDisplay() ?? image
+                }
+                // Preserve the existing format fallback when ImageIO cannot make a thumbnail.
+                guard let data = try? Data(contentsOf: url, options: .mappedIfSafe) else { return nil }
+                return RemoteImageDecoder.preparedImage(from: data, maxPixelSize: maxPixelSize)
+            }
+        }.value
+        // WDT_CHAT_RESOURCE_PERF_20261023_END
     }
 
     private static func localImageResult(from url: URL, maxPixelSize: Int? = nil) async -> AttachmentThumbnailDownloadResult {
         await Task.detached(priority: .utility) {
-            guard let data = try? Data(contentsOf: url),
-                  let image = RemoteImageDecoder.preparedImage(from: data, maxPixelSize: maxPixelSize) else {
-                return AttachmentThumbnailDownloadResult(image: nil, statusCode: nil, data: nil)
+            // WDT_CHAT_RESOURCE_PERF_20261023_BEGIN: retain original bytes for the existing cache commit contract.
+            autoreleasepool {
+                guard let data = try? Data(contentsOf: url, options: .mappedIfSafe),
+                      let image = RemoteImageDecoder.preparedImage(from: data, maxPixelSize: maxPixelSize) else {
+                    return AttachmentThumbnailDownloadResult(image: nil, statusCode: nil, data: nil)
+                }
+                return AttachmentThumbnailDownloadResult(image: image, statusCode: nil, data: data)
             }
-            return AttachmentThumbnailDownloadResult(image: image, statusCode: nil, data: data)
+            // WDT_CHAT_RESOURCE_PERF_20261023_END
         }.value
     }
 
@@ -9485,10 +9598,14 @@ enum AttachmentThumbnailDiskCache {
         maxPixelSize: Int? = nil
     ) async -> AttachmentThumbnailDownloadResult {
         await Task.detached(priority: .utility) {
-            guard let image = RemoteImageDecoder.preparedImage(from: data, maxPixelSize: maxPixelSize) else {
-                return AttachmentThumbnailDownloadResult(image: nil, statusCode: statusCode, data: nil)
+            // WDT_CHAT_RESOURCE_PERF_20261023_BEGIN
+            autoreleasepool {
+                guard let image = RemoteImageDecoder.preparedImage(from: data, maxPixelSize: maxPixelSize) else {
+                    return AttachmentThumbnailDownloadResult(image: nil, statusCode: statusCode, data: nil)
+                }
+                return AttachmentThumbnailDownloadResult(image: image, statusCode: statusCode, data: data)
             }
-            return AttachmentThumbnailDownloadResult(image: image, statusCode: statusCode, data: data)
+            // WDT_CHAT_RESOURCE_PERF_20261023_END
         }.value
     }
     // JHT_MOD_END CHAT_HISTORY_SYNC_UI_PERF_END_THUMBNAIL_BACKGROUND_DECODE_HELPERS - 修改结束：缩略图文件读取和解码统一放到后台
@@ -13065,6 +13182,7 @@ private struct StickerThumbnail: View {
     let item: StickerLibraryItem
     let thumbnailURL: String
 
+    // WDT_IOS1_IMAGE_BUDGET_20261023: sticker grid requests a thumbnail, not a full-size image.
     var body: some View {
         ZStack {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
@@ -13074,7 +13192,7 @@ private struct StickerThumbnail: View {
                     .font(.system(size: 20, weight: .bold))
                     .foregroundStyle(IMColor.muted)
             } else {
-                CachedRemoteImage(urlString: thumbnailURL, cacheKey: item.stableThumbnailCacheKey, contentMode: .fit) {
+                CachedRemoteImage(urlString: thumbnailURL, cacheKey: item.stableThumbnailCacheKey, contentMode: .fit, maxPixelSize: 256) {
                     Image(systemName: "photo")
                         .font(.system(size: 18, weight: .bold))
                         .foregroundStyle(IMColor.muted)
@@ -13139,7 +13257,7 @@ private struct PendingAttachmentSelection: Identifiable {
         } else if let data = item.data {
             previewImage = isVideo
                 ? videoPreviewImage(data: data, fileExtension: fileExtension)
-                : UIImage(data: data)
+                : RemoteImageDecoder.image(from: data, maxPixelSize: 320) // WDT_IOS1_IMAGE_BUDGET_20261023
         } else {
             previewImage = nil
         }
@@ -14985,17 +15103,14 @@ struct AttachmentDetailSheet: View {
             ZStack {
                 if mediaCategory == "image" || mediaCategory == "video" {
                     AttachmentThumbnailImage(
-                        url: state.resolvedAttachmentThumbnailURL(for: message) ?? previewURL,
+                        // WDT_CHAT_FIX3_VIDEO_COVER_20261023
+                        url: state.resolvedAttachmentThumbnailURL(for: message) ?? (mediaCategory == "video" ? nil : previewURL),
                         cacheKey: state.attachmentThumbnailCacheKey(for: message),
                         contentMode: .fill,
                         scopeGeneration: state.mediaCacheScopeContext?.sessionGeneration ?? 0,
                         networkRecoveryGeneration: state.mediaNetworkRecoveryGeneration,
                         recoveryURL: {
-                            try? await state.prepareMessageAttachmentLocalFile(
-                                message,
-                                conversationID: conversationID,
-                                preferPreview: true
-                            )
+                            await state.refreshedAttachmentThumbnailURL(message, conversationID: conversationID)
                         },
                         indexedCacheURL: {
                             await state.cachedUnifiedAttachmentThumbnailURL(for: message)
@@ -15342,7 +15457,7 @@ struct ReadReceiptSheet: View {
     }
 
     private var showAggregateCounts: Bool {
-        isDirectConversation || state.shouldShowGroupMemberCount
+        canViewReceiptDetails && (isDirectConversation || state.shouldShowGroupMemberCount)
     }
 
     private var peer: IMUser? {
@@ -15359,7 +15474,7 @@ struct ReadReceiptSheet: View {
     }
 
     private var canViewReceiptDetails: Bool {
-        message.canViewReadDetails
+        state.canViewMessageReadDetails(message, in: conversation)
     }
 
     private var readReceiptCount: Int? {
@@ -15435,7 +15550,11 @@ struct ReadReceiptSheet: View {
                         if !readReceiptsEnabled {
                             readReceiptDisabledCard
                         } else if !canViewReceiptDetails {
-                            anonymousReceiptCard
+                            // WDT_CHAT_FIX1_RECEIPT_PRIVACY_20261023_BEGIN
+                            receiptSection(title: "已读", receipts: [], read: true, emptyText: "未统计明细")
+                            reactionSection
+                            receiptSection(title: "未读", receipts: [], read: false, emptyText: "未统计明细")
+                            // WDT_CHAT_FIX1_RECEIPT_PRIVACY_20261023_END
                         } else if isDirectConversation {
                             directReceiptCard
                             reactionSection

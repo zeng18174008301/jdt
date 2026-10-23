@@ -1606,7 +1606,7 @@ private struct FilePreviewHero: View {
     private var previewArtwork: some View {
         if let thumbnailURL = file.thumbnailRemoteURL {
             ZStack {
-                CachedRemoteImage(urlString: thumbnailURL.absoluteString, contentMode: .fit) {
+                CachedRemoteImage(urlString: thumbnailURL.absoluteString, contentMode: .fit, maxPixelSize: 640) { // WDT_IOS1_IMAGE_BUDGET_20261023
                     iconPreview
                 }
                 .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
@@ -2929,7 +2929,7 @@ private struct RTCCallRecordDetailSheet: View {
         guard let seconds else {
             return isTerminalStatus ? "未记录" : "进行中"
         }
-        return Self.durationText(seconds: seconds)
+        return RTCCallRecordTimeProjection.durationText(seconds: seconds) // WDT_IOS1_CALL_DURATION_20261023
     }
 
     private var inferredDurationSeconds: TimeInterval? {
@@ -3098,19 +3098,8 @@ private struct RTCCallRecordDetailSheet: View {
         return formatter
     }()
 
-    private static func durationText(seconds: TimeInterval) -> String {
-        let total = max(0, Int(seconds.rounded()))
-        let hours = total / 3600
-        let minutes = (total % 3600) / 60
-        let remainSeconds = total % 60
-        if hours > 0 {
-            return "\(hours)小时\(minutes)分\(remainSeconds)秒"
-        }
-        if minutes > 0 {
-            return "\(minutes)分\(remainSeconds)秒"
-        }
-        return "\(remainSeconds)秒"
-    }
+    // WDT_IOS1_CALL_DURATION_20261023: duration formatting is shared with validated history projection.
+
 }
 
 private struct RTCCallContactPickerSheet: View {

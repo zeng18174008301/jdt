@@ -4,6 +4,47 @@ import XCTest
 @testable import BlueStoneIM
 
 final class AttachmentDownloadTests: XCTestCase {
+    // WDT_CHAT_FIX3_VIDEO_COVER_20261023_BEGIN
+    @MainActor
+    func testVideoThumbnailUsesServerCoverAndNeverMoviePreview() {
+        let state = AppState(api: makeClient(transport: FakeAttachmentHTTPTransport(results: [])),
+                             apiContextOverride: attachmentContext(tenantID: "cover-\(UUID())"))
+        var message = makeEndpointOnlyAttachmentMessage(fileID: "cover-\(UUID())")
+        message.attachmentMediaCategory = "video"
+        message.attachmentMimeType = "video/mp4"
+        message.attachmentPreviewURL = "https://cdn.example.test/movie.mp4"
+        message.attachmentDownloadURL = message.attachmentPreviewURL
+        XCTAssertNil(state.resolvedAttachmentThumbnailURL(for: message))
+        message.attachmentPosterURL = "https://cdn.example.test/poster.jpg"
+        XCTAssertEqual(state.resolvedAttachmentThumbnailURL(for: message)?.absoluteString, message.attachmentPosterURL)
+        message.attachmentThumbnailURL = "https://cdn.example.test/thumbnail.jpg"
+        XCTAssertEqual(state.resolvedAttachmentThumbnailURL(for: message)?.absoluteString, message.attachmentThumbnailURL)
+        message.attachmentMediaCategory = "image"
+        message.attachmentMimeType = "image/jpeg"
+        message.attachmentThumbnailURL = ""
+        message.attachmentPosterURL = ""
+        message.attachmentPreviewURL = "https://cdn.example.test/original.jpg"
+        XCTAssertEqual(state.resolvedAttachmentThumbnailURL(for: message)?.absoluteString, message.attachmentPreviewURL)
+    }
+
+    @MainActor
+    func testVideoCoverRecoveryOnlyFetchesMetadataAndDoesNotDownloadMovie() async {
+        AttachmentDownloadURLProtocol.reset(statusCodes: [200], data: Data("movie".utf8))
+        let payload = #"{"ok":true,"data":{"file":{"id":"video-cover","file_name":"movie.mp4","mime_type":"video/mp4","size_bytes":1000000,"media_category":"video","thumbnail_url":"https://cdn.example.test/fresh-cover.jpg"},"preview_available":true,"preview_url":"https://cdn.example.test/movie.mp4","download_available":true,"download_url":"https://cdn.example.test/movie.mp4"}}"#
+        let transport = FakeAttachmentHTTPTransport(results: [HTTPTransportResult(data: Data(payload.utf8), isHTTPResponse: true, statusCode: 200)])
+        let state = AppState(api: makeClient(transport: transport),
+                             apiContextOverride: attachmentContext(tenantID: "cover-recovery-\(UUID())"),
+                             attachmentDownloadSessionFactory: makeSessionFactory())
+        var message = makeEndpointOnlyAttachmentMessage(fileID: "video-cover")
+        message.attachmentMediaCategory = "video"
+        message.attachmentMimeType = "video/mp4"
+        let result = await state.refreshedAttachmentThumbnailURL(message, conversationID: "g_endpoint")
+        XCTAssertEqual(result?.absoluteString, "https://cdn.example.test/fresh-cover.jpg")
+        XCTAssertEqual(transport.requests().map { $0.url?.path }, ["/api/tenant/files/video-cover"])
+        XCTAssertTrue(AttachmentDownloadURLProtocol.recordedRequests().isEmpty)
+    }
+    // WDT_CHAT_FIX3_VIDEO_COVER_20261023_END
+
     @MainActor
     func testDownloadAliasesShareStateAndRejectCallbacksFromCancelledOwner() async throws {
         let store = FileStore()

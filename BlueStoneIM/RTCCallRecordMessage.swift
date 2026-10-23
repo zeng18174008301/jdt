@@ -342,6 +342,32 @@ struct RTCCallRecordPayload: Codable, Hashable, Sendable {
 }
 
 enum RTCCallRecordTimeProjection {
+    // WDT_IOS1_CALL_DURATION_20261023_BEGIN
+    static func exactDurationSeconds(_ value: Int) -> TimeInterval? {
+        guard value >= 0, let seconds = TimeInterval(exactly: value),
+              Int(exactly: seconds) == value else { return nil }
+        return seconds
+    }
+
+    static func validatedDurationSeconds(_ value: TimeInterval?) -> TimeInterval? {
+        guard let value, value.isFinite, value >= 0,
+              Int(exactly: value.rounded()) != nil else { return nil }
+        return value
+    }
+
+    // Protects records decoded directly from old caches, which bypass history projection.
+    static func durationText(seconds: TimeInterval?) -> String {
+        guard let seconds = validatedDurationSeconds(seconds),
+              let total = Int(exactly: seconds.rounded()) else { return "未记录" }
+        let hours = total / 3600
+        let minutes = (total % 3600) / 60
+        let remainingSeconds = total % 60
+        if hours > 0 { return "\(hours)小时\(minutes)分\(remainingSeconds)秒" }
+        if minutes > 0 { return "\(minutes)分\(remainingSeconds)秒" }
+        return "\(remainingSeconds)秒"
+    }
+    // WDT_IOS1_CALL_DURATION_20261023_END
+
     static func parseServerTimestamp(_ raw: String?) -> Date? {
         guard let raw = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else { return nil }
         let fractional = ISO8601DateFormatter()

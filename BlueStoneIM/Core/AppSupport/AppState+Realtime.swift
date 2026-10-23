@@ -1309,6 +1309,13 @@ extension AppState {
                 return
             }
             if let quotaCode = IMAPIClient.licenseQuotaErrorCode(code) {
+                // WDT_CHAT_FIX6_REALTIME_ERROR_SCOPE_20261023: one group's capacity does not invalidate the session.
+                if quotaCode == "group_member_quota_exceeded" {
+                    toast = IMAPIClient.licenseQuotaUserMessage(for: quotaCode)
+                    diagnostic?.event.handlingCode = .groupMemberQuotaExceeded
+                    diagnosticHandling = .operationRejected
+                    return
+                }
                 disconnectRealtime(shouldReconnect: false)
                 toast = IMAPIClient.licenseQuotaUserMessage(for: quotaCode)
                 logSyncEndpointFailure(
@@ -1336,7 +1343,19 @@ extension AppState {
                 diagnosticHandling = affectsCurrent ? .workspaceSelectionForced : .workspaceDisconnected
                 return
             }
-            if code == "connect_failed" || code == "unauthorized" || code == "forbidden" || code == "connect_required" {
+            // WDT_CHAT_FIX6_REALTIME_ERROR_SCOPE_20261023_BEGIN
+            let connectionFailure = RealtimeErrorScopePolicy.isConnectionFailure(
+                code: code, envelope: envelope,
+                matchesConnectRequest: (realtimeClient as? RealtimeClient)?.matchesActiveConnectRequest(envelope.requestID) == true
+            )
+            if code.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "forbidden", !connectionFailure {
+                diagnostic?.event.handlingCode = .forbidden
+                diagnosticHandling = .operationRejected
+                logSyncEndpointFailure("/im/ws", error: IMAPIError.businessForbidden(code: "forbidden", message: "会话操作无权限", error: nil))
+                return
+            }
+            // WDT_CHAT_FIX6_REALTIME_ERROR_SCOPE_20261023_END
+            if connectionFailure {
                 disconnectRealtime(shouldReconnect: false)
                 toast = "实时连接暂不可用，聊天数据会继续同步"
                 logSyncEndpointFailure("/im/ws", error: IMAPIError.server("websocket_\(code)"))

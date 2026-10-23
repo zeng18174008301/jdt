@@ -6084,9 +6084,7 @@ extension AppState {
                     guard data != nil || fileURL != nil else {
                         throw LocalMessageDatabaseError.missingStagedAttachment
                     }
-                    let durationMS = message.attachmentDurationSeconds.map {
-                        Int(($0 * 1_000).rounded())
-                    }
+                    let durationMS = VoiceMessagePayload.decodedDurationMS(message.attachmentDurationSeconds) // WDT_IOS1_SAFE_NUMERIC_20261023
                     fileStore.rememberPendingAttachmentUpload(
                         PendingAttachmentUpload(
                             kind: message.kind,

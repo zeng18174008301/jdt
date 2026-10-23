@@ -7317,15 +7317,17 @@ extension AppState {
             case .string(let value): seconds = Int(value.trimmingCharacters(in: .whitespacesAndNewlines))
             default: seconds = nil
             }
-            guard let seconds, seconds >= 0 else { return .unknown }
+            // WDT_IOS1_CALL_DURATION_20261023_BEGIN
+            guard let seconds, let exactSeconds = RTCCallRecordTimeProjection.exactDurationSeconds(seconds) else { return .unknown }
             // Positive duration requires media connection; signaling answer or
             // ringing alone must never manufacture a connected duration.
             if ended != nil, seconds == 0 || connected != nil {
-                duration = TimeInterval(seconds)
+                duration = exactSeconds
             }
         } else if let connected, let ended {
-            duration = floor(ended.timeIntervalSince(connected))
+            duration = RTCCallRecordTimeProjection.validatedDurationSeconds(floor(ended.timeIntervalSince(connected)))
         }
+        // WDT_IOS1_CALL_DURATION_20261023_END
         return RTCHistoricalCallTiming(startedAt: started, endedAt: ended, durationSeconds: duration)
     }
 
@@ -7482,7 +7484,11 @@ extension AppState {
         let normalizedPeerAvatarSource = voiceCallAvatarSource(for: peer)
         let resolvedStartedAt = replaceHistoricalTiming ? startedAt : (startedAt ?? existing?.startedAt)
         let resolvedEndedAt = replaceHistoricalTiming ? endedAt : (endedAt ?? existing?.endedAt)
-        let resolvedDurationSeconds = replaceHistoricalTiming ? durationSeconds : (durationSeconds ?? existing?.durationSeconds)
+        // WDT_IOS1_CALL_DURATION_20261023_BEGIN
+        let resolvedDurationSeconds = RTCCallRecordTimeProjection.validatedDurationSeconds(
+            replaceHistoricalTiming ? durationSeconds : (durationSeconds ?? existing?.durationSeconds)
+        )
+        // WDT_IOS1_CALL_DURATION_20261023_END
         let normalizedEndReason = endReason.trimmingCharacters(in: .whitespacesAndNewlines)
         let resolvedEndReason = normalizedEndReason.isEmpty ? (existing?.endReason ?? "") : normalizedEndReason
         let resolvedStateVersion = max(existing?.stateVersion ?? 0, stateVersion)
@@ -7579,7 +7585,11 @@ extension AppState {
             callType: existing.callType,
             startedAt: canRefineTiming ? historicalTiming.startedAt : existing.startedAt,
             endedAt: canRefineTiming ? historicalTiming.endedAt : existing.endedAt,
-            durationSeconds: canRefineTiming ? historicalTiming.durationSeconds : existing.durationSeconds,
+            // WDT_IOS1_CALL_DURATION_20261023_BEGIN
+            durationSeconds: RTCCallRecordTimeProjection.validatedDurationSeconds(
+                canRefineTiming ? historicalTiming.durationSeconds : existing.durationSeconds
+            ),
+            // WDT_IOS1_CALL_DURATION_20261023_END
             endReason: marker.reason,
             stateVersion: marker.stateVersion
         )

@@ -4,6 +4,28 @@ import XCTest
 @testable import BlueStoneIM
 
 final class FilePreviewTests: XCTestCase {
+    // WDT_IOS1_CALL_DURATION_20261023_BEGIN
+    func testCallDurationProjectionAndCachedDetailRejectUnsafeBoundaries() throws {
+        XCTAssertNil(RTCCallRecordTimeProjection.exactDurationSeconds(Int.max))
+        XCTAssertNil(RTCCallRecordTimeProjection.exactDurationSeconds(9_007_199_254_740_993))
+        for invalid in [Double(Int.max), .nan, .infinity, -.infinity, -1, 1e100] {
+            let record = CallRecord(id: "legacy", title: "peer", subtitle: "call", time: "", status: "已结束", durationSeconds: invalid)
+            XCTAssertNil(RTCCallRecordTimeProjection.validatedDurationSeconds(record.durationSeconds))
+            XCTAssertEqual(RTCCallRecordTimeProjection.durationText(seconds: record.durationSeconds), "未记录")
+        }
+        let oldRecord = CallRecord(id: "cached", title: "peer", subtitle: "call", time: "", status: "已结束", durationSeconds: Double(Int.max))
+        let restored = try JSONDecoder().decode(CallRecord.self, from: JSONEncoder().encode(oldRecord))
+        XCTAssertEqual(RTCCallRecordTimeProjection.durationText(seconds: restored.durationSeconds), "未记录")
+        for (seconds, expected) in [(0, "0秒"), (61, "1分1秒"), (3661, "1小时1分1秒")] {
+            XCTAssertEqual(RTCCallRecordTimeProjection.exactDurationSeconds(seconds), Double(seconds))
+            XCTAssertEqual(RTCCallRecordTimeProjection.durationText(seconds: Double(seconds)), expected)
+        }
+        XCTAssertEqual(RTCCallRecordTimeProjection.durationText(seconds: 61.5), "1分2秒")
+        XCTAssertEqual(RTCCallRecordTimeProjection.durationText(seconds: nil), "未记录")
+        XCTAssertNotNil(RTCCallRecordTimeProjection.validatedDurationSeconds(Double(Int.max).nextDown))
+    }
+    // WDT_IOS1_CALL_DURATION_20261023_END
+
     func testAttachmentSaveUsesSemanticMediaCapabilityForLegacyMessageKind() {
         XCTAssertTrue(AttachmentSaveCapabilityPolicy.canSave(
             kind: .text,

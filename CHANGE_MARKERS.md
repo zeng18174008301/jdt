@@ -189,3 +189,163 @@ DEVELOPER_DIR=/Users/zen/Downloads/Xcode.app/Contents/Developer xcodebuild -quie
 - 真机待验收：有未读的任意群聊/单聊进入后到底、点击回到底部、键盘收起后到底；请求未完成时离开再回到同一页面；阅读历史时收到新消息应保留未读，其他会话不应被清零。
 
 单独回退：按本标记把 `.padding(.bottom, 12)` 从底部锚点移回消息 `LazyVStack` 外层 `.padding(.top, 12)` 之后，移除本轮 `.onDisappear` 新增的两项标记释放及三个测试。不要撤回上一轮 `WDT_CHAT_UNREAD_BADGE_20261021` 或其他历史改动，不整文件覆盖。
+
+## 聊天计算与图片资源优化（2026-10-23）
+
+标记：`WDT_CHAT_RESOURCE_PERF_20261023`。仅修改 `/Users/zen/Desktop/jdt`，生产改动限定为 `IMAPIClient.swift` 与 `ChatViews.swift`；不修改其他工程、安卓或 `codemagic`。
+
+- 聊天历史、消息回执、消息扩展三个同步接口的响应解析移至后台任务。保留原 codec、三种响应信封的解析顺序和容错结果；请求参数、错误判断、重试、消息映射/合并及状态提交流程不变。其他接口继续使用原执行方式，不整体移除 `AppState` 的 `MainActor`。
+- 修正缩略图限流器交接名额时的竞争窗口：直接把占用名额交给等待者，防止新到任务抢占造成超限。原并发上限仍为 2；本地索引缓存图片的解码也纳入同一限流器。保留远程加载去抖、缓存、签名 URL 恢复、失败重试及取消后的提交检查。
+- 本地缩略图优先直接从文件使用 ImageIO 降采样，避免先读入整份源文件；保留原格式兼容回退。需要回传源数据的路径保留原始字节，改用安全内存映射读取，并在后台解码范围增加临时对象释放池。
+- 引用贴纸和贴纸静态预览按既有显示尺寸、屏幕倍率解码。不改布局、样式、尺寸、文案、操作入口、原图查看和动画播放逻辑；不改发送、删除、撤回、未读、排序、同步游标或通话业务。
+- 这不是全进程内存硬上限：原图、网络压缩数据、视图持有图片和格式回退仍可能占用额外内存。没有真机崩溃日志或性能采样，不能据此确认 iPhone X / iOS 16.7.12 的闪退根因或宣称已消除闪退。
+
+验证：
+
+- 新增 8 个聚焦 XCTest 用例，覆盖接口范围、后台解析和结果一致性、本地缩略图尺寸与源文件不变、无效图片、并发交接及取消释放；补充非聊天接口执行线程断言。
+- 应用与测试目标 `build-for-testing` 编译通过，退出码 0，日志 `/tmp/jdt-chat-resource-perf-build.log`。未启动模拟器、未运行 App 或完整 iOS XCTest。
+- 宿主检查从当前生产代码提取解析方法、DTO、codec 和限流器，与 Git 修改前的实际解析方法比较。12 项接口范围检查、81 组 JSON/字段映射/加密 codec 的新旧结果比较通过，确认后台解析不在 OS 主线程。20,480 次并发名额交接保持上限，100 次取消等待者检查通过。临时脚本 `/tmp/jdt-resource-perf-verify.rb`；这不代替 iOS 图像或 UI 真机测试。
+- 真机待验收：iPhone X 冷启动登录并进入图片较多的聊天；连续翻历史、快速滑动、切换会话和返回；检查预览清晰度、原图、贴纸动画、图片失败重试及原业务行为；采集峰值内存/主线程耗时及对应 `.ips`，确认是否仍有闪退。
+
+单独回退：按本标记恢复三个接口的原同步解析调用及 helper；恢复本地缩略图原加载顺序、限流器交接、文件解码 helper，移除两处预览像素上限；回退对应测试与本记录。保留既有 JHT 标记以及删除刷新、已读、键盘等历史改动，不整文件覆盖。
+
+## 聊天六项修复（2026-10-23）
+
+范围：仅 `/Users/zen/Desktop/jdt`。六项独立标记；保留已有未提交修改、`WDT_CHAT_RESOURCE_PERF_20261023` 及历史修复，不修改安卓、其他工程、`codemagic`。没有提交 Git。
+
+### 1. 普通成员已读隐私
+
+标记：`WDT_CHAT_FIX1_RECEIPT_PRIVACY_20261023`
+
+- 定位：回执详情通过 `canViewDetails || hasReceiptDetails` 判断权限，且旧 `hasReceiptDetails` 包含表情回应，显式拒绝仍可能被绕过；回执同步中包含成员明细也会重新打开权限，接口的 `can_view_read_receipt_details` 未被消费。
+- 修复：明确的服务端拒绝优先，表情回应不再推导已读明细权限；无权限时清除已读/未读成员和人数，保留已读状态、表情回应及会话未读数。兼容未提供权限字段但实际提供回执明细的旧接口。同步显式权限按当前会话更新，迟到的成员回执不能自行重新授权。
+- 展示：群聊同时按精确群 ID 匹配现有群管理权限，避免普通成员看到缓存人数或同名群串用权限；普通成员弹窗的“已读”“未读”均无人数，只显示“未统计明细”，保留表情回应明细。单聊仍按服务端权限，已读能力关闭时保留原禁用提示。
+- 文件：`RemoteAPIModels.swift`、`ConversationStore.swift`、`AppState+RemoteMessageStateMapping.swift`、`AppState+MessageActions.swift`、`ChatViews.swift`；测试 `DomainStoreTests.swift`。
+- 回退：按标记一起恢复权限解码、Store 合并与同步接线、UI 权限判断/空态及对应测试，不回退未读徽标处理。
+
+### 2. 删除后立即刷新聊天
+
+标记：`WDT_CHAT_FIX2_DELETE_REFRESH_20261023`
+
+- 定位：消息 Store 变更统一进入合并刷新队列，而界面仍持有消息行缓存；不能靠后续滚动或重新进入页面触发删除行更新。
+- 修复：在现有 Store 发布回调中，用发布参数里的新快照识别删除标志变化、撤回或物理移除，立即重建消息行缓存。`@Published` 在存储赋值前发出新值，因此不从旧 Store 状态重新取消息。普通新增、历史加载、已读变化继续走原合并路径。
+- 范围：仅 `ChatViews.swift` 和 `DomainStoreTests.swift`。不改删除请求、权限、失败处理、撤回/删除占位展示开关或滚动规则；没有提前假删服务端尚未确认的消息。
+- 回退：移除该 helper 和发布回调内的即时刷新分支及对应测试，保留 `WDT_CHAT_DELETE_REFRESH_20261021` 等既有缓存修复。
+
+### 3. 视频使用服务端封面
+
+标记：`WDT_CHAT_FIX3_VIDEO_COVER_20261023`
+
+- 定位：视频无封面时退回视频预览地址，封面失败恢复调用附件本地下载，可能把整段视频交给图片加载器。
+- 修复：视频按已有 `thumbnail / cover / poster` 字段顺序优先使用服务端封面；本地只接受真实封面缓存，不以 MP4 预览/下载地址充当图片。封面恢复仅走既有文件元信息刷新，保留账号/企业作用域检查，不下载整段视频。聊天气泡与附件详情封面统一接线。
+- 保留：图片原有回退、视频播放与显式下载流程、统一媒体缓存不变；服务端无封面且本地也无有效封面时仍显示原占位/重试状态。
+- 文件：`AppState+FilesAttachments.swift`、`AppState+MessageSendingAttachments.swift`、`ChatViews.swift`；测试 `AttachmentDownloadTests.swift`。
+- 回退：按标记恢复缩略图 URL 选择、失败恢复及详情接线、移除新 helper 和测试，保留图片资源性能优化。
+
+### 4. 查找用户数字 ID 提示
+
+标记：`WDT_CHAT_FIX4_USER_ID_HINT_20261023`
+
+- 查找用户入口、输入框及空态改为“用户ID的纯数字部分”；根据当前账号真实 ID 展示“你ID是‘…’，对方只需输入‘…’即可找到你。”（界面使用中文双引号）。保留数字前导零，不把企业前缀中的数字混入示例；ID 尚不可用时不编造示例。
+- 仅 `ConversationViews.swift` 文案与示例 helper、`DomainStoreTests.swift`；搜索参数、请求接口及好友申请流程不变。
+- 回退：按标记移除示例 helper/文本并恢复查找用户文案及对应测试。
+
+### 5. 回到底部入口
+
+标记：`WDT_CHAT_FIX5_RETURN_BOTTOM_20261023`
+
+- 将原顶部通栏入口移到消息区域右下角，改为紧凑胶囊样式，保留新消息数量/消息记录文案及至少 44pt 点击高度。
+- 仅 `ChatViews.swift` 和 `DomainStoreTests.swift`；原显示条件、回到底部 action、滚动仲裁、已读触发条件与底部锚点不变。
+- 回退：恢复该叠层的顶部对齐、顶部间距和原通栏样式及对应测试，不改滚动逻辑。
+
+### 6. 单会话错误与连接错误分离
+
+标记：`WDT_CHAT_FIX6_REALTIME_ERROR_SCOPE_20261023`
+
+- 定位：通用 `forbidden` 和群成员数量限制均进入 `disconnectRealtime`，会把单次会话操作失败扩大为所有会话的实时连接中断。
+- 修复：通用权限拒绝只有命中实际连接握手请求 ID，或明确声明 connection/session/global/account/tenant/workspace 范围时才按连接失败处理；会话/消息范围和无连接级证据的拒绝保留连接。群成员数量限制只保留原业务提示。诊断记录为 `OPERATION_REJECTED_CONNECTION_KEPT`，不再标成连接失败；判断不依赖诊断请求环形缓存。
+- 保留：`unauthorized`、`connect_required`、`connect_failed`，以及既有工作区访问限制、其他连接级配额、安全封禁处理不变；不改心跳、重连调度或发送协议。
+- 文件：`RealtimeClient.swift`、`AppState+Realtime.swift`；测试 `RealtimeTransportTests.swift`。
+- 回退：按标记恢复错误分支和诊断分类，移除 scope policy/握手 ID 比较方法及对应测试，不回退原有连接诊断功能。
+
+### 验证与待验收
+
+- 新增 10 个 XCTest 用例；应用及测试目标 `build-for-testing` 编译通过（退出码 0），日志 `/tmp/jdt-chat-six-fixes-build.log`。有既有弃用/并发警告；未启动模拟器或 App，未执行 iOS XCTest。
+- 本机从生产代码提取 DTO、权限更新、删除刷新判断、封面选择/恢复、ID 提示与错误范围策略，用最小依赖模型执行 142 项断言通过，另有 5 项回执空态/按钮接线源码检查通过。脚本 `/tmp/jdt-chat-six-fixes-verify.rb`；不等于 SwiftUI 渲染、真实 HTTP 或 WebSocket 端到端验收。
+- 上一轮性能检查重跑通过：12 项接口范围检查、81 组新旧 codec/DTO 比较、20,480 次并发名额交接、100 次取消释放。脚本 `/tmp/jdt-resource-perf-verify.rb`。`git diff --check` 通过。
+- 真机验收：普通成员与群管理员分别打开含回应的已读弹窗；删除首/中/末消息和多选删除；视频封面首次加载、过期恢复及播放；查找页核对自己 ID；窄屏/键盘展开时点击右下角入口；模拟单群权限拒绝后确认其他会话仍收消息，并确认登录失效仍走原处理。
+- 六项分别回退时连同该项测试撤回；不要整文件覆盖，不要撤回其他标记。
+
+
+## IOS1 闪退与性能整改（2026-10-23）
+
+基线 `4d66bf345c47d0e542b989221c260f99a103c879`。完整方案见 `IOS1_CRASH_PERFORMANCE_PLAN.md`。本批由当前会话本人实施；不覆盖原 ZIP、不改最低系统版本、依赖版本、签名、数据库、服务端或 IOS2。真实事故根因尚未证实。
+
+### WDT_IOS1_NAV_COMPAT_20261023 — 公开导航 API、单一返回手势生命周期
+
+- `BlueStoneIM/BlueStoneIMApp.swift`：1359–1359（以各 BEGIN/END、单行标识与完整差分为准）。
+- `BlueStoneIM/ChatViews.swift`：2557–2557（以各 BEGIN/END、单行标识与完整差分为准）。
+- `BlueStoneIM/DesignSystem.swift`：658–2564（以各 BEGIN/END、单行标识与完整差分为准）。
+- `BlueStoneIMTests/DesignSystemTests.swift`：104–1347（以各 BEGIN/END、单行标识与完整差分为准）。
+
+### WDT_IOS1_CHAT_STATE_20261023 — 聊天消息弹层状态引用化、空会话挂载回归
+
+- `BlueStoneIM/ChatViews.swift`：1000–2743（以各 BEGIN/END、单行标识与完整差分为准）。
+- `BlueStoneIMTests/DesignSystemTests.swift`：201–212（以各 BEGIN/END、单行标识与完整差分为准）。
+- `BlueStoneIMTests/DomainStoreTests.swift`：13–36（以各 BEGIN/END、单行标识与完整差分为准）。
+
+### WDT_IOS1_SAFE_NUMERIC_20261023 — 数值越界与非法语音时长防 trap
+
+- `BlueStoneIM/ChatViews.swift`：4089–9199（以各 BEGIN/END、单行标识与完整差分为准）。
+- `BlueStoneIM/Core/AppSupport/AppState+FilesAttachments.swift`：953–953（以各 BEGIN/END、单行标识与完整差分为准）。
+- `BlueStoneIM/Core/AppSupport/AppState+MessageActions.swift`：169–169（以各 BEGIN/END、单行标识与完整差分为准）。
+- `BlueStoneIM/Core/AppSupport/AppStateLocalSupport.swift`：737–799（以各 BEGIN/END、单行标识与完整差分为准）。
+- `BlueStoneIM/Core/AppSupport/MessageMapping/AppState+RemoteMessageStateMapping.swift`：2020–2020（以各 BEGIN/END、单行标识与完整差分为准）。
+- `BlueStoneIM/Core/AppSupport/RemoteSync/AppState+RemoteRegistrationSnapshotSync.swift`：6087–6087（以各 BEGIN/END、单行标识与完整差分为准）。
+- `BlueStoneIM/RemoteAPIModels.swift`：1534–1601（以各 BEGIN/END、单行标识与完整差分为准）。
+- `BlueStoneIMTests/RemoteAPIModelsTests.swift`：5–57（以各 BEGIN/END、单行标识与完整差分为准）。
+
+### WDT_IOS1_IMAGE_BUDGET_20261023 — 公共静态图片尺寸、缓存代次与加载并发边界
+
+- `BlueStoneIM/ChatViews.swift`：13185–13260（以各 BEGIN/END、单行标识与完整差分为准）。
+- `BlueStoneIM/DesignSystem.swift`：74–579（以各 BEGIN/END、单行标识与完整差分为准）。
+- `BlueStoneIM/FilesRTCViews.swift`：1609–1609（以各 BEGIN/END、单行标识与完整差分为准）。
+- `BlueStoneIMTests/DesignSystemTests.swift`：9–1362（以各 BEGIN/END、单行标识与完整差分为准）。
+
+### WDT_IOS1_AVATAR_MEMORY_20261023 — 个人和群头像先降采样、共享固定像素裁剪
+
+- `BlueStoneIM/ContactsViews.swift`：4281–4550（以各 BEGIN/END、单行标识与完整差分为准）。
+- `BlueStoneIM/MeSettingsViews.swift`：1303–1632（以各 BEGIN/END、单行标识与完整差分为准）。
+- `BlueStoneIMTests/DesignSystemTests.swift`：82–102（以各 BEGIN/END、单行标识与完整差分为准）。
+
+### WDT_IOS1_RECEIPT_ROLE_20261023 — 修正 jdt4 独审 F1：企业角色与群角色分离
+
+- `BlueStoneIM/Core/AppSupport/AppState+MessageActions.swift`：285–290（以各 BEGIN/END、单行标识与完整差分为准）。
+- `BlueStoneIMTests/DomainStoreTests.swift`：100–111（以各 BEGIN/END、单行标识与完整差分为准）。
+
+### WDT_IOS1_CHANGE_COMPAT_20261023 — iOS 15/16 onChange 真实旧值语义
+
+- `BlueStoneIM/DesignSystem.swift`：2642–2659（以各 BEGIN/END、单行标识与完整差分为准）。
+- `BlueStoneIMTests/DesignSystemTests.swift`：183–1327（以各 BEGIN/END、单行标识与完整差分为准）。
+
+### WDT_IOS1_CALL_DURATION_20261023 — 独审 F2：通话历史输入、写入及旧缓存详情的安全时长
+
+- `BlueStoneIM/RTCCallRecordMessage.swift`：345–369。
+- `BlueStoneIM/Core/AppSupport/Calls/AppState+VoiceCalls.swift`：7320–7592。
+- `BlueStoneIM/FilesRTCViews.swift`：2932–3101。
+- `BlueStoneIMTests/DomainStoreTests.swift`：14363–14389。
+- `BlueStoneIMTests/FilePreviewTests.swift`：7–27。
+
+整数时长须能精确转为 TimeInterval 并安全往返；历史推算、upsert/历史细化写入都校验非负、有限、可表示。详情共用安全格式化，直接从旧缓存解码的异常值显示“未记录”，不伪造 0 或上限。正常 0/61/3661、缺失与推算时长合同保留。F2 定向 30 项 XCTest 通过（FilePreview 25 + 实际历史消息处理链 5），未重跑原 382/878 或已归因 35 项。
+
+依赖/合并：所有条目一并取完整候选；导航删除旧 GlobalBackSwipeInstaller / ChatBackSwipeInstaller，由 NavigationStackCompat 安装公开系统边缘返回，交互范围由原左半屏收窄为系统边缘。图片 gate 复用已有 AttachmentThumbnailLoadGate；直接远端预览先落临时文件，32 MiB 压缩预览上限，默认最长边 2048 像素，超限返回占位，原附件下载及原文件保留。聊天状态对象必须每个页面单独创建，不能单例。F1 保留服务端 false、作用域检查与既有迟到数据撤权逻辑。
+
+验证：应用/测试目标完整编译已通过；新增图片/数值/状态/手势/旧 onChange 测试已通过；真实导航进退、会话替换与空单聊/群聊 30 次挂载回归已通过。扩展 878 项测试有 35 项失败，未改 jdt4 基线对同 35 项逐项复现；包括 RTC 测试数组越界，不能称整套测试通过。原独审结论 NEEDS_FIX 仅 F2；F2 完整链已修，定向 30 项通过，最终复审结果见交付报告。
+
+回退：按本提交和完整标识块逆向恢复；不删除登录、消息、缓存数据，不对原包全树覆盖。NEW_DEPLOY_SURFACE=0；JENKINS_CHANGE=0；SECRET_PLACEMENT=0。
+
+## iOS17 原生导航增量核对（2026-10-23）
+
+标识 `WDT_IOS1_NATIVE_NAV_REGRESSION_20261023`。新 `jdt 4 (2).zip` 相对原包的导航生产修复已由 `WDT_IOS1_NAV_COMPAT_20261023` 等价覆盖：iOS17 原生 item、iOS16 原生 isPresented、iOS15 旧链接。保留当前 retainedItem/id 隔离和前轮全部修复，不导入包内性能撤回或用户工程状态。
+
+本次仅从新包补入 DesignSystemTests 的原生导航行为探针及用例，窗口绑定现有 UIWindowScene；覆盖空选择不挂载、携带搜索 messageID 进入A、dismiss 清空路由、进入B。测试直接调用实际 navigationDestinationCompat，不把 iOS26.5 结果称为 iOS17 实测。功能范围为测试，不改 AppID/签名/版本/业务代码。合并按标识完整取 helpers 与测试方法；验证结果见交付目录 IOS1-iOS17白屏增量-20261023。

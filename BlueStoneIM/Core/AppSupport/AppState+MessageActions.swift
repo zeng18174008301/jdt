@@ -166,7 +166,7 @@ extension AppState {
                 }
                 let remote: RemoteMessage
                 if message.kind == .voice {
-                    let durationMS = message.attachmentDurationSeconds.map { Int(($0 * 1_000).rounded()) }
+                    let durationMS = VoiceMessagePayload.decodedDurationMS(message.attachmentDurationSeconds) // WDT_IOS1_SAFE_NUMERIC_20261023
                         ?? VoiceMessagePayload.minDurationMS
                     remote = try await api.sendVoice(
                         context: context,
@@ -275,6 +275,19 @@ extension AppState {
             channelID: conversation.map { remoteChannelID(for: $0) }
         )
         toast = "已复制消息内容"
+    }
+
+    // WDT_CHAT_FIX1_RECEIPT_PRIVACY_20261023: do not expose stale cached counts before the permission response arrives.
+    func canViewMessageReadDetails(_ message: ChatMessage, in conversation: Conversation) -> Bool {
+        guard message.canViewReadDetails else { return false }
+        guard conversation.kind == .group else { return true }
+        let channelID = remoteChannelID(for: conversation)
+        // WDT_IOS1_RECEIPT_ROLE_20261023_BEGIN
+        guard groups.contains(where: { $0.id == conversation.id || $0.id == channelID }) else { return false }
+        // Receipt identities follow the server tenant-role capability, independently of group management.
+        let role = currentEnterprise.role.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return ["admin", "internal", "internal_user", "staff", "employee", "member_internal", "管理员", "内部用户"].contains(role)
+        // WDT_IOS1_RECEIPT_ROLE_20261023_END
     }
 
     func loadReadReceipts(messageID: String, in conversationID: String) {

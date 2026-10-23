@@ -10,6 +10,159 @@ import SwiftUI
 
 @MainActor
 final class DomainStoreTests: XCTestCase {
+    // WDT_IOS1_CHAT_STATE_20261023_BEGIN
+    func testEmptyChatCanMountAndReleaseRepeatedlyForDirectAndGroupConversations() async throws {
+        let state = AppState(voiceMediaClient: NoopVoiceMediaClient(), apiContextOverride: makeIsolatedAPIContext())
+        state.currentUser = makeUser(id: "me")
+        let direct = makeConversation(id: "empty-direct", kind: .direct, unread: 0, lastMsgSeq: 0, lastReadSeq: 0)
+        let group = makeConversation(id: "empty-group", kind: .group, unread: 0, lastMsgSeq: 0, lastReadSeq: 0)
+        state.conversationStore.conversations = [direct, group]
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let window = UIWindow(windowScene: scene)
+        defer { window.isHidden = true; window.rootViewController = nil }
+        for index in 0..<30 {
+            let id = index.isMultiple(of: 2) ? direct.id : group.id
+            window.rootViewController = UIHostingController(rootView:
+                NavigationStackCompat { ChatView(conversationID: id) }.environmentObject(state))
+            window.makeKeyAndVisible()
+            window.rootViewController?.view.layoutIfNeeded()
+            window.layoutIfNeeded()
+            try await Task.sleep(nanoseconds: 40_000_000)
+            XCTAssertFalse(try XCTUnwrap(window.rootViewController?.view).subviews.isEmpty)
+            window.rootViewController = nil
+        }
+        XCTAssertTrue(state.conversations.allSatisfy { $0.messages.isEmpty })
+    }
+    // WDT_IOS1_CHAT_STATE_20261023_END
+
+    // WDT_CHAT_FIX1_RECEIPT_PRIVACY_20261023_BEGIN
+    func testReceiptDenialPreservesReactionsWithoutExposingCountsOrReaders() throws {
+        let store = ConversationStore()
+        var conversation = makeConversation(id: "g1", kind: .group, unread: 5, lastMsgSeq: 7, lastReadSeq: 2)
+        var message = makeMessage(id: "m1", seq: 7, status: .read, isOutgoing: true)
+        message.readCount = 3
+        message.readBy = [makeReadReceipt(userID: "old-reader")]
+        conversation.messages = [message]
+        store.conversations = [conversation]
+        let response = try decodeRemoteReadReceiptResponse(#"{"read":true,"can_view_details":false,"read_count":4,"unread_count":2,"items":[],"reactions":[{"operator_uid":"u2","emoji":"ok","created_at":"2026-10-23T10:00:00Z"}]}"#)
+        XCTAssertFalse(response.canViewDetails)
+        XCTAssertTrue(store.applyRemoteReadReceiptDetails(response: response, messageID: "m1", conversationID: "g1",
+            makeReadReceipt: makeReadReceipt(from:conversation:), makeUnreadReceipt: makeUnreadReadReceipt(from:conversation:),
+            makeReactionDetail: makeReactionDetail(from:)))
+        let updated = store.conversations[0].messages[0]
+        XCTAssertNil(updated.readCount)
+        XCTAssertNil(updated.unreadCount)
+        XCTAssertTrue(updated.readBy.isEmpty)
+        XCTAssertTrue(updated.unreadBy.isEmpty)
+        XCTAssertFalse(updated.canViewReadDetails)
+        XCTAssertEqual(updated.reactionDetails.count, 1)
+        XCTAssertEqual(updated.status, .read)
+        XCTAssertEqual(store.conversations[0].unread, 5)
+        let reactionsOnly = try decodeRemoteReadReceiptResponse(#"{"read":true,"reactions":[{"operator_uid":"u2","emoji":"ok"}]}"#)
+        XCTAssertFalse(reactionsOnly.canViewDetails)
+        let legacy = try decodeRemoteReadReceiptResponse(#"{"read":true,"read_count":2}"#)
+        XCTAssertTrue(legacy.canViewDetails)
+    }
+
+    func testReceiptSyncVisibilityIsConversationScopedAndLateDetailsCannotRestoreIt() throws {
+        let store = ConversationStore()
+        var conversation = makeConversation(id: "g1", kind: .group, unread: 3, lastMsgSeq: 1, lastReadSeq: 0)
+        var message = makeMessage(id: "m1", seq: 1, status: .read, isOutgoing: true)
+        message.readCount = 2
+        message.reactionDetails = [ReactionDetail(id: "r1", emoji: "ok", user: makeUser(id: "u2"), time: "10:00")]
+        conversation.messages = [message]
+        var other = makeConversation(id: "g2", kind: .group, unread: 3, lastMsgSeq: 1, lastReadSeq: 0)
+        other.messages = [message]
+        store.conversations = [conversation, other]
+        XCTAssertTrue(store.updateReadReceiptDetailsVisibility(false, conversationID: "g1"))
+        XCTAssertFalse(store.updateReadReceiptDetailsVisibility(false, conversationID: "g1"))
+        let receipt = try decodeRemoteReceipt(#"{"message_id":"m1","im_uid":"u2","receipt_type":"read","channel_seq":1}"#)
+        _ = store.applyRemoteReadReceipts([receipt], channelID: "g1", readReceiptsEnabled: true,
+            channelIDForConversation: { $0.id }, makeReadReceipt: makeReadReceipt(from:conversation:))
+        let hidden = store.conversations[0].messages[0]
+        XCTAssertFalse(hidden.canViewReadDetails)
+        XCTAssertNil(hidden.readCount)
+        XCTAssertTrue(hidden.readBy.isEmpty)
+        XCTAssertEqual(hidden.status, .read)
+        XCTAssertEqual(hidden.reactionDetails.count, 1)
+        XCTAssertEqual(store.conversations[1], other)
+        XCTAssertTrue(store.updateReadReceiptDetailsVisibility(true, conversationID: "g1"))
+    }
+
+    func testOrdinaryGroupMemberCannotDisplayCachedReadDetails() {
+        let state = AppState(apiContextOverride: makeIsolatedAPIContext())
+        state.currentUser = makeUser(id: "me")
+        let conversation = makeConversation(id: "g1", kind: .group, unread: 0, lastMsgSeq: 1, lastReadSeq: 1)
+        var message = makeMessage(id: "m1", seq: 1, status: .read, isOutgoing: true)
+        var group = GroupInfo(id: "g1", name: "g1", notice: "", owner: "Other", members: [], admins: [],
+                              muted: false, allMuted: false, allMuteStart: nil, allMuteEnd: nil)
+        group.ownerID = "other"
+        // WDT_IOS1_RECEIPT_ROLE_20261023_BEGIN
+        for tenantRole in ["member", "internal", "admin", "unknown", ""] {
+            state.currentEnterprise = Enterprise(id: "tenant", name: "test", code: "test", role: tenantRole,
+                status: "normal", memberCount: 1, isDefault: true, accentHex: 0)
+            for groupRole in ["member", "admin", "owner"] {
+                group.myRole = groupRole
+                state.groups = [group]
+                XCTAssertEqual(state.canViewMessageReadDetails(message, in: conversation),
+                    ["internal", "admin"].contains(tenantRole), "tenant=\(tenantRole), group=\(groupRole)")
+            }
+        }
+        // WDT_IOS1_RECEIPT_ROLE_20261023_END
+        message.canViewReadDetails = false
+        XCTAssertFalse(state.canViewMessageReadDetails(message, in: conversation))
+        message.canViewReadDetails = true
+        let unrelated = makeConversation(id: "not-g1", kind: .group, unread: 0, lastMsgSeq: 1, lastReadSeq: 1)
+        XCTAssertFalse(state.canViewMessageReadDetails(message, in: unrelated))
+    }
+    // WDT_CHAT_FIX1_RECEIPT_PRIVACY_20261023_END
+
+    // WDT_CHAT_FIX2_DELETE_REFRESH_20261023_BEGIN
+    func testRemovalRefreshUsesPublishedSnapshotAndIgnoresOrdinaryUpdates() {
+        let original = (1...3).map { makeMessage(id: "m\($0)", seq: Int64($0)) }
+        XCTAssertFalse(chatNeedsImmediateRemovalRefresh(cachedMessages: original, messages: original))
+        var next = original
+        next[1].isDeletedLocally = true
+        XCTAssertTrue(chatNeedsImmediateRemovalRefresh(cachedMessages: original, messages: next))
+        next = original
+        next[1].status = .recalled
+        XCTAssertTrue(chatNeedsImmediateRemovalRefresh(cachedMessages: original, messages: next))
+        XCTAssertTrue(chatNeedsImmediateRemovalRefresh(cachedMessages: original, messages: [original[0], original[2]]))
+        XCTAssertTrue(chatNeedsImmediateRemovalRefresh(cachedMessages: original, messages: []))
+        next = original
+        next[1].status = .read
+        XCTAssertFalse(chatNeedsImmediateRemovalRefresh(cachedMessages: original, messages: next))
+        XCTAssertFalse(chatNeedsImmediateRemovalRefresh(cachedMessages: original, messages: original + [makeMessage(id: "m4", seq: 4)]))
+        XCTAssertFalse(chatNeedsImmediateRemovalRefresh(cachedMessages: original, messages: [makeMessage(id: "m0", seq: 0)] + original))
+    }
+    // WDT_CHAT_FIX2_DELETE_REFRESH_20261023_END
+
+    // WDT_CHAT_FIX4_USER_ID_HINT_20261023_BEGIN
+    func testFindUserHintUsesOwnNumericSuffixWithoutPrefixDigitsOrInventedID() {
+        XCTAssertEqual(findUserNumericIDHint(userID: "AA-U910273"), "你ID是“AA-U910273”，对方只需输入“910273”即可找到你。")
+        XCTAssertEqual(findUserNumericIDHint(userID: " AA12-U000045 "), "你ID是“AA12-U000045”，对方只需输入“000045”即可找到你。")
+        XCTAssertNotNil(findUserNumericIDHint(userID: "910273"))
+        for invalid in ["", "AA-U", "pending", "AA-U12b", "AA-U１２３"] {
+            XCTAssertNil(findUserNumericIDHint(userID: invalid))
+        }
+    }
+    // WDT_CHAT_FIX4_USER_ID_HINT_20261023_END
+
+    // WDT_CHAT_FIX5_RETURN_BOTTOM_20261023_BEGIN
+    func testReturnToBottomOverlayKeepsItsActionAndUsesBottomTrailingPlacement() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let source = try String(contentsOf: root.appendingPathComponent("BlueStoneIM/ChatViews.swift"), encoding: .utf8)
+        let start = try XCTUnwrap(source.range(of: "// WDT_CHAT_FIX5_RETURN_BOTTOM_20261023: overlay only"))
+        let end = try XCTUnwrap(source.range(of: "if shouldShowGroupMuteStatus", range: start.upperBound..<source.endIndex))
+        let overlay = String(source[start.lowerBound..<end.lowerBound])
+        XCTAssertTrue(overlay.contains("ZStack(alignment: .bottomTrailing)"))
+        XCTAssertTrue(overlay.contains(".padding(.bottom, 12)"))
+        XCTAssertTrue(overlay.contains("chatReturnToBottomActionPlan(bottomAnchorID: bottomAnchorID)"))
+        XCTAssertTrue(overlay.contains("setScrollTarget(plan.targetID, source: plan.source, anchor: plan.anchor)"))
+        XCTAssertEqual(source.components(separatedBy: "emptyText: \"未统计明细\"").count - 1, 2)
+    }
+    // WDT_CHAT_FIX5_RETURN_BOTTOM_20261023_END
+
     func testContactProfileReconciliationPublishesOneCompleteBatchAndNoNoop() {
         let store = ConversationStore()
         var original = (0..<400).map { makeConversation(id: "peer-\($0)", unread: 3, lastMsgSeq: 9, lastReadSeq: 6) }
@@ -14206,6 +14359,34 @@ final class DomainStoreTests: XCTestCase {
             }
         }
     }
+
+    // WDT_IOS1_CALL_DURATION_20261023_BEGIN
+    func testRTCHistoryDurationInputRejectsUnsafeRoundTripAndKeepsNormalValues() throws {
+        let invalid: [JSONValue] = [.int(Int.max), .string(String(Int.max)), .double(Double(Int.max)),
+            .double(.nan), .double(.infinity), .double(-.infinity), .int(9_007_199_254_740_993), .int(-1)]
+        let normal: [JSONValue] = [0, 61, 3661].flatMap { [.int($0), .string(String($0)), .double(Double($0))] }
+        for (index, value) in (invalid + normal).enumerated() {
+            let state = makeHistoricalRTCTestState()
+            let id = "duration-boundary-\(index)"
+            state.activeVoiceCall = historicalRTCActiveSession(callID: id)
+            let source = historicalRTCTerminalEnvelope(callID: id)
+            var payload = source.payload
+            var call = try XCTUnwrap(payload["call"]?.objectValue)
+            call["media_connected_at"] = .string("2026-08-23T23:59:45Z")
+            call["duration_seconds"] = value
+            payload["call"] = .object(call)
+            state.debugHandleRealtimeEnvelopeForTesting(RealtimeEnvelope(type: source.type, requestID: source.requestID, payload: payload))
+            let record = try XCTUnwrap(state.calls.first)
+            if index < invalid.count {
+                XCTAssertNil(record.durationSeconds, "Invalid input at index \(index) must remain unknown")
+                XCTAssertEqual(RTCCallRecordTimeProjection.durationText(seconds: record.durationSeconds), "未记录")
+            } else {
+                let expected = Double([0, 61, 3661][(index - invalid.count) / 3])
+                XCTAssertEqual(record.durationSeconds, expected)
+            }
+        }
+    }
+    // WDT_IOS1_CALL_DURATION_20261023_END
 
     func testRTCRawTerminalDurationUsesMediaConnectionNotSignalAnswerOrLocalClock() throws {
         for suppliedDuration in [nil, 117] as [Int?] {

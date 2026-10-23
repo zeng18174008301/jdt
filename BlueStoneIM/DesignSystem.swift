@@ -71,11 +71,15 @@ struct URLSessionRemoteImageTransport: RemoteImageTransporting {
     }
 
     func data(from url: URL) async throws -> RemoteImageTransportResult {
-        let (data, response) = try await session.data(from: url)
+        // WDT_IOS1_IMAGE_BUDGET_20261023_BEGIN
+        // Download compressed bytes to a temporary file instead of buffering an unbounded response in RAM.
+        let (fileURL, response) = try await session.download(from: url)
+        defer { try? FileManager.default.removeItem(at: fileURL) }
         return RemoteImageTransportResult(
-            data: data,
+            data: try RemoteImageDecoder.previewData(fromFileURL: fileURL),
             statusCode: (response as? HTTPURLResponse)?.statusCode
         )
+        // WDT_IOS1_IMAGE_BUDGET_20261023_END
     }
 }
 
@@ -214,25 +218,35 @@ enum AvatarRemoteImageRequest: Equatable, Sendable {
     }
 }
 
+// WDT_IOS1_IMAGE_BUDGET_20261023_BEGIN
 enum RemoteImageDataURLDecoder {
     static func data(from value: String) -> Data? {
-        guard value.lowercased().hasPrefix("data:"),
-              let separator = value.firstIndex(of: ",") else {
-            return nil
-        }
+        guard value.prefix(5).lowercased() == "data:",
+              let separator = value.firstIndex(of: ",") else { return nil }
         let metadata = value[value.index(value.startIndex, offsetBy: 5)..<separator]
-        let payload = String(value[value.index(after: separator)...])
+        let payload = value[value.index(after: separator)...]
+        let limit = RemoteImageDecoder.maximumEncodedByteCount
         if metadata.lowercased().split(separator: ";").contains("base64") {
-            return Data(base64Encoded: payload, options: .ignoreUnknownCharacters)
+            guard payload.utf8.count <= ((limit + 2) / 3) * 4,
+                  let data = Data(base64Encoded: String(payload), options: .ignoreUnknownCharacters),
+                  data.count <= limit else { return nil }
+            return data
         }
-        guard let decoded = payload.removingPercentEncoding else { return nil }
+        guard payload.utf8.count <= limit * 3,
+              let decoded = String(payload).removingPercentEncoding,
+              decoded.utf8.count <= limit else { return nil }
         return Data(decoded.utf8)
     }
 }
+// WDT_IOS1_IMAGE_BUDGET_20261023_END
 
 @MainActor
 final class AvatarImageCache {
     static let shared = AvatarImageCache()
+    // WDT_IOS1_IMAGE_BUDGET_20261023_BEGIN
+    private static let remoteLoadGate = AttachmentThumbnailLoadGate.shared
+    private var cacheGeneration = UUID()
+    // WDT_IOS1_IMAGE_BUDGET_20261023_END
     private let maxImageCount = 160
     private let maxDecodedImageBytes = 64 * 1024 * 1024
     private let imageTransport: any RemoteImageTransporting
@@ -317,7 +331,11 @@ final class AvatarImageCache {
             return image
         }
         if let task = loadingTasks[taskKey] {
+            // WDT_IOS1_IMAGE_BUDGET_20261023_BEGIN
+            let generation = cacheGeneration
             let image = await task.value
+            guard generation == cacheGeneration, !Task.isCancelled else { return nil }
+            // WDT_IOS1_IMAGE_BUDGET_20261023_END
             if case .tenantRelative = request,
                routeContext?.isCurrent() != true {
                 return nil
@@ -326,52 +344,63 @@ final class AvatarImageCache {
         }
         let imageTransport = self.imageTransport
         let boundedMaxPixelSize = RemoteImageDecoder.boundedMaxPixelSize(maxPixelSize)
+        // WDT_IOS1_IMAGE_BUDGET_20261023_BEGIN
+        let generation = cacheGeneration
+        let loadGate = Self.remoteLoadGate
         let task = Task.detached(priority: .utility) { () -> UIImage? in
-            for attempt in 0..<retryPolicy.maximumAttempts {
-                guard !Task.isCancelled else { return nil }
-                do {
-                    let data: Data?
-                    switch request {
-                    case let .tenantRelative(path):
-                        guard let routeContext, await routeContext.isCurrent() else { return nil }
-                        data = try await routeContext.fetch(path)
-                        guard !Task.isCancelled, await routeContext.isCurrent() else { return nil }
-                    case let .direct(urlString):
-                        guard let url = URL(string: urlString), url.scheme?.isEmpty == false else { return nil }
-                        if url.scheme?.lowercased() == "data" {
-                            data = RemoteImageDataURLDecoder.data(from: urlString)
-                        } else if url.isFileURL {
-                            data = try Data(contentsOf: url)
-                        } else {
-                            let result = try await imageTransport.data(from: url)
-                            if let statusCode = result.statusCode, !(200..<300).contains(statusCode) {
-                                data = nil
+            await loadGate.acquire()
+            let result: UIImage? = await {
+                for attempt in 0..<retryPolicy.maximumAttempts {
+                    guard !Task.isCancelled else { return nil }
+                    do {
+                        let data: Data?
+                        switch request {
+                        case let .tenantRelative(path):
+                            guard let routeContext, await routeContext.isCurrent() else { return nil }
+                            data = try await routeContext.fetch(path)
+                            guard !Task.isCancelled, await routeContext.isCurrent() else { return nil }
+                        case let .direct(urlString):
+                            guard let url = URL(string: urlString), url.scheme?.isEmpty == false else { return nil }
+                            if url.scheme?.lowercased() == "data" {
+                                data = RemoteImageDataURLDecoder.data(from: urlString)
+                            } else if url.isFileURL {
+                                data = try RemoteImageDecoder.previewData(fromFileURL: url) // WDT_IOS1_IMAGE_BUDGET_20261023
                             } else {
-                                data = result.data
+                                let result = try await imageTransport.data(from: url)
+                                if let statusCode = result.statusCode, !(200..<300).contains(statusCode) {
+                                    data = nil
+                                } else {
+                                    data = result.data
+                                }
                             }
                         }
-                    }
-                    if let data,
-                       let image = RemoteImageDecoder.preparedImage(from: data, maxPixelSize: boundedMaxPixelSize) {
-                        return image
-                    }
-                } catch {
-                    // A bounded retry below handles transient transport failures.
-                }
-                guard attempt + 1 < retryPolicy.maximumAttempts else { break }
-                if retryPolicy.delayNanoseconds > 0 {
-                    do {
-                        try await Task.sleep(nanoseconds: retryPolicy.delayNanoseconds)
+                        guard !Task.isCancelled else { return nil }
+                        if let data,
+                           let image = RemoteImageDecoder.preparedImage(from: data, maxPixelSize: boundedMaxPixelSize) {
+                            return image
+                        }
                     } catch {
-                        return nil
+                        // A bounded retry below handles transient transport failures.
+                    }
+                    guard attempt + 1 < retryPolicy.maximumAttempts else { break }
+                    if retryPolicy.delayNanoseconds > 0 {
+                        do {
+                            try await Task.sleep(nanoseconds: retryPolicy.delayNanoseconds)
+                        } catch {
+                            return nil
+                        }
                     }
                 }
-            }
-            return nil
+                return nil
+            }()
+            await loadGate.release()
+            return result
         }
         loadingTasks[taskKey] = task
         let image = await task.value
+        guard cacheGeneration == generation else { return nil }
         loadingTasks[taskKey] = nil
+        // WDT_IOS1_IMAGE_BUDGET_20261023_END
         if case .tenantRelative = request,
            routeContext?.isCurrent() != true {
             return nil
@@ -457,28 +486,39 @@ final class AvatarImageCache {
     }
 
     func removeAllImages() {
+        cacheGeneration = UUID() // WDT_IOS1_IMAGE_BUDGET_20261023: old completions cannot overwrite a new request.
         loadingTasks.values.forEach { $0.cancel() }
         loadingTasks.removeAll(keepingCapacity: false)
         clearCompletedImages()
     }
 }
 
+// WDT_IOS1_IMAGE_BUDGET_20261023_BEGIN
 enum RemoteImageDecoder {
+    static let maximumEncodedByteCount = 32 * 1024 * 1024
+
+    nonisolated static func previewData(fromFileURL url: URL) throws -> Data {
+        let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize
+        guard let size, size <= maximumEncodedByteCount else { throw URLError(.dataLengthExceedsMaximum) }
+        let data = try Data(contentsOf: url, options: .mappedIfSafe)
+        guard data.count <= maximumEncodedByteCount else { throw URLError(.dataLengthExceedsMaximum) }
+        return data
+    }
+
     nonisolated static func boundedMaxPixelSize(_ value: Int?) -> Int? {
-        guard let value else { return nil }
+        let value = value ?? 2_048
         let bounded = max(64, min(value, 2_048))
         return bounded
     }
 
     nonisolated static func image(from data: Data, maxPixelSize: Int? = nil) -> UIImage? {
-        guard let maxPixelSize = boundedMaxPixelSize(maxPixelSize) else {
-            return UIImage(data: data)
-        }
+        guard data.count <= maximumEncodedByteCount else { return nil }
+        guard let maxPixelSize = boundedMaxPixelSize(maxPixelSize) else { return nil }
         let sourceOptions: [CFString: Any] = [
             kCGImageSourceShouldCache: false
         ]
         guard let source = CGImageSourceCreateWithData(data as CFData, sourceOptions as CFDictionary) else {
-            return UIImage(data: data)
+            return nil
         }
         let thumbnailOptions: [CFString: Any] = [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
@@ -487,7 +527,7 @@ enum RemoteImageDecoder {
             kCGImageSourceThumbnailMaxPixelSize: maxPixelSize
         ]
         guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, thumbnailOptions as CFDictionary) else {
-            return UIImage(data: data)
+            return nil
         }
         return UIImage(cgImage: cgImage)
     }
@@ -524,6 +564,7 @@ enum RemoteImageDecoder {
         let orientation = (properties[kCGImagePropertyOrientation] as? NSNumber)?.intValue ?? 1
         let width = CGFloat(rawWidth.doubleValue)
         let height = CGFloat(rawHeight.doubleValue)
+        guard width.isFinite, height.isFinite, width > 0, height > 0 else { return nil }
         return (5...8).contains(orientation)
             ? CGSize(width: height, height: width)
             : CGSize(width: width, height: height)
@@ -534,6 +575,8 @@ enum RemoteImageDecoder {
         return image.preparingForDisplay() ?? image
     }
 }
+
+// WDT_IOS1_IMAGE_BUDGET_20261023_END
 
 enum IMColor {
     static let brand = Color(hex: 0x5D6BFF)
@@ -612,33 +655,19 @@ extension View {
         }
     }
 
+    // WDT_IOS1_NAV_COMPAT_20261023_BEGIN
     @ViewBuilder
     func navigationDestinationCompat<Item: Identifiable & Hashable, Destination: View>(
         item: Binding<Item?>,
         @ViewBuilder destination: @escaping (Item) -> Destination
     ) -> some View {
-        background(
-            NavigationLink(
-                destination: Group {
-                    if let value = item.wrappedValue {
-                        AnyView(destination(value))
-                    } else {
-                        AnyView(EmptyView())
-                    }
-                },
-                isActive: Binding(
-                    get: { item.wrappedValue != nil },
-                    set: { isActive in
-                        if !isActive {
-                            item.wrappedValue = nil
-                        }
-                    }
-                ),
-                label: { EmptyView() }
-            )
-            .hidden()
-        )
+        if #available(iOS 17.0, *) {
+            navigationDestination(item: item, destination: destination)
+        } else {
+            modifier(ItemNavigationCompatModifier(item: item, destination: destination))
+        }
     }
+    // WDT_IOS1_NAV_COMPAT_20261023_END
 
     @ViewBuilder
     func presentationDetentsCompat(_ detents: [JHTPresentationDetentCompat]) -> some View {
@@ -750,6 +779,36 @@ extension View {
     }
 }
 
+// WDT_IOS1_NAV_COMPAT_20261023_BEGIN
+struct ItemNavigationCompatModifier<Item: Identifiable & Hashable, Destination: View>: ViewModifier {
+    @Binding var item: Item?
+    let destination: (Item) -> Destination
+    @State private var retainedItem: Item?
+
+    private var isPresented: Binding<Bool> {
+        Binding(get: { item != nil }, set: { if !$0 { item = nil } })
+    }
+
+    @ViewBuilder private var presentedContent: some View {
+        if let value = item ?? retainedItem {
+            destination(value).id(value.id)
+        }
+    }
+
+    @ViewBuilder func body(content: Content) -> some View {
+        Group {
+            if #available(iOS 16.0, *) {
+                content.navigationDestination(isPresented: isPresented) { presentedContent }
+            } else {
+                content.background(NavigationLink(destination: presentedContent, isActive: isPresented) { EmptyView() }.hidden())
+            }
+        }
+        .onAppear { if let item { retainedItem = item } }
+        .onChange(of: item) { if let value = $0 { retainedItem = value } }
+    }
+}
+// WDT_IOS1_NAV_COMPAT_20261023_END
+
 struct NavigationStackCompat<Content: View>: View {
     private let content: () -> Content
 
@@ -761,10 +820,12 @@ struct NavigationStackCompat<Content: View>: View {
         if #available(iOS 16.0, *) {
             NavigationStack {
                 content()
+                    .background(SystemBackSwipeInstaller()) // WDT_IOS1_NAV_COMPAT_20261023
             }
         } else {
             NavigationView {
                 content()
+                    .background(SystemBackSwipeInstaller()) // WDT_IOS1_NAV_COMPAT_20261023
             }
             .navigationViewStyle(.stack)
         }
@@ -2415,185 +2476,37 @@ struct RemoteLoadingStateView: View {
     }
 }
 
-struct GlobalBackSwipeInstaller: UIViewRepresentable {
-    func makeCoordinator() -> Coordinator {
-        Coordinator()
-    }
-
-    func makeUIView(context: Context) -> UIView {
-        let view = UIView(frame: .zero)
-        view.isUserInteractionEnabled = false
-        return view
-    }
-
-    func updateUIView(_ uiView: UIView, context: Context) {
-        DispatchQueue.main.async {
-            guard let window = uiView.window else { return }
-            context.coordinator.installOrRefresh(on: window)
-        }
-    }
-
-    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
-        private let globalFallbackSwipeName = "JHTGlobalLeftHalfBackSwipe"
-        private let leftSideInteractivePopName = "JHTLeftSideInteractivePopSwipe"
-        private let chatInteractivePopName = "JHTChatLeftSideInteractivePopSwipe"
-        private weak var installedWindow: UIWindow?
-        private var startPoint: CGPoint = .zero
-
-        func installOrRefresh(on window: UIWindow) {
-            enableInteractivePopGestures(in: window)
-            guard installedWindow !== window else { return }
-            installedWindow?.gestureRecognizers?
-                .filter { $0.name == globalFallbackSwipeName }
-                .forEach { installedWindow?.removeGestureRecognizer($0) }
-
-            let pan = UIPanGestureRecognizer(target: self, action: #selector(handlePan(_:)))
-            pan.name = globalFallbackSwipeName
-            pan.cancelsTouchesInView = false
-            pan.delegate = self
-            window.addGestureRecognizer(pan)
-            installedWindow = window
-        }
-
-        func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
-            guard let pan = gestureRecognizer as? UIPanGestureRecognizer,
-                  let view = pan.view else { return false }
-            startPoint = pan.location(in: view)
-            let velocity = pan.velocity(in: view)
-            let isFromLeftSide = startPoint.x <= view.bounds.width * 0.5
-            let isRightSwipe = velocity.x > 120 && abs(velocity.x) > abs(velocity.y) * 1.2
-            guard isFromLeftSide, isRightSwipe else { return false }
-            if gestureRecognizer.name == leftSideInteractivePopName {
-                let navigation = view.jhtOwningNavigationController()
-                return (navigation?.viewControllers.count ?? 0) > 1
-            }
-            if gestureRecognizer.name == globalFallbackSwipeName {
-                if canPopNavigationBack(), hasInstalledInteractivePopPanForCurrentNavigation() {
-                    return false
-                }
-                return canNavigateBack()
-            }
-            return canNavigateBack()
-        }
-
-        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
-            false
-        }
-
-        @objc private func handlePan(_ gesture: UIPanGestureRecognizer) {
-            guard gesture.state == .ended,
-                  let view = gesture.view else { return }
-            let translation = gesture.translation(in: view)
-            let velocity = gesture.velocity(in: view)
-            guard startPoint.x <= view.bounds.width * 0.5,
-                  translation.x > 72,
-                  abs(translation.x) > abs(translation.y) * 1.35,
-                  velocity.x > 120 else { return }
-            triggerBackAction()
-        }
-
-        private func enableInteractivePopGestures(in window: UIWindow) {
-            for navigation in window.rootViewController?.jhtNavigationControllers() ?? [] {
-                guard let popGesture = navigation.interactivePopGestureRecognizer else { continue }
-                popGesture.isEnabled = true
-                popGesture.delegate = self
-                installLeftSideInteractivePopPan(on: navigation, from: popGesture)
-            }
-        }
-
-        private func installLeftSideInteractivePopPan(on navigation: UINavigationController, from popGesture: UIGestureRecognizer) {
-            if navigation.view.gestureRecognizers?.contains(where: { $0.name == leftSideInteractivePopName }) == true {
-                return
-            }
-            guard let targets = popGesture.value(forKey: "targets") as? [NSObject],
-                  let internalTarget = targets.first?.value(forKey: "target") else {
-                return
-            }
-            let pan = UIPanGestureRecognizer(target: internalTarget, action: Selector(("handleNavigationTransition:")))
-            pan.name = leftSideInteractivePopName
-            pan.cancelsTouchesInView = true
-            pan.delegate = self
-            navigation.view.addGestureRecognizer(pan)
-        }
-
-        private func canNavigateBack() -> Bool {
-            guard let top = UIApplication.shared.jhtTopViewController() else { return false }
-            if let navigation = top.navigationController, navigation.viewControllers.count > 1 {
-                return true
-            }
-            if let navigation = top as? UINavigationController, navigation.viewControllers.count > 1 {
-                return true
-            }
-            if top.navigationController?.presentingViewController != nil {
-                return true
-            }
-            return top.presentingViewController != nil
-        }
-
-        private func canPopNavigationBack() -> Bool {
-            guard let navigation = currentNavigationControllerForPop() else { return false }
-            return navigation.viewControllers.count > 1
-        }
-
-        private func hasInstalledInteractivePopPanForCurrentNavigation() -> Bool {
-            currentNavigationControllerForPop()?.view.gestureRecognizers?.contains {
-                $0.name == leftSideInteractivePopName || $0.name == chatInteractivePopName
-            } == true
-        }
-
-        private func currentNavigationControllerForPop() -> UINavigationController? {
-            guard let top = UIApplication.shared.jhtTopViewController() else { return nil }
-            return (top as? UINavigationController) ?? top.navigationController
-        }
-
-        private func triggerBackAction() {
-            guard let top = UIApplication.shared.jhtTopViewController() else { return }
-            if let navigation = top.navigationController, navigation.viewControllers.count > 1 {
-                navigation.popViewController(animated: true)
-                return
-            }
-            if let navigation = top as? UINavigationController, navigation.viewControllers.count > 1 {
-                navigation.popViewController(animated: true)
-                return
-            }
-            if let navigation = top.navigationController, navigation.presentingViewController != nil {
-                navigation.dismiss(animated: true)
-                return
-            }
-            if top.presentingViewController != nil {
-                top.dismiss(animated: true)
-            }
-        }
-    }
-}
-
-struct ChatBackSwipeInstaller: UIViewControllerRepresentable {
-    func makeCoordinator() -> Coordinator {
-        Coordinator()
-    }
+// WDT_IOS1_NAV_COMPAT_20261023_BEGIN
+// One owner per navigation container. UIKit keeps its own transition target and action.
+struct SystemBackSwipeInstaller: UIViewControllerRepresentable {
+    func makeCoordinator() -> Coordinator { Coordinator() }
 
     func makeUIViewController(context: Context) -> HostController {
-        let controller = HostController()
-        controller.coordinator = context.coordinator
-        return controller
+        let host = HostController()
+        host.coordinator = context.coordinator
+        return host
     }
 
-    func updateUIViewController(_ uiViewController: HostController, context: Context) {
-        uiViewController.coordinator = context.coordinator
-        DispatchQueue.main.async {
-            context.coordinator.install(from: uiViewController)
+    func updateUIViewController(_ host: HostController, context: Context) {
+        host.coordinator = context.coordinator
+        DispatchQueue.main.async { [weak host] in
+            guard let host else { return }
+            host.coordinator?.install(from: host)
         }
+    }
+
+    static func dismantleUIViewController(_ host: HostController, coordinator: Coordinator) {
+        coordinator.uninstall()
+        host.coordinator = nil
     }
 
     final class HostController: UIViewController {
         weak var coordinator: Coordinator?
-
         override func viewDidLoad() {
             super.viewDidLoad()
-            view.backgroundColor = .clear
             view.isUserInteractionEnabled = false
+            view.backgroundColor = .clear
         }
-
         override func viewDidAppear(_ animated: Bool) {
             super.viewDidAppear(animated)
             coordinator?.install(from: self)
@@ -2601,68 +2514,54 @@ struct ChatBackSwipeInstaller: UIViewControllerRepresentable {
     }
 
     final class Coordinator: NSObject, UIGestureRecognizerDelegate {
-        private let chatInteractivePopName = "JHTChatLeftSideInteractivePopSwipe"
-        private weak var installedNavigation: UINavigationController?
+        private weak var navigation: UINavigationController?
+        private weak var installedGesture: UIGestureRecognizer?
+        private weak var originalDelegate: (any UIGestureRecognizerDelegate)?
+        private var originalEnabled = false
 
-        func install(from hostController: UIViewController) {
-            guard let navigation = navigationController(for: hostController),
-                  let popGesture = navigation.interactivePopGestureRecognizer else { return }
-            installedNavigation = navigation
-            popGesture.isEnabled = true
-            popGesture.delegate = self
-            if let existingPan = navigation.view.gestureRecognizers?.first(where: { $0.name == chatInteractivePopName }) as? UIPanGestureRecognizer {
-                existingPan.isEnabled = true
-                existingPan.delegate = self
-                return
+        func install(from host: UIViewController) {
+            var ancestor: UIViewController? = host
+            while let candidate = ancestor {
+                if let nav = (candidate as? UINavigationController) ?? candidate.navigationController {
+                    install(on: nav)
+                    return
+                }
+                ancestor = candidate.parent
             }
-            guard let targets = popGesture.value(forKey: "targets") as? [NSObject],
-                  let internalTarget = targets.first?.value(forKey: "target") else {
-                return
-            }
-            let pan = UIPanGestureRecognizer(target: internalTarget, action: Selector(("handleNavigationTransition:")))
-            pan.name = chatInteractivePopName
-            pan.cancelsTouchesInView = true
-            pan.delegate = self
-            navigation.view.addGestureRecognizer(pan)
         }
 
-        private func navigationController(for controller: UIViewController) -> UINavigationController? {
-            var current: UIViewController? = controller
-            while let candidate = current {
-                if let navigation = candidate as? UINavigationController {
-                    return navigation
-                }
-                if let navigation = candidate.navigationController {
-                    return navigation
-                }
-                current = candidate.parent
+        func install(on nav: UINavigationController) {
+            guard let gesture = nav.interactivePopGestureRecognizer else { return }
+            if installedGesture === gesture { return }
+            uninstall()
+            navigation = nav
+            installedGesture = gesture
+            originalDelegate = gesture.delegate
+            originalEnabled = gesture.isEnabled
+            gesture.delegate = self
+            gesture.isEnabled = true
+        }
+
+        func uninstall() {
+            // Do not overwrite an owner that replaced us during a transition.
+            if let gesture = installedGesture, gesture.delegate === self {
+                gesture.delegate = originalDelegate
+                gesture.isEnabled = originalEnabled
             }
-            guard let top = UIApplication.shared.jhtTopViewController() else { return nil }
-            return (top as? UINavigationController) ?? top.navigationController
+            installedGesture = nil
+            navigation = nil
+            originalDelegate = nil
         }
 
         func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
-            guard let pan = gestureRecognizer as? UIPanGestureRecognizer,
-                  let view = pan.view else { return false }
-            let navigation = installedNavigation ?? view.jhtOwningNavigationController()
-            guard (navigation?.viewControllers.count ?? 0) > 1 else { return false }
-            let startPoint = pan.location(in: view)
-            let velocity = pan.velocity(in: view)
-            let isFromLeftSide = startPoint.x <= view.bounds.width * 0.5
-            let isRightSwipe = velocity.x > 120 && abs(velocity.x) > abs(velocity.y) * 1.2
-            if gestureRecognizer.name == chatInteractivePopName {
-                return isFromLeftSide && isRightSwipe
-            }
-            return isRightSwipe
-        }
-
-        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
-            // 自定义“左半屏返回”拖拽必须能与列表的 ScrollView / DragGesture 同时识别，
-            // 否则在对话页会被消息列表的滚动手势抢占，导致左滑返回失效。
-            gestureRecognizer.name == chatInteractivePopName
+            guard gestureRecognizer === installedGesture, let navigation else { return false }
+            return navigation.viewControllers.count > 1
+                && navigation.transitionCoordinator == nil
+                && navigation.presentedViewController == nil
         }
     }
 }
+// WDT_IOS1_NAV_COMPAT_20261023_END
 
 private extension UIApplication {
     func jhtTopViewController() -> UIViewController? {
@@ -2740,9 +2639,21 @@ extension View {
         if #available(iOS 17.0, *) {
             onChange(of: value, action)
         } else {
-            onChange(of: value) { newValue in
-                action(newValue, newValue)
-            }
+            // WDT_IOS1_CHANGE_COMPAT_20261023_BEGIN
+            modifier(LegacyChangeObserver(value: value, action: action))
+            // WDT_IOS1_CHANGE_COMPAT_20261023_END
         }
     }
 }
+
+// WDT_IOS1_CHANGE_COMPAT_20261023_BEGIN
+struct LegacyChangeObserver<Value: Equatable>: ViewModifier {
+    let value: Value
+    let action: (Value, Value) -> Void
+    func body(content: Content) -> some View {
+        content.onChange(of: value) { [value] newValue in
+            action(value, newValue)
+        }
+    }
+}
+// WDT_IOS1_CHANGE_COMPAT_20261023_END

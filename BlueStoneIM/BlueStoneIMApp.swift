@@ -1356,7 +1356,7 @@ struct RootView: View {
                     .zIndex(35)
                 }
 
-                GlobalBackSwipeInstaller()
+                Color.clear // WDT_IOS1_NAV_COMPAT_20261023: navigation container owns the system gesture.
                     .frame(width: 0, height: 0)
                     .allowsHitTesting(false)
 

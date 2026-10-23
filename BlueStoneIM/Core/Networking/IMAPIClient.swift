@@ -1545,7 +1545,14 @@ final class IMAPIClient: IMAPIProtocol {
 			)
 		}
         let decodeStart = CFAbsoluteTimeGetCurrent()
-        let decoded: DecodedAPIResponse<T> = decodeAPIResponse(from: data)
+        // WDT_CHAT_RESOURCE_PERF_20261023_BEGIN: move only chat response parsing off the UI actor.
+        let decoded: DecodedAPIResponse<T>
+        if Self.shouldDecodeChatResponseOffMain(path: path) {
+            decoded = await decodeAPIResponseOffMain(from: data)
+        } else {
+            decoded = decodeAPIResponse(from: data)
+        }
+        // WDT_CHAT_RESOURCE_PERF_20261023_END
         let decodeMs = Int((CFAbsoluteTimeGetCurrent() - decodeStart) * 1000)
         if decodeMs > 80, SyncFailureDiagnostic.friendAcceptance == nil {
             print("[JHT Perf] api_decode_ms=\(decodeMs) method=\(method) path=\(Self.redactedPathForLog(path)) bytes=\(data.count)")
@@ -1904,12 +1911,40 @@ final class IMAPIClient: IMAPIProtocol {
     }
 
     func decodeAPIResponse<T: Decodable>(from data: Data) -> DecodedAPIResponse<T> {
+        Self.decodeAPIResponse(from: data, using: wireCodec)
+    }
+
+    // WDT_CHAT_RESOURCE_PERF_20261023_BEGIN
+    nonisolated static func shouldDecodeChatResponseOffMain(path: String) -> Bool {
+        switch path.split(separator: "?", maxSplits: 1).first {
+        case "/api/im/sync", "/api/im/message-receipts/sync", "/api/im/message-extras/sync":
+            return true
+        default:
+            return false
+        }
+    }
+
+    func decodeAPIResponseOffMain<T: Decodable>(from data: Data) async -> DecodedAPIResponse<T> {
+        let codec = wireCodec
+        // No AppState or request side effects cross the actor boundary.
+        return await Task.detached(priority: .userInitiated) {
+            autoreleasepool {
+                Self.decodeAPIResponse(from: data, using: codec) as DecodedAPIResponse<T>
+            }
+        }.value
+    }
+
+    nonisolated private static func decodeAPIResponse<T: Decodable>(
+        from data: Data,
+        using wireCodec: any WireCodec
+    ) -> DecodedAPIResponse<T> {
         return DecodedAPIResponse(
             errorEnvelope: try? wireCodec.decode(APIErrorEnvelope.self, from: data),
             loginSecurityEnvelope: try? wireCodec.decode(APILoginSecurityEnvelope.self, from: data),
             envelope: try? wireCodec.decode(APIEnvelope<T>.self, from: data)
         )
     }
+    // WDT_CHAT_RESOURCE_PERF_20261023_END
 
     nonisolated static func timeoutInterval(for path: String, method: String) -> TimeInterval {
         let normalizedPath = path.split(separator: "?", maxSplits: 1).first.map(String.init) ?? path

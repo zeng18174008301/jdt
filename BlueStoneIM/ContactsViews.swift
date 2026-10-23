@@ -4278,8 +4278,9 @@ private struct GroupProfileEditSheet: View {
         }
         .sheet(isPresented: $showPhotoPicker) {
             PhotoLibraryPickerCompat(selectionLimit: 1, filter: .images) { items in
-                guard let data = items.first?.data,
-                      let image = UIImage(data: data) else {
+                // WDT_IOS1_AVATAR_MEMORY_20261023: downsample before any orientation redraw.
+                guard let item = items.first,
+                      let image = AvatarCropRenderer.sourceImage(data: item.data, fileURL: item.fileURL) else {
                     inlineMessage = "无法读取图片，请重新选择"
                     return
                 }
@@ -4526,44 +4527,27 @@ private struct GroupAvatarCropperSheet: View {
         )
     }
 
+    // WDT_IOS1_AVATAR_MEMORY_20261023_BEGIN
     private func croppedAvatar() -> (data: Data, preview: UIImage)? {
-        let normalized = image.normalizedForGroupAvatarCrop()
-        let imageSize = normalized.size
-        let safeScale = AvatarCropBounds.clampedScale(scale, range: scaleRange)
-        let safeOffset = AvatarCropBounds.clampedOffset(imageSize: imageSize, previewSize: previewSize, scale: safeScale, proposed: offset)
-        let baseScale = max(previewSize / imageSize.width, previewSize / imageSize.height)
-        let totalScale = max(baseScale * safeScale, 0.0001)
-        let cropSide = min(imageSize.width, imageSize.height, previewSize / totalScale)
-        var originX = imageSize.width / 2 - safeOffset.width / totalScale - cropSide / 2
-        var originY = imageSize.height / 2 - safeOffset.height / totalScale - cropSide / 2
-        originX = min(max(originX, 0), imageSize.width - cropSide)
-        originY = min(max(originY, 0), imageSize.height - cropSide)
-        let cropRect = CGRect(x: originX * normalized.scale, y: originY * normalized.scale, width: cropSide * normalized.scale, height: cropSide * normalized.scale)
-        guard let cgImage = normalized.cgImage?.cropping(to: cropRect) else { return nil }
-        let cropped = UIImage(cgImage: cgImage, scale: normalized.scale, orientation: .up)
-        let renderer = UIGraphicsImageRenderer(size: CGSize(width: outputSize, height: outputSize))
-        let square = renderer.image { _ in
-            cropped.draw(in: CGRect(x: 0, y: 0, width: outputSize, height: outputSize))
-        }
-        var quality: CGFloat = 0.88
-        var data = square.jpegData(compressionQuality: quality)
-        while let current = data, current.count > 2 * 1024 * 1024, quality > 0.55 {
-            quality -= 0.08
-            data = square.jpegData(compressionQuality: quality)
-        }
-        guard let data else { return nil }
-        return (data, square)
+        guard let data = AvatarCropRenderer.croppedJPEG(
+            image: image,
+            previewSize: previewSize,
+            outputPixelSize: Int(outputSize),
+            scale: scale,
+            offset: offset,
+            scaleRange: scaleRange
+        ), let preview = RemoteImageDecoder.image(from: data, maxPixelSize: Int(outputSize)) else { return nil }
+        return (data, preview)
     }
+    // WDT_IOS1_AVATAR_MEMORY_20261023_END
 }
 
 private extension UIImage {
+    // WDT_IOS1_AVATAR_MEMORY_20261023_BEGIN
     func normalizedForGroupAvatarCrop() -> UIImage {
-        guard imageOrientation != .up else { return self }
-        let renderer = UIGraphicsImageRenderer(size: size)
-        return renderer.image { _ in
-            draw(in: CGRect(origin: .zero, size: size))
-        }
+        normalizedForAvatarCrop()
     }
+    // WDT_IOS1_AVATAR_MEMORY_20261023_END
 }
 
 enum GroupMemberInviteAffordancePolicy {

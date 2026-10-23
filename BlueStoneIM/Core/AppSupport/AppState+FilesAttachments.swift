@@ -539,7 +539,9 @@ extension AppState {
     }
 
     func resolvedAttachmentThumbnailURL(for message: ChatMessage) -> URL? {
-        if let localThumbnail = cachedLocalAttachmentThumbnailURL(for: message) {
+        // WDT_CHAT_FIX3_VIDEO_COVER_20261023: videos prefer server posters and never use a movie URL as an image.
+        let category = attachmentMediaCategory(for: message)
+        if category != "video", let localThumbnail = cachedLocalAttachmentThumbnailURL(for: message) {
             return localThumbnail
         }
         let explicit = [
@@ -552,15 +554,32 @@ extension AppState {
         if let explicit, let url = resolvedAttachmentURL(explicit) {
             return url
         }
-        let category = attachmentMediaCategory(for: message)
         if category == "image" {
             return resolvedAttachmentPreviewURL(for: message) ?? resolvedAttachmentDownloadURL(for: message)
         }
         if category == "video" {
-            return resolvedAttachmentPreviewURL(for: message)
+            return cachedLocalAttachmentThumbnailURL(for: message)
         }
         return nil
     }
+
+    // WDT_CHAT_FIX3_VIDEO_COVER_20261023_BEGIN
+    func refreshedAttachmentThumbnailURL(_ message: ChatMessage, conversationID: String) async -> URL? {
+        guard attachmentMediaCategory(for: message) == "video" else {
+            return try? await prepareMessageAttachmentLocalFile(message, conversationID: conversationID, preferPreview: true)
+        }
+        let context = apiContext
+        let scope = remoteDataScopeKey(for: context)
+        guard context.hasIMSession, attachmentCanRefreshRemoteFile(message) else { return nil }
+        do {
+            let refreshed = try await refreshedAttachmentMessage(message, in: conversationID, context: context, scope: scope)
+            guard !Task.isCancelled, isCurrentRemoteScope(scope) else { return nil }
+            return resolvedAttachmentThumbnailURL(for: refreshed)
+        } catch {
+            return nil
+        }
+    }
+    // WDT_CHAT_FIX3_VIDEO_COVER_20261023_END
 
     func resolvedAttachmentBestPreviewURL(for message: ChatMessage) -> URL? {
         resolvedAttachmentPreviewURL(for: message)
@@ -931,7 +950,7 @@ extension AppState {
 
     private func estimatedVoiceMessageDurationMS(_ message: ChatMessage) -> Int {
         if let seconds = message.attachmentDurationSeconds, seconds > 0 {
-            return VoiceMessagePayload.normalizedDurationMS(Int((seconds * 1_000).rounded()))
+            return VoiceMessagePayload.decodedDurationMS(seconds) ?? VoiceMessagePayload.minDurationMS // WDT_IOS1_SAFE_NUMERIC_20261023
         }
         return VoiceMessagePayload.minDurationMS
     }

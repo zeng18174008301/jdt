@@ -3239,7 +3239,8 @@ private struct QuickAddActionSheet: View {
 
             VStack(spacing: 10) {
                 QuickAddActionRow(symbol: "person.badge.plus", title: "发起单聊", subtitle: "选择当前企业好友，进入单聊会话", identifier: "quick_add_direct_chat", action: onDirectChat)
-                QuickAddActionRow(symbol: "person.text.rectangle.fill", title: "查找用户", subtitle: "通过用户 ID 搜索同企业用户并申请好友", identifier: "quick_add_find_user", action: onFindUser)
+                // WDT_CHAT_FIX4_USER_ID_HINT_20261023
+                QuickAddActionRow(symbol: "person.text.rectangle.fill", title: "查找用户", subtitle: "输入用户ID的纯数字部分查找同企业用户", identifier: "quick_add_find_user", action: onFindUser)
                 if canCreateGroup {
                     QuickAddActionRow(symbol: "person.3.fill", title: "创建群聊", subtitle: "输入群名并调用服务端建群接口", identifier: "quick_add_create_group", action: onCreateGroup)
                 }
@@ -3642,6 +3643,16 @@ private struct StartDirectChatSheet: View {
     }
 }
 
+// WDT_CHAT_FIX4_USER_ID_HINT_20261023_BEGIN
+func findUserNumericIDHint(userID: String) -> String? {
+    let id = userID.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard let component = id.split(separator: "-", omittingEmptySubsequences: false).last else { return nil }
+    let digits = (component.first == "U" || component.first == "u") ? component.dropFirst() : component[...]
+    guard !digits.isEmpty, digits.utf8.allSatisfy({ (48...57).contains($0) }) else { return nil }
+    return "你ID是“\(id)”，对方只需输入“\(digits)”即可找到你。"
+}
+// WDT_CHAT_FIX4_USER_ID_HINT_20261023_END
+
 private struct FindUserSheet: View {
     @EnvironmentObject private var state: AppState
     @Environment(\.dismiss) private var dismiss
@@ -3660,8 +3671,17 @@ private struct FindUserSheet: View {
                     quickSheetHeader(
                         symbol: "person.text.rectangle.fill",
                         title: "查找用户",
-                        subtitle: "通过用户 ID 搜索当前企业用户，并发起好友申请。"
+                        subtitle: "输入用户ID的纯数字部分，查找当前企业用户。"
                     )
+
+                    // WDT_CHAT_FIX4_USER_ID_HINT_20261023
+                    if let hint = findUserNumericIDHint(userID: state.currentUser.userID) {
+                        Text(hint)
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundStyle(IMColor.muted)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .accessibilityIdentifier("find_user_own_id_hint")
+                    }
 
                     searchInput
 
@@ -3692,14 +3712,14 @@ private struct FindUserSheet: View {
                             } else if !hasSearched {
                                 EmptyStateView(
                                     symbol: "person.crop.circle.badge.questionmark",
-                                    title: "输入用户 ID",
+                                    title: "输入用户ID的纯数字部分",
                                     subtitle: "仅搜索当前企业内可见用户，搜索不到时不会生成任何本地结果。"
                                 )
                             } else if results.isEmpty {
                                 EmptyStateView(
                                     symbol: "magnifyingglass",
                                     title: "未找到用户",
-                                    subtitle: "请确认用户 ID 是否正确，或该用户是否属于当前企业。"
+                                    subtitle: "请确认用户ID的数字部分是否正确，或该用户是否属于当前企业。"
                                 )
                             } else {
                                 ForEach(results) { item in
@@ -3736,7 +3756,7 @@ private struct FindUserSheet: View {
             Image(systemName: "magnifyingglass")
                 .font(.system(size: 15, weight: .bold))
                 .foregroundStyle(IMColor.muted)
-            TextField("输入用户 ID", text: $keyword)
+            TextField("用户ID的纯数字部分", text: $keyword)
                 .font(.system(size: 15, weight: .bold))
                 .imReadableInputText()
                 .textInputAutocapitalization(.never)
@@ -3877,7 +3897,7 @@ private struct FindUserSheet: View {
     private func performSearch() {
         let trimmed = keyword.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
-            state.toast = "请输入用户 ID"
+            state.toast = "请输入用户ID的纯数字部分"
             return
         }
         isSearching = true

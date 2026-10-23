@@ -6,6 +6,66 @@ import OSLog
 
 @MainActor
 final class HTTPTransportTests: XCTestCase {
+    // WDT_CHAT_RESOURCE_PERF_20261023_BEGIN
+    func testBackgroundResponseDecodingIsLimitedToChatReadEndpoints() {
+        for path in ["/api/im/sync", "/api/im/message-receipts/sync", "/api/im/message-extras/sync"] {
+            XCTAssertTrue(IMAPIClient.shouldDecodeChatResponseOffMain(path: path))
+            XCTAssertTrue(IMAPIClient.shouldDecodeChatResponseOffMain(path: path + "?limit=20"))
+        }
+        for path in ["", "/api/im/read-ack", "/api/im/messages/send", "/api/rtc/calls", "/api/platform/auth/login", "/api/im/sync-other"] {
+            XCTAssertFalse(IMAPIClient.shouldDecodeChatResponseOffMain(path: path))
+        }
+    }
+
+    func testChatHistoryResponseDecodesOffMainWithUnchangedCodecOrderAndInput() async throws {
+        let transport = FakeHTTPTransport(results: [
+            HTTPTransportResult(data: Data("codec-response".utf8), isHTTPResponse: true, statusCode: 200)
+        ])
+        let codec = RecordingHTTPWireCodec()
+        let client = makeClient(transport: transport, wireCodec: codec)
+        let page = try await client.syncMessages(
+            context: makeContext(), channelID: "g1", channelType: "group", afterSeq: 7, beforeSeq: nil, limit: 20
+        )
+        XCTAssertTrue(page.items.isEmpty)
+        XCTAssertEqual(codec.decodedTypeNames(), ["APIErrorEnvelope", "APILoginSecurityEnvelope", "APIEnvelope<RemoteMessageSyncResult>"])
+        XCTAssertEqual(codec.decodedInputTexts(), Array(repeating: "codec-response", count: 3))
+        XCTAssertEqual(codec.decodedOnMainThread(), [false, false, false])
+        XCTAssertEqual(transport.requests().count, 1)
+        let request = try XCTUnwrap(transport.requests().first)
+        XCTAssertEqual(request.url?.path, "/api/im/sync")
+        let body = try XCTUnwrap(codec.encodedObjects().first)
+        XCTAssertEqual(body["after_seq"] as? Int64, 7)
+        XCTAssertEqual(body["limit"] as? Int, 20)
+    }
+
+    func testBackgroundResponseDecodingPreservesSuccessErrorAndMalformedEnvelopes() async {
+        let client = makeClient(transport: FakeHTTPTransport(results: []))
+        let samples = [
+            #"{"ok":true,"data":{"items":[],"has_more":true,"next_after_seq":42,"history_visible_from_seq":7,"history_limited":true}}"#,
+            #"{"ok":false,"error":{"code":"not_friends","message":"Permission required","retry_after_seconds":12}}"#,
+            #"{"code":"account_locked","message":"Locked","data":{}}"#,
+            #"{"ok":true,"data":{"items":"invalid"}}"#,
+            "invalid-json"
+        ]
+        for sample in samples {
+            let data = Data(sample.utf8)
+            let before: IMAPIClient.DecodedAPIResponse<RemoteMessageSyncResult> = client.decodeAPIResponse(from: data)
+            let after: IMAPIClient.DecodedAPIResponse<RemoteMessageSyncResult> = await client.decodeAPIResponseOffMain(from: data)
+            XCTAssertEqual(before.envelope?.ok, after.envelope?.ok)
+            XCTAssertEqual(before.envelope?.data?.items.count, after.envelope?.data?.items.count)
+            XCTAssertEqual(before.envelope?.data?.hasMore, after.envelope?.data?.hasMore)
+            XCTAssertEqual(before.envelope?.data?.nextAfterSeq, after.envelope?.data?.nextAfterSeq)
+            XCTAssertEqual(before.envelope?.data?.historyVisibleFromSeq, after.envelope?.data?.historyVisibleFromSeq)
+            XCTAssertEqual(before.envelope?.data?.historyLimited, after.envelope?.data?.historyLimited)
+            XCTAssertEqual(before.errorEnvelope?.resolvedError?.code, after.errorEnvelope?.resolvedError?.code)
+            XCTAssertEqual(before.errorEnvelope?.resolvedError?.message, after.errorEnvelope?.resolvedError?.message)
+            XCTAssertEqual(before.errorEnvelope?.resolvedError?.retryAfterSeconds, after.errorEnvelope?.resolvedError?.retryAfterSeconds)
+            XCTAssertEqual(before.loginSecurityEnvelope?.resolvedError?.code, after.loginSecurityEnvelope?.resolvedError?.code)
+            XCTAssertEqual(before.envelope?.error?.code, after.envelope?.error?.code)
+        }
+    }
+    // WDT_CHAT_RESOURCE_PERF_20261023_END
+
     private func configureOrdinaryActionPolicyForExistingFlowTest(_ state: AppState) {
         state.currentEnterprise = Enterprise(id: "tenant-1", name: "Fixture", code: "T1", role: "member",
             status: "正常", memberCount: 1, isDefault: false, accentHex: 0)
@@ -14242,6 +14302,8 @@ final class HTTPTransportTests: XCTestCase {
         let request = try XCTUnwrap(transport.requests().first)
         XCTAssertNil(request.httpBody)
         XCTAssertEqual(wireCodec.encodedObjectCount(), 0)
+        // WDT_CHAT_RESOURCE_PERF_20261023: unrelated endpoints retain their existing executor.
+        XCTAssertEqual(wireCodec.decodedOnMainThread(), [true, true, true])
         XCTAssertEqual(
             wireCodec.decodedTypeNames(),
             [
@@ -20191,6 +20253,8 @@ private final class RecordingHTTPWireCodec: WireCodec, @unchecked Sendable {
     private var capturedEncodedObjects: [[String: Any]] = []
     private var capturedDecodedTypeNames: [String] = []
     private var capturedDecodedInputTexts: [String] = []
+    // WDT_CHAT_RESOURCE_PERF_20261023
+    private var capturedDecodeMainThreads: [Bool] = []
 
     func encodeJSONObject(_ object: Any) throws -> Data {
         if let dictionary = object as? [String: Any] {
@@ -20206,6 +20270,8 @@ private final class RecordingHTTPWireCodec: WireCodec, @unchecked Sendable {
         lock.withLock {
             capturedDecodedTypeNames.append(typeName)
             capturedDecodedInputTexts.append(String(data: data, encoding: .utf8) ?? "")
+            // WDT_CHAT_RESOURCE_PERF_20261023
+            capturedDecodeMainThreads.append(Thread.isMainThread)
         }
         if typeName == "APILoginSecurityEnvelope" {
             throw TestWireCodecError.unsupportedType(typeName)
@@ -20233,6 +20299,11 @@ private final class RecordingHTTPWireCodec: WireCodec, @unchecked Sendable {
 
     func decodedInputTexts() -> [String] {
         lock.withLock { capturedDecodedInputTexts }
+    }
+
+    // WDT_CHAT_RESOURCE_PERF_20261023
+    func decodedOnMainThread() -> [Bool] {
+        lock.withLock { capturedDecodeMainThreads }
     }
 }
 

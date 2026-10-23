@@ -2,6 +2,60 @@ import XCTest
 @testable import BlueStoneIM
 
 final class RemoteAPIModelsTests: XCTestCase {
+    // WDT_IOS1_SAFE_NUMERIC_20261023_BEGIN
+    private struct NumericEnvelope: Decodable {
+        let integer: Int?
+        let int64: Int64?
+        let string: String?
+        let double: Double?
+        enum CodingKeys: String, CodingKey { case value }
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            integer = c.decodeLossyIntIfPresent(forKey: .value)
+            int64 = c.decodeLossyInt64IfPresent(forKey: .value)
+            string = c.decodeLossyStringIfPresent(forKey: .value)
+            double = c.decodeLossyDoubleIfPresent(forKey: .value)
+        }
+    }
+
+    func testLossyNumbersRejectUnrepresentableIntegersWithoutTrapping() throws {
+        for literal in ["1e100", "-1e100", "9223372036854775808", "-9223372036854777856"] {
+            let value = try JSONDecoder().decode(NumericEnvelope.self, from: Data("{\"value\":\(literal)}".utf8))
+            XCTAssertNil(value.integer, literal)
+            XCTAssertNil(value.int64, literal)
+            XCTAssertNotNil(value.string)
+        }
+        for literal in ["42.75", "-42.75"] {
+            let value = try JSONDecoder().decode(NumericEnvelope.self, from: Data("{\"value\":\(literal)}".utf8))
+            XCTAssertEqual(value.integer, literal.hasPrefix("-") ? -42 : 42)
+        }
+        for literal in [String(Int64.max), String(Int64.min)] {
+            let value = try JSONDecoder().decode(NumericEnvelope.self, from: Data("{\"value\":\(literal)}".utf8))
+            XCTAssertEqual(value.int64, Int64(literal))
+            XCTAssertEqual(value.string, literal)
+        }
+        for literal in ["nan", "inf", "-inf", "1e999"] {
+            let data = try JSONSerialization.data(withJSONObject: ["value": literal])
+            XCTAssertNil(try JSONDecoder().decode(NumericEnvelope.self, from: data).double)
+        }
+    }
+
+    func testPayloadNumericBoundariesKeepValidAliasesAndWaveformSamples() {
+        for invalid in [Double.nan, .infinity, -.infinity, 1e100, -1e100, Double(Int64.max)] {
+            let payload: [String: JSONValue] = ["bad": .double(invalid), "valid": .int(17)]
+            XCTAssertEqual(RemotePayloadReader.int64(payload, ["bad", "valid"]), 17)
+        }
+        XCTAssertNil(RemotePayloadReader.double(["v": .string("nan")], ["v"]))
+        XCTAssertNil(RemotePayloadReader.double(["v": .double(.infinity)], ["v"]))
+        XCTAssertEqual(RemotePayloadReader.intArray(["v": .array([.double(1e100), .double(.nan), .double(2.6), .int(4)])], ["v"]), [3, 4])
+        for invalid in [Double.nan, .infinity, 1e100, -1, 61] {
+            XCTAssertNil(VoiceMessagePayload.decodedDurationMS(invalid))
+        }
+        XCTAssertEqual(VoiceMessagePayload.decodedDurationMS(60), 60_000)
+        XCTAssertEqual(VoiceMessagePayload.decodedDurationMS(1.234), 1_234)
+    }
+    // WDT_IOS1_SAFE_NUMERIC_20261023_END
+
     // WDT_APP_CONTRACT_20261021: explicit false, unknown and legacy projections stay distinct.
     func testMessageActionsPreferEffectiveAndFailClosedForMalformedValues() throws {
         let decoder = JSONDecoder()

@@ -88,6 +88,26 @@ enum RealtimeConnectionState: String, Equatable, Sendable {
 }
 
 /// Diagnostic values are closed labels only; never retain a request or raw error.
+// WDT_CHAT_FIX6_REALTIME_ERROR_SCOPE_20261023_BEGIN
+enum RealtimeErrorScopePolicy {
+    static func isConnectionFailure(code: String, envelope: RealtimeEnvelope, matchesConnectRequest: Bool) -> Bool {
+        let normalized = code.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if ["connect_failed", "unauthorized", "connect_required"].contains(normalized) { return true }
+        guard normalized == "forbidden" else { return false }
+        if matchesConnectRequest { return true }
+        var payload = envelope.payload
+        for container in ["error", "data", "payload"] {
+            for (key, value) in envelope.payload[container]?.objectValue ?? [:] where payload[key] == nil {
+                payload[key] = value
+            }
+        }
+        let scope = payload["scope"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+        // A bare operation denial is not evidence that the authenticated connection failed.
+        return ["connection", "session", "global", "account", "tenant", "workspace"].contains(scope)
+    }
+}
+// WDT_CHAT_FIX6_REALTIME_ERROR_SCOPE_20261023_END
+
 struct RealtimeConnectionDiagnostic: Equatable, Sendable {
     enum Stage: String, Sendable { case admission = "ADMISSION", start = "START", auth = "AUTH", socket = "SOCKET", server = "SERVER", response = "RESPONSE" }
     enum Result: Equatable, Sendable {
@@ -201,6 +221,8 @@ struct RealtimeConnectionDiagnostic: Equatable, Sendable {
         case notFriendsHandled = "NOT_FRIENDS_HANDLED", securityBlockedHandled = "SECURITY_BLOCKED_HANDLED"
         case quotaDisconnected = "QUOTA_DISCONNECTED", workspaceDisconnected = "WORKSPACE_DISCONNECTED", workspaceSelectionForced = "WORKSPACE_SELECTION_FORCED"
         case authDisconnected = "AUTH_DISCONNECTED", errorUnhandled = "ERROR_UNHANDLED"
+        // WDT_CHAT_FIX6_REALTIME_ERROR_SCOPE_20261023
+        case operationRejected = "OPERATION_REJECTED_CONNECTION_KEPT"
     }
     let generation: UInt64
     let stage: Stage
@@ -220,6 +242,8 @@ struct RealtimeConnectionDiagnostic: Equatable, Sendable {
     var scopeAfter: ScopeMatch = .unproven
     var generationAfter: UInt64? = nil
     var isFailure: Bool {
+        // WDT_CHAT_FIX6_REALTIME_ERROR_SCOPE_20261023
+        if handling == .operationRejected { return false }
         switch result {
         case .serverRejected, .unauthorized, .forbidden, .acknowledgementTimeout,
              .generationDeadline, .frameEncodingFailed, .failure: return true
@@ -1300,6 +1324,12 @@ final class RealtimeClient: RealtimeTransporting {
         handleFlattened(envelope, generation: generation, legID: legID)
     }
 
+    // WDT_CHAT_FIX6_REALTIME_ERROR_SCOPE_20261023: use the actual handshake ID, never the diagnostic ring buffer.
+    func matchesActiveConnectRequest(_ requestID: String?) -> Bool {
+        guard let requestID, !requestID.isEmpty else { return false }
+        return requestID == activeConnectRequestID
+    }
+
     private func handleFlattened(
         _ envelope: RealtimeEnvelope,
         generation: UInt64,
@@ -1315,7 +1345,9 @@ final class RealtimeClient: RealtimeTransporting {
         if observedTypes.contains(envelope.type) {
             let rawCode = envelope.payload["code"]?.stringValue ?? ""
             let stage: RealtimeConnectionDiagnostic.Stage = envelope.type == "error"
-                ? (["unauthorized", "forbidden", "connect_failed", "connect_required"].contains(rawCode) ? .auth : .server)
+                // WDT_CHAT_FIX6_REALTIME_ERROR_SCOPE_20261023
+                ? (RealtimeErrorScopePolicy.isConnectionFailure(code: rawCode, envelope: envelope,
+                    matchesConnectRequest: matchesActiveConnectRequest(envelope.requestID)) ? .auth : .server)
                 : (envelope.type == "connect_ack" ? .auth : .response)
             var event = makeDiagnostic(stage, result: envelope.type == "error" ? .serverError(rawCode) : .responseObserved)
             event.serverCode = .from(envelope)

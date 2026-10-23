@@ -1,10 +1,390 @@
 import ImageIO
 import UIKit
+import SwiftUI
 import XCTest
 @testable import BlueStoneIM
 
+// WDT_IOS1_NATIVE_NAV_REGRESSION_20261023_BEGIN
+private struct ItemNavigationProbeRoute: Identifiable, Hashable {
+    let id: String
+    let messageID: String?
+}
+
+@MainActor
+private final class ItemNavigationProbeModel: ObservableObject {
+    @Published var route: ItemNavigationProbeRoute?
+}
+
+private struct ItemNavigationProbe: View {
+    @ObservedObject var model: ItemNavigationProbeModel
+    let onRootAppear: () -> Void
+    let onDestinationAppear: (ItemNavigationProbeRoute, @escaping () -> Void) -> Void
+
+    var body: some View {
+        NavigationStackCompat {
+            Text("Root")
+                .onAppear(perform: onRootAppear)
+                .navigationDestinationCompat(item: $model.route) { route in
+                    ItemNavigationProbeDestination(route: route, onAppear: onDestinationAppear)
+                }
+        }
+    }
+}
+
+private struct ItemNavigationProbeDestination: View {
+    @Environment(\.dismiss) private var dismiss
+    let route: ItemNavigationProbeRoute
+    let onAppear: (ItemNavigationProbeRoute, @escaping () -> Void) -> Void
+
+    var body: some View {
+        Text(route.id)
+            .onAppear { onAppear(route, { dismiss() }) }
+    }
+}
+// WDT_IOS1_NATIVE_NAV_REGRESSION_20261023_END
+
 @MainActor
 final class DesignSystemTests: XCTestCase {
+    // WDT_IOS1_NATIVE_NAV_REGRESSION_20261023_BEGIN
+    func testItemNavigationShowsSelectedRouteAndCanDismissThenOpenAnother() async throws {
+        guard #available(iOS 17.0, *) else { throw XCTSkip("Native item destinations require iOS 17+") }
+        let model = ItemNavigationProbeModel()
+        let first = ItemNavigationProbeRoute(id: "conversation-a", messageID: "search-result-a")
+        let second = ItemNavigationProbeRoute(id: "conversation-b", messageID: nil)
+        var observed: [ItemNavigationProbeRoute] = []
+        var dismissDestination: (() -> Void)?
+        var rootExpectation = expectation(description: "root appeared")
+        var destinationExpectation = expectation(description: "first destination appeared")
+        let controller = UIHostingController(rootView: ItemNavigationProbe(
+            model: model,
+            onRootAppear: { rootExpectation.fulfill() },
+            onDestinationAppear: { route, dismiss in
+                observed.append(route)
+                dismissDestination = dismiss
+                destinationExpectation.fulfill()
+            }
+        ))
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let window = UIWindow(windowScene: scene)
+        window.rootViewController = controller
+        window.makeKeyAndVisible()
+        defer {
+            window.isHidden = true
+            window.rootViewController = nil
+        }
+        await fulfillment(of: [rootExpectation], timeout: 3)
+        XCTAssertTrue(observed.isEmpty, "An empty selection must not mount a destination")
+        model.route = first
+        await fulfillment(of: [destinationExpectation], timeout: 3)
+        XCTAssertEqual(observed, [first], "Preserve both conversation and search-jump payload")
+        XCTAssertEqual(model.route, first)
+
+        rootExpectation = expectation(description: "returned to root")
+        try XCTUnwrap(dismissDestination)()
+        await fulfillment(of: [rootExpectation], timeout: 3)
+        XCTAssertNil(model.route, "Native back/dismiss must clear the selection")
+
+        destinationExpectation = expectation(description: "second destination appeared")
+        model.route = second
+        await fulfillment(of: [destinationExpectation], timeout: 3)
+        XCTAssertEqual(observed, [first, second], "Do not reuse the previous destination")
+        XCTAssertEqual(model.route, second)
+    }
+    // WDT_IOS1_NATIVE_NAV_REGRESSION_20261023_END
+
+    // WDT_IOS1_IMAGE_BUDGET_20261023_BEGIN
+    func testDefaultImageDecodeDownsamplesLargeSourceAndRejectsCorruption() throws {
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        let data = UIGraphicsImageRenderer(size: CGSize(width: 4096, height: 2048), format: format)
+            .jpegData(withCompressionQuality: 0.8) { context in
+                UIColor.blue.setFill()
+                context.fill(CGRect(x: 0, y: 0, width: 4096, height: 2048))
+            }
+        let decoded = try XCTUnwrap(RemoteImageDecoder.image(from: data)?.cgImage)
+        XCTAssertEqual(decoded.width, 2048)
+        XCTAssertEqual(decoded.height, 1024)
+        XCTAssertNil(RemoteImageDecoder.image(from: Data("broken".utf8), maxPixelSize: 320))
+        XCTAssertNil(RemoteImageDecoder.image(from: Data()))
+        XCTAssertEqual(AvatarImageCache.scopedCacheKey("image", maxPixelSize: nil), AvatarImageCache.scopedCacheKey("image", maxPixelSize: 2048))
+    }
+
+    func testDataURLBudgetRejectsOversizeAndPreservesValidEncodings() {
+        let oversized = "data:image/png;base64," + String(repeating: "A", count: ((RemoteImageDecoder.maximumEncodedByteCount + 2) / 3) * 4 + 4)
+        XCTAssertNil(RemoteImageDataURLDecoder.data(from: oversized))
+        XCTAssertEqual(RemoteImageDataURLDecoder.data(from: "DATA:text/plain;base64,aGVsbG8="), Data("hello".utf8))
+        XCTAssertEqual(RemoteImageDataURLDecoder.data(from: "data:text/plain,a%20b"), Data("a b".utf8))
+    }
+
+    func testPreviewFileBudgetRejectsOversizedFileBeforeReadingBytes() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("image-budget-\(UUID()).jpg")
+        FileManager.default.createFile(atPath: url.path, contents: nil)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let handle = try FileHandle(forWritingTo: url)
+        try handle.truncate(atOffset: UInt64(RemoteImageDecoder.maximumEncodedByteCount + 1))
+        try handle.close()
+        XCTAssertThrowsError(try RemoteImageDecoder.previewData(fromFileURL: url)) { error in
+            XCTAssertEqual((error as? URLError)?.code, .dataLengthExceedsMaximum)
+        }
+    }
+
+    func testClearedImageCacheRejectsLateResultsForAllWaiters() async throws {
+        let transport = SuspendedImageTransport(data: Self.makePNGData())
+        let cache = AvatarImageCache(imageTransport: transport)
+        let first = Task { await cache.remoteImage(for: "https://image.example.test/late.png") }
+        while await transport.requestCount == 0 { await Task.yield() }
+        var joinedStarted = false
+        let joined = Task { @MainActor in
+            joinedStarted = true
+            return await cache.remoteImage(for: "https://image.example.test/late.png")
+        }
+        while !joinedStarted { await Task.yield() }
+        cache.removeAllImages()
+        await transport.resume()
+        let firstResult = await first.value
+        let joinedResult = await joined.value
+        XCTAssertNil(firstResult)
+        XCTAssertNil(joinedResult)
+        XCTAssertNil(cache.peekImage(for: "https://image.example.test/late.png"))
+    }
+
+    func testImageCacheBoundsConcurrentTransportAcrossDistinctImages() async {
+        let transport = ConcurrencyImageTransport(data: Self.makePNGData())
+        let cache = AvatarImageCache(imageTransport: transport)
+        await withTaskGroup(of: Void.self) { group in
+            for index in 0..<12 {
+                group.addTask {
+                    _ = await cache.remoteImage(for: "https://image.example.test/\(index).png")
+                }
+            }
+        }
+        let snapshot = await transport.snapshot()
+        XCTAssertLessThanOrEqual(snapshot.peak, 2)
+        XCTAssertEqual(snapshot.completed, 12)
+        XCTAssertEqual(snapshot.running, 0)
+    }
+    // WDT_IOS1_IMAGE_BUDGET_20261023_END
+
+    // WDT_IOS1_AVATAR_MEMORY_20261023_BEGIN
+    func testAvatarSourceAppliesEXIFOrientationBeforeCropping() throws {
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        let image = UIGraphicsImageRenderer(size: CGSize(width: 80, height: 40), format: format).image { context in
+            UIColor.red.setFill()
+            context.fill(CGRect(x: 0, y: 0, width: 80, height: 40))
+        }
+        let output = NSMutableData()
+        let destination = try XCTUnwrap(CGImageDestinationCreateWithData(output, "public.jpeg" as CFString, 1, nil))
+        CGImageDestinationAddImage(destination, try XCTUnwrap(image.cgImage), [kCGImagePropertyOrientation: 6] as CFDictionary)
+        XCTAssertTrue(CGImageDestinationFinalize(destination))
+        let normalized = try XCTUnwrap(AvatarCropRenderer.sourceImage(data: output as Data, fileURL: nil))
+        XCTAssertEqual(normalized.imageOrientation, .up)
+        XCTAssertEqual(normalized.cgImage?.width, 40)
+        XCTAssertEqual(normalized.cgImage?.height, 80)
+        let crop = try XCTUnwrap(AvatarCropRenderer.croppedJPEG(image: normalized, previewSize: 280, outputPixelSize: 512, scale: 1, offset: .zero))
+        XCTAssertEqual(UIImage(data: crop)?.cgImage?.width, 512)
+        XCTAssertLessThanOrEqual(crop.count, AvatarCropRenderer.maximumJPEGByteCount)
+    }
+    // WDT_IOS1_AVATAR_MEMORY_20261023_END
+
+    // WDT_IOS1_NAV_COMPAT_20261023_BEGIN
+    func testLegacyItemNavigationPushPopAndReentryStayBoundToRoute() async throws {
+        let probe = LegacyNavigationProbe()
+        let host = UIHostingController(rootView: LegacyNavigationProbeView(probe: probe))
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let window = UIWindow(windowScene: scene)
+        window.rootViewController = host
+        window.makeKeyAndVisible()
+        host.view.layoutIfNeeded()
+        defer { window.isHidden = true; window.rootViewController = nil }
+        func navigation(in controller: UIViewController) -> UINavigationController? {
+            if let nav = controller as? UINavigationController { return nav }
+            for child in controller.children {
+                if let nav = navigation(in: child) { return nav }
+            }
+            return nil
+        }
+        try await Task.sleep(nanoseconds: 150_000_000)
+        let nav = try XCTUnwrap(navigation(in: host), "Navigation hierarchy: \(host.children.map { String(describing: type(of: $0)) })")
+        for id in ["first", "second", "third"] {
+            probe.route = LegacyNavigationRoute(id: id)
+            for _ in 0..<50 {
+                if nav.viewControllers.count == 2 && nav.transitionCoordinator == nil { break }
+                try await Task.sleep(nanoseconds: 20_000_000)
+            }
+            XCTAssertEqual(nav.viewControllers.count, 2)
+            let gesture = try XCTUnwrap(nav.interactivePopGestureRecognizer)
+            XCTAssertTrue(gesture.isEnabled)
+            XCTAssertTrue(gesture.delegate is SystemBackSwipeInstaller.Coordinator)
+            if id == "first" {
+                probe.route = LegacyNavigationRoute(id: "replacement")
+                for _ in 0..<50 {
+                    if probe.lastAppearedID == "replacement" { break }
+                    try await Task.sleep(nanoseconds: 20_000_000)
+                }
+                XCTAssertEqual(probe.lastAppearedID, "replacement", "A different conversation must receive fresh destination state")
+                XCTAssertEqual(nav.viewControllers.count, 2)
+            }
+            nav.popViewController(animated: false)
+            for _ in 0..<50 {
+                if probe.route == nil { break }
+                try await Task.sleep(nanoseconds: 20_000_000)
+            }
+            XCTAssertNil(probe.route)
+            XCTAssertEqual(nav.viewControllers.count, 1)
+        }
+    }
+
+    func testSystemBackGestureHasSingleOwnerAndRestoresPreviousDelegate() throws {
+        let navigation = UINavigationController(rootViewController: UIViewController())
+        navigation.loadViewIfNeeded()
+        let gesture = try XCTUnwrap(navigation.interactivePopGestureRecognizer)
+        let original = gesture.delegate
+        let originalEnabled = gesture.isEnabled
+        let coordinator = SystemBackSwipeInstaller.Coordinator()
+        coordinator.install(on: navigation)
+        XCTAssertTrue(gesture.delegate === coordinator)
+        XCTAssertFalse(coordinator.gestureRecognizerShouldBegin(gesture))
+        navigation.pushViewController(UIViewController(), animated: false)
+        XCTAssertTrue(coordinator.gestureRecognizerShouldBegin(gesture))
+        coordinator.install(on: navigation)
+        coordinator.uninstall()
+        XCTAssertTrue(gesture.delegate === original)
+        XCTAssertEqual(gesture.isEnabled, originalEnabled)
+    }
+
+    func testSystemBackGestureTeardownDoesNotClobberLaterOwner() throws {
+        let navigation = UINavigationController(rootViewController: UIViewController())
+        navigation.loadViewIfNeeded()
+        let gesture = try XCTUnwrap(navigation.interactivePopGestureRecognizer)
+        let first = SystemBackSwipeInstaller.Coordinator()
+        let replacement = SystemBackSwipeInstaller.Coordinator()
+        first.install(on: navigation)
+        gesture.delegate = replacement
+        first.uninstall()
+        XCTAssertTrue(gesture.delegate === replacement)
+    }
+    // WDT_IOS1_NAV_COMPAT_20261023_END
+
+    // WDT_IOS1_CHANGE_COMPAT_20261023_BEGIN
+    func testLegacyOnChangeReportsActualPreviousValueAndSkipsInitialRender() async throws {
+        let probe = LegacyChangeProbe()
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 320, height: 480))
+        window.rootViewController = UIHostingController(rootView: LegacyChangeProbeView(probe: probe))
+        window.isHidden = false
+        defer { window.isHidden = true; window.rootViewController = nil }
+        try await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertTrue(probe.changes.isEmpty)
+        probe.value = 2
+        try await Task.sleep(nanoseconds: 100_000_000)
+        probe.value = 5
+        try await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertEqual(probe.changes.map { $0.0 }, [0, 2])
+        XCTAssertEqual(probe.changes.map { $0.1 }, [2, 5])
+    }
+    // WDT_IOS1_CHANGE_COMPAT_20261023_END
+
+    // WDT_IOS1_CHAT_STATE_20261023_BEGIN
+    func testChatMessagePresentationStateIsPerPageAndReleasedWithOwner() {
+        var first: ChatMessagePresentationState? = ChatMessagePresentationState()
+        weak var weakFirst = first
+        let second = ChatMessagePresentationState()
+        XCTAssertFalse(first === second)
+        first = nil
+        XCTAssertNil(weakFirst)
+        XCTAssertNil(second.actionMessage)
+        print("IOS1_CHAT_VALUE_LAYOUT chat=\(MemoryLayout<ChatView>.size) message=\(MemoryLayout<ChatMessage>.size) old_inline_states=\(8 * MemoryLayout<State<ChatMessage?>>.size) new_state_object=\(MemoryLayout<StateObject<ChatMessagePresentationState>>.size)")
+    }
+    // WDT_IOS1_CHAT_STATE_20261023_END
+
+    // WDT_CHAT_RESOURCE_PERF_20261023_BEGIN
+    func testLocalThumbnailDownsamplesWithoutChangingCachedSource() async throws {
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        let renderer = UIGraphicsImageRenderer(size: CGSize(width: 1600, height: 800), format: format)
+        let data = renderer.jpegData(withCompressionQuality: 0.9) { context in
+            UIColor.systemBlue.setFill()
+            context.fill(CGRect(x: 0, y: 0, width: 1600, height: 800))
+        }
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("thumbnail-perf-\(UUID()).jpg")
+        try data.write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let result = await AttachmentThumbnailDiskCache.localPreparedImage(from: url, maxPixelSize: 320)
+        let image = try XCTUnwrap(result?.cgImage)
+        XCTAssertEqual(image.width, 320)
+        XCTAssertEqual(image.height, 160)
+        XCTAssertEqual(try Data(contentsOf: url), data)
+    }
+
+    func testLocalThumbnailStillHandlesMissingInvalidAndDefaultSizeInputs() async throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("thumbnail-perf-\(UUID()).png")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let missing = await AttachmentThumbnailDiskCache.localPreparedImage(from: url, maxPixelSize: 320)
+        XCTAssertNil(missing)
+        try Data("invalid-image".utf8).write(to: url)
+        let invalid = await AttachmentThumbnailDiskCache.localPreparedImage(from: url, maxPixelSize: 320)
+        XCTAssertNil(invalid)
+        let data = Self.makePNGData()
+        try data.write(to: url)
+        let result = await AttachmentThumbnailDiskCache.localPreparedImage(from: url)
+        XCTAssertEqual(result?.cgImage?.width, UIImage(data: data)?.cgImage?.width)
+        XCTAssertEqual(result?.cgImage?.height, UIImage(data: data)?.cgImage?.height)
+    }
+
+    func testThumbnailLoadGateKeepsItsLimitWhileWaitersAndNewArrivalsCompete() async {
+        for limit in [1, 2] {
+            let gate = AttachmentThumbnailLoadGate(limit: limit)
+            let probe = ThumbnailConcurrencyProbe()
+            await withTaskGroup(of: Void.self) { group in
+                for _ in 0..<64 {
+                    group.addTask {
+                        for _ in 0..<4 {
+                            await gate.acquire()
+                            await probe.enter()
+                            await Task.yield()
+                            await probe.leave()
+                            await gate.release()
+                        }
+                    }
+                }
+            }
+            let result = await probe.snapshot()
+            XCTAssertLessThanOrEqual(result.peak, limit)
+            XCTAssertEqual(result.active, 0)
+            XCTAssertEqual(result.completed, 256)
+        }
+    }
+
+    func testCancelledThumbnailWaiterCanReleaseSlotForNextLoad() async {
+        let gate = AttachmentThumbnailLoadGate(limit: 1)
+        await gate.acquire()
+        let waiter = Task {
+            await gate.acquire()
+            let wasCancelled = Task.isCancelled
+            await gate.release()
+            return wasCancelled
+        }
+        await Task.yield()
+        waiter.cancel()
+        await gate.release()
+        let cancelled = await waiter.value
+        XCTAssertTrue(cancelled)
+        await gate.acquire()
+        await gate.release()
+    }
+
+    func testThumbnailCacheHitUsesAdmissionGateBeforeDecode() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let source = try String(contentsOf: root.appendingPathComponent("BlueStoneIM/ChatViews.swift"), encoding: .utf8)
+        let start = try XCTUnwrap(source.range(of: "private func load() async {"))
+        let gate = try XCTUnwrap(source.range(of: "await AttachmentThumbnailLoadGate.shared.acquire()", range: start.upperBound..<source.endIndex))
+        let local = try XCTUnwrap(source.range(of: "await AttachmentThumbnailDiskCache.localPreparedImage", range: start.upperBound..<source.endIndex))
+        XCTAssertLessThan(gate.lowerBound, local.lowerBound)
+        XCTAssertTrue(source.contains("maxPixelSize: Int((compact ? 30 : 34) * UIScreen.main.scale)"))
+        XCTAssertTrue(source.contains("maxPixelSize: Int(max(displaySize.width, displaySize.height) * UIScreen.main.scale)"))
+    }
+    // WDT_CHAT_RESOURCE_PERF_20261023_END
+
     func testSliderVerificationPolicySupportsTrackDragThresholdAndReset() {
         XCTAssertEqual(SliderVerificationPolicy.clampedOffset(locationX: 0, width: 320), 0)
         XCTAssertEqual(SliderVerificationPolicy.clampedOffset(locationX: 320, width: 320), 270)
@@ -852,6 +1232,28 @@ final class DesignSystemTests: XCTestCase {
     }
 }
 
+// WDT_CHAT_RESOURCE_PERF_20261023_BEGIN
+private actor ThumbnailConcurrencyProbe {
+    private var active = 0
+    private var peak = 0
+    private var completed = 0
+
+    func enter() {
+        active += 1
+        peak = max(peak, active)
+    }
+
+    func leave() {
+        active -= 1
+        completed += 1
+    }
+
+    func snapshot() -> (active: Int, peak: Int, completed: Int) {
+        (active, peak, completed)
+    }
+}
+// WDT_CHAT_RESOURCE_PERF_20261023_END
+
 @MainActor
 private final class AvatarRouteAuthorityBox {
     var isCurrent = true
@@ -975,3 +1377,72 @@ private final class RemoteImageURLProtocol: URLProtocol {
 
     override func stopLoading() {}
 }
+
+// WDT_IOS1_IMAGE_BUDGET_20261023_BEGIN
+private actor ConcurrencyImageTransport: RemoteImageTransporting {
+    let data: Data
+    private var running = 0
+    private var peak = 0
+    private var completed = 0
+    init(data: Data) { self.data = data }
+    func data(from url: URL) async throws -> RemoteImageTransportResult {
+        running += 1
+        peak = max(peak, running)
+        defer { running -= 1; completed += 1 }
+        try await Task.sleep(nanoseconds: 20_000_000)
+        return RemoteImageTransportResult(data: data, statusCode: 200)
+    }
+    func snapshot() -> (running: Int, peak: Int, completed: Int) { (running, peak, completed) }
+}
+// WDT_IOS1_IMAGE_BUDGET_20261023_END
+
+// WDT_IOS1_CHANGE_COMPAT_20261023_BEGIN
+@MainActor
+private final class LegacyChangeProbe: ObservableObject {
+    @Published var value = 0
+    var changes: [(Int, Int)] = []
+}
+private struct LegacyChangeProbeView: View {
+    @ObservedObject var probe: LegacyChangeProbe
+    var body: some View {
+        Text("\(probe.value)").modifier(LegacyChangeObserver(value: probe.value) { old, new in
+            probe.changes.append((old, new))
+        })
+    }
+}
+// WDT_IOS1_CHANGE_COMPAT_20261023_END
+
+// WDT_IOS1_NAV_COMPAT_20261023_BEGIN
+private struct LegacyNavigationRoute: Identifiable, Hashable { let id: String }
+@MainActor
+private final class LegacyNavigationProbe: ObservableObject {
+    @Published var route: LegacyNavigationRoute?
+    var lastAppearedID: String?
+}
+private struct LegacyNavigationProbeView: View {
+    @ObservedObject var probe: LegacyNavigationProbe
+    var body: some View {
+        NavigationStackCompat {
+            Text("root").modifier(ItemNavigationCompatModifier(item: $probe.route) { item in
+                Text(item.id).navigationBarBackButtonHidden(true)
+                    .onAppear { probe.lastAppearedID = item.id }
+            })
+        }
+    }
+}
+// WDT_IOS1_NAV_COMPAT_20261023_END
+
+// WDT_IOS1_IMAGE_BUDGET_20261023_BEGIN
+private actor SuspendedImageTransport: RemoteImageTransporting {
+    let data: Data
+    private(set) var requestCount = 0
+    private var continuation: CheckedContinuation<Void, Never>?
+    init(data: Data) { self.data = data }
+    func data(from url: URL) async throws -> RemoteImageTransportResult {
+        requestCount += 1
+        await withCheckedContinuation { continuation = $0 }
+        return RemoteImageTransportResult(data: data, statusCode: 200)
+    }
+    func resume() { continuation?.resume(); continuation = nil }
+}
+// WDT_IOS1_IMAGE_BUDGET_20261023_END

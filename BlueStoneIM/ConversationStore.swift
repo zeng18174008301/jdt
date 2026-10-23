@@ -4961,7 +4961,8 @@ final class ConversationStore: ObservableObject {
             || !previous.readBy.isEmpty
             || (previous.readCount ?? 0) > 0
         let isRead = response.read || responseReadCount > 0 || hadConfirmedRead
-        let canViewDetails = response.canViewDetails || response.hasReceiptDetails
+        // WDT_CHAT_FIX1_RECEIPT_PRIVACY_20261023
+        let canViewDetails = response.canViewDetails
         var updated = previous
         if canViewDetails {
             updated.readBy = effectiveReadReceipts
@@ -5115,8 +5116,13 @@ final class ConversationStore: ObservableObject {
             let existingReadUserIDs = Set(message.readBy.map(\.user.id))
             message.status = .read
             message.readStateKnown = true
-            message.canViewReadDetails = message.canViewReadDetails || !detailedItems.isEmpty
-            if detailedItems.isEmpty {
+            // WDT_CHAT_FIX1_RECEIPT_PRIVACY_20261023: a late receipt must not reopen explicitly hidden details.
+            if !message.canViewReadDetails {
+                message.readBy = []
+                message.unreadBy = []
+                message.readCount = nil
+                message.unreadCount = nil
+            } else if detailedItems.isEmpty {
                 if message.readCount == nil {
                     message.readCount = message.canViewReadDetails ? max(message.readBy.count, 1) : nil
                 }
@@ -5158,6 +5164,26 @@ final class ConversationStore: ObservableObject {
         return true
         // JHT_MOD_END CHAT_READ_RECEIPT_APPLY_INDEX_PERF_20260912 - 修改结束
     }
+
+    // WDT_CHAT_FIX1_RECEIPT_PRIVACY_20261023_BEGIN
+    @discardableResult
+    func updateReadReceiptDetailsVisibility(_ allowed: Bool, conversationID: String) -> Bool {
+        guard let index = conversations.firstIndex(where: { $0.id == conversationID }) else { return false }
+        var conversation = conversations[index]
+        for messageIndex in conversation.messages.indices {
+            conversation.messages[messageIndex].canViewReadDetails = allowed
+            if !allowed {
+                conversation.messages[messageIndex].readBy = []
+                conversation.messages[messageIndex].unreadBy = []
+                conversation.messages[messageIndex].readCount = nil
+                conversation.messages[messageIndex].unreadCount = nil
+            }
+        }
+        guard conversation != conversations[index] else { return false }
+        conversations[index] = conversation
+        return true
+    }
+    // WDT_CHAT_FIX1_RECEIPT_PRIVACY_20261023_END
 
     @discardableResult
     func stripReadReceiptDetailsFromAllMessages() -> Bool {

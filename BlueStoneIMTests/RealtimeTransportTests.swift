@@ -6,6 +6,77 @@ import XCTest
 
 @MainActor
 final class RealtimeTransportTests: XCTestCase {
+    // WDT_CHAT_FIX6_REALTIME_ERROR_SCOPE_20261023_BEGIN
+    func testRealtimeErrorScopeSeparatesConversationDenialFromAuthenticationFailure() {
+        let local = RealtimeEnvelope(type: "error", requestID: "sub-1", payload: ["channel_id": .string("g1")])
+        XCTAssertFalse(RealtimeErrorScopePolicy.isConnectionFailure(code: "forbidden", envelope: local, matchesConnectRequest: false))
+        XCTAssertFalse(RealtimeErrorScopePolicy.isConnectionFailure(code: " FORBIDDEN ", envelope: local, matchesConnectRequest: false))
+        XCTAssertTrue(RealtimeErrorScopePolicy.isConnectionFailure(code: "forbidden", envelope: local, matchesConnectRequest: true))
+        for code in ["unauthorized", "connect_required", "connect_failed"] {
+            XCTAssertTrue(RealtimeErrorScopePolicy.isConnectionFailure(code: code, envelope: local, matchesConnectRequest: false))
+        }
+        for scope in ["global", "tenant", "session", "connection", "account", "workspace"] {
+            let envelope = RealtimeEnvelope(type: "error", requestID: nil, payload: ["error": .object(["scope": .string(scope)])])
+            XCTAssertTrue(RealtimeErrorScopePolicy.isConnectionFailure(code: "forbidden", envelope: envelope, matchesConnectRequest: false))
+        }
+        for scope in ["channel", "conversation", "message", ""] {
+            let envelope = RealtimeEnvelope(type: "error", requestID: nil, payload: ["scope": .string(scope)])
+            XCTAssertFalse(RealtimeErrorScopePolicy.isConnectionFailure(code: "forbidden", envelope: envelope, matchesConnectRequest: false))
+        }
+        var diagnostic = RealtimeConnectionDiagnostic(generation: 1, stage: .server, result: .forbidden, transport: .webSocket, elapsedMS: 0)
+        XCTAssertTrue(diagnostic.isFailure)
+        diagnostic.handling = .operationRejected
+        XCTAssertFalse(diagnostic.isFailure)
+    }
+
+    func testAppStateKeepsSocketAfterConversationErrorsAndStillDisconnectsUnauthorized() async throws {
+        let socket = FakeRealtimeWebSocketTask()
+        let client = RealtimeClient(transport: FakeRealtimeWebSocketTransport(socket: socket),
+            quicConfiguration: RealtimeQUICConfiguration(isEnabled: false), requestIDProvider: { "\($0)-scope-test" },
+            networkMonitorFactory: nil, continuity: IMRuntimeWebSocketContinuity())
+        let context = IMAPIContext(platformToken: nil, accountID: "scope-test", tenantID: "scope-\(UUID())",
+            imUID: "me", imToken: "test-token", platformAuthSession: nil, tenantAuthSession: nil,
+            appID: IMAPIContext.canonicalIOSAppID, deviceID: "test-device")
+        let api = IMAPIClient(platformBase: URL(string: "https://platform.example.test"),
+            tenantBase: URL(string: "https://tenant.example.test"), imBase: URL(string: "https://im.example.test"),
+            httpTransport: RTCWireOfflineHTTPTransport())
+        let state = AppState(api: api, realtimeClient: client, voiceMediaClient: NoopVoiceMediaClient(),
+            videoMediaClient: NoopVideoMediaClient(), messageStore: RTCWireEmptyMessageStore(), apiContextOverride: context)
+        state.isAuthenticated = true
+        defer {
+            state.isAuthenticated = false
+            client.onEnvelope = nil
+            client.onConnected = nil
+            client.disconnect(shouldReconnect: false)
+        }
+        let connected = expectation(description: "connected")
+        client.onConnected = { connected.fulfill() }
+        client.start(url: try XCTUnwrap(URL(string: "wss://example.test/im/ws")), token: "test-token")
+        socket.enqueue(.string(#"{"type":"connect_ack","request_id":"connect-scope-test","payload":{}}"#))
+        await fulfillment(of: [connected], timeout: 2)
+        let generation = client.connectionGeneration
+        for payload: [String: JSONValue] in [
+            ["code": .string("forbidden"), "channel_id": .string("g1")],
+            ["error": .object(["code": .string("forbidden"), "channel_id": .string("g2")])],
+            ["code": .string("forbidden")],
+            ["code": .string("group_member_quota_exceeded")]
+        ] {
+            state.handleRealtimeEnvelope(RealtimeEnvelope(type: "error", requestID: "sub-scope-test", payload: payload))
+            XCTAssertEqual(client.connectionState, .connected)
+            XCTAssertEqual(client.connectionGeneration, generation)
+        }
+        let nextFrame = expectation(description: "other conversation traffic still arrives")
+        client.onEnvelope = { envelope in
+            if envelope.type == "test_barrier" { nextFrame.fulfill() }
+        }
+        socket.enqueue(.string(#"{"type":"test_barrier","payload":{}}"#))
+        await fulfillment(of: [nextFrame], timeout: 2)
+        state.handleRealtimeEnvelope(RealtimeEnvelope(type: "error", requestID: nil, payload: ["code": .string("unauthorized")]))
+        XCTAssertFalse(client.isConnected)
+        XCTAssertGreaterThan(client.connectionGeneration, generation)
+    }
+    // WDT_CHAT_FIX6_REALTIME_ERROR_SCOPE_20261023_END
+
     func testFirstErrorClosedCodeClassificationAndNestedPrecedenceRejectSensitiveText() throws {
         typealias Code = RealtimeConnectionDiagnostic.ServerCode
         for code in Code.allCases where ![.none, .missing, .unknown].contains(code) {
