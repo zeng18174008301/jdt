@@ -186,6 +186,10 @@ final class AppState: ObservableObject {
     @Published var notificationConversationOpenRequest: IOSNotificationConversationOpenRequest?
     @Published var currentEnterprise: Enterprise = Enterprise(id: "pending", name: "正在同步企业", code: "", role: "", status: "同步中", memberCount: 0, isDefault: false, accentHex: 0x5D6BFF) {
         didSet {
+            // WDT_RECEIPT_DETAIL_SCOPE_20261023: role/tenant changes invalidate personnel details, not read ACKs.
+            if oldValue.id != currentEnterprise.id || oldValue.role != currentEnterprise.role {
+                invalidateReadReceiptDetailAuthorities()
+            }
             syncIOSRiskTelemetrySession()
         }
     }
@@ -1226,7 +1230,15 @@ final class AppState: ObservableObject {
     var durableReadAckRecoveryTask: Task<Void, Never>?
     var durableReadAckRecoveryGeneration: UInt64 = 0
     var durableReadAckRecoveryRestartRequested = false
-    var localMessageSessionGeneration: UInt64 = 1
+    // WDT_RECEIPT_DETAIL_SCOPE_20261023_BEGIN
+    @Published var readReceiptDetailAuthorities: [String: ReadReceiptDetailAuthority] = [:]
+    var readReceiptDetailAuthorityGeneration: UInt64 = 0
+    var localMessageSessionGeneration: UInt64 = 1 {
+        didSet {
+            if oldValue != localMessageSessionGeneration { invalidateReadReceiptDetailAuthorities() }
+        }
+    }
+    // WDT_RECEIPT_DETAIL_SCOPE_20261023_END
     var localMessageProjectionRevision: Int64 = 0
     var profileContactRevisionFence = ProfileContactRevisionFence()
     var profileContactRealtimeRefreshTask: Task<Void, Never>?

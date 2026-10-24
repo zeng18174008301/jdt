@@ -2471,9 +2471,8 @@ struct ChatView: View {
                                     self.actionMessage = nil
                                     return
                                 }
-                                if state.fileUploadConfig.readReceiptsEnabled {
-                                    state.loadReadReceipts(messageID: actionMessage.id, in: conversationID)
-                                }
+                                // WDT_RECEIPT_DETAIL_SCOPE_20261023: reactions and reader identities have separate permissions.
+                                state.prepareReadReceiptPanel(messageID: actionMessage.id, in: conversationID)
                                 receiptMessage = actionMessage
                                 self.actionMessage = nil
                             },
@@ -3259,9 +3258,8 @@ struct ChatView: View {
                         state.toast = "只能查看自己发送消息的已读状态"
                         return
                     }
-                    if state.fileUploadConfig.readReceiptsEnabled {
-                        state.loadReadReceipts(messageID: row.message.id, in: conversationID)
-                    }
+                    // WDT_RECEIPT_DETAIL_SCOPE_20261023
+                    state.prepareReadReceiptPanel(messageID: row.message.id, in: conversationID)
                     receiptMessage = row.message
                 } onSenderTap: { user in
                     guard !isBatchForwardSelectionActive else { return }
@@ -15470,7 +15468,7 @@ struct ReadReceiptSheet: View {
     }
 
     private var directRead: Bool {
-        message.status == .read || !message.readBy.isEmpty
+        message.status == .read
     }
 
     private var canViewReceiptDetails: Bool {
@@ -15549,8 +15547,10 @@ struct ReadReceiptSheet: View {
 
                         if !readReceiptsEnabled {
                             readReceiptDisabledCard
+                            reactionSection // WDT_RECEIPT_DETAIL_SCOPE_20261023: reactions do not depend on read receipts.
                         } else if !canViewReceiptDetails {
                             // WDT_CHAT_FIX1_RECEIPT_PRIVACY_20261023_BEGIN
+                            if isDirectConversation { anonymousReceiptCard }
                             receiptSection(title: "已读", receipts: [], read: true, emptyText: "未统计明细")
                             reactionSection
                             receiptSection(title: "未读", receipts: [], read: false, emptyText: "未统计明细")
@@ -15604,12 +15604,12 @@ struct ReadReceiptSheet: View {
                 .background(Circle().fill((directRead ? IMColor.success : IMColor.muted).opacity(0.12)))
             VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 8) {
-                    Text(directRead ? "已读" : "未读")
+                    Text(directRead ? "已读" : (message.readStateKnown ? "未读" : "状态待同步"))
                         .font(.system(size: 17, weight: .black))
                         .foregroundStyle(IMColor.ink)
-                    StatusPill(title: directRead ? "已读" : "未读", color: directRead ? IMColor.success : IMColor.muted)
+                    StatusPill(title: directRead ? "已读" : (message.readStateKnown ? "未读" : "状态待同步"), color: directRead ? IMColor.success : IMColor.muted)
                 }
-                Text(directRead ? "对方已读取这条消息" : "对方暂未读取这条消息")
+                Text(directRead ? "对方已读取这条消息" : (message.readStateKnown ? "对方暂未读取这条消息" : "尚未确认对方的读取状态"))
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(IMColor.muted)
             }

@@ -349,3 +349,22 @@ DEVELOPER_DIR=/Users/zen/Downloads/Xcode.app/Contents/Developer xcodebuild -quie
 标识 `WDT_IOS1_NATIVE_NAV_REGRESSION_20261023`。新 `jdt 4 (2).zip` 相对原包的导航生产修复已由 `WDT_IOS1_NAV_COMPAT_20261023` 等价覆盖：iOS17 原生 item、iOS16 原生 isPresented、iOS15 旧链接。保留当前 retainedItem/id 隔离和前轮全部修复，不导入包内性能撤回或用户工程状态。
 
 本次仅从新包补入 DesignSystemTests 的原生导航行为探针及用例，窗口绑定现有 UIWindowScene；覆盖空选择不挂载、携带搜索 messageID 进入A、dismiss 清空路由、进入B。测试直接调用实际 navigationDestinationCompat，不把 iOS26.5 结果称为 iOS17 实测。功能范围为测试，不改 AppID/签名/版本/业务代码。合并按标识完整取 helpers 与测试方法；验证结果见交付目录 IOS1-iOS17白屏增量-20261023。
+
+## 点击已读误报群解散（2026-10-23）
+
+标识：`WDT_RECEIPT_DETAIL_SCOPE_20261023`。
+依据：`IOS点击已读误报群解散-定位与解决方案.md` 第 5 节 iOS 客户端方案。仅修改 `/Users/zen/Desktop/jdt`，不实施文档中的安卓或后端替代方案。
+
+- 已读菜单和气泡入口统一打开状态/回应面板；私聊以及普通、未知企业角色不请求人员明细。企业管理员/内部角色的群聊也须由当前会话的回执同步明确返回 `can_view_read_receipt_details`，不依赖消息模型默认 true 或群主/群管理员身份。
+- 明细能力仅存于当前账号/企业/登录代次/企业角色的运行态；实际 loader 再检查消息归属、功能开关与能力。撤权、换企业、换登录、离开会话后清掉人员/人数并拒绝迟到响应，不改原消息的二值已读状态、真实回应或未读红点。
+- 表情回应独立使用既有 extras 同步。明细返回不覆盖已经同步的回应；私聊状态未知时显示“状态待同步”，无明细权限的已读/未读区域保持“未统计明细”、不显示人数。
+- 明细接口的预期权限拒绝静默收敛为无明细；功能关闭、404/消息不可见、登录失效、网络故障分别处理。受限 200 响应也不用于推断未知消息为已读或未读。
+- 通用 `permission_denied` 改为“无权限执行该操作”；删除全局包含匹配的解散映射。实际解散/解散预览保留原权限提示；真实解散请求、群主判断、确认、成功处理均未改。
+
+涉及文件：`AppState.swift`、`ChatViews.swift`、`ConversationStore.swift`、`AppState+MessageActions.swift`、`AppState+ConversationsHistory.swift`、`AppState+GroupAdministration.swift`、`AppState+RemoteMessageStateMapping.swift`、`AppState+RemoteRegistrationSnapshotSync.swift`，以及 `DomainStoreTests.swift`、`RemoteAPIModelsTests.swift`。
+
+验证：新增 8 项 XCTest，更新已有角色矩阵/错误映射预期；应用与测试目标 `build-for-testing` 编译通过（退出码 0，有既有警告），未启动模拟器或 App，未执行 iOS XCTest。构建日志 `/tmp/jdt-receipt-detail-scope-build.log`。本机提取实际权限/错误分类函数执行 161 项 Swift 断言和 4 项请求接线检查通过，脚本 `/tmp/jdt-receipt-detail-scope-verify.rb`；使用最小依赖模型，不代表线上请求或真机 UI 验收。`git diff --check` 通过。
+
+待真机验收：私聊（普通/内部/管理员）点击已读与表情不发人员明细请求；普通企业账号即使为群主也无人数/名单；授权群可展示真实明细且遵守人数显示配置；撤权、换会话/企业后的迟到响应不恢复旧明细；实际解散群权限和确认仍正常。
+
+回退：以本组完整差分和标识为单位恢复入口、权限运行态、清理钩子、请求/响应检查、错误映射、Store 新增可选参数及测试；不要整文件覆盖，不撤回已有其他标识。保留 `WDT_IOS1_RECEIPT_ROLE_20261023` 的企业角色与群身份分离原则，本组是在该原则上补齐服务端会话能力检查。不修改发送、删除、排序、阅读 ACK、通话、数据库结构、`codemagic.yaml`；未提交或推送 Git。

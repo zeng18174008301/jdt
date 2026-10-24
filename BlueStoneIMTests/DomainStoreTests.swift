@@ -90,10 +90,13 @@ final class DomainStoreTests: XCTestCase {
     }
 
     func testOrdinaryGroupMemberCannotDisplayCachedReadDetails() {
-        let state = AppState(apiContextOverride: makeIsolatedAPIContext())
+        let state = AppState(apiContextOverride: makeAuthenticatedAPIContext())
+        state.setReadReceiptsEnabled(true)
         state.currentUser = makeUser(id: "me")
-        let conversation = makeConversation(id: "g1", kind: .group, unread: 0, lastMsgSeq: 1, lastReadSeq: 1)
+        var conversation = makeConversation(id: "g1", kind: .group, unread: 0, lastMsgSeq: 1, lastReadSeq: 1)
         var message = makeMessage(id: "m1", seq: 1, status: .read, isOutgoing: true)
+        conversation.messages = [message]
+        state.conversationStore.conversations = [conversation]
         var group = GroupInfo(id: "g1", name: "g1", notice: "", owner: "Other", members: [], admins: [],
                               muted: false, allMuted: false, allMuteStart: nil, allMuteEnd: nil)
         group.ownerID = "other"
@@ -104,6 +107,8 @@ final class DomainStoreTests: XCTestCase {
             for groupRole in ["member", "admin", "owner"] {
                 group.myRole = groupRole
                 state.groups = [group]
+                // WDT_RECEIPT_DETAIL_SCOPE_20261023: even an authorized tenant role needs an explicit sync grant.
+                state.applyReadReceiptDetailAuthority(true, conversationID: conversation.id)
                 XCTAssertEqual(state.canViewMessageReadDetails(message, in: conversation),
                     ["internal", "admin"].contains(tenantRole), "tenant=\(tenantRole), group=\(groupRole)")
             }
@@ -116,6 +121,159 @@ final class DomainStoreTests: XCTestCase {
         XCTAssertFalse(state.canViewMessageReadDetails(message, in: unrelated))
     }
     // WDT_CHAT_FIX1_RECEIPT_PRIVACY_20261023_END
+
+    // WDT_RECEIPT_DETAIL_SCOPE_20261023_BEGIN
+    func testDirectAndOrdinaryGroupDetailLoaderMakesNoPersonnelRequest() async {
+        for kind in [ConversationKind.direct, .group] {
+            for role in ["member", "admin", "internal", "unknown", ""] {
+                let transport = FakeHTTPTransport(results: [])
+                let state = makeReceiptDetailTestState(transport: transport, kind: kind, role: role)
+                if kind == .direct || !["admin", "internal"].contains(role) {
+                    state.applyReadReceiptDetailAuthority(true, conversationID: "c1")
+                    await state.loadReadReceipts(messageID: "m1", in: "c1").value
+                    XCTAssertTrue(transport.requests().isEmpty, "\(kind) \(role)")
+                    XCTAssertEqual(state.conversations[0].messages[0].status, .read)
+                    XCTAssertEqual(state.conversations[0].messages[0].reactionDetails.count, 1)
+                    XCTAssertNil(state.conversations[0].messages[0].readCount)
+                    XCTAssertNil(state.toast)
+                    XCTAssertTrue(state.isAuthenticated)
+                }
+            }
+        }
+    }
+
+    func testUnknownReceiptAuthorityDoesNotUseDefaultMessagePermission() async {
+        let transport = FakeHTTPTransport(results: [])
+        let state = makeReceiptDetailTestState(transport: transport, kind: .group, role: "admin")
+        XCTAssertTrue(state.conversations[0].messages[0].canViewReadDetails)
+        XCTAssertFalse(state.canViewMessageReadDetails(state.conversations[0].messages[0], in: state.conversations[0]))
+        await state.loadReadReceipts(messageID: "m1", in: "c1").value
+        XCTAssertTrue(transport.requests().isEmpty)
+        XCTAssertTrue(state.conversations[0].messages[0].readBy.isEmpty)
+        XCTAssertNil(state.toast)
+        state.applyReadReceiptDetailAuthority(true, conversationID: "c1")
+        XCTAssertTrue(state.canViewMessageReadDetails(state.conversations[0].messages[0], in: state.conversations[0]))
+    }
+
+    func testDirectReceiptPanelLoadsRealReactionsOnlyThroughExtras() async {
+        let response = HTTPTransportResult(data: Data(#"{"ok":true,"data":{"items":[{"message_id":"m1","channel_id":"c1","channel_type":"direct","operator_uid":"reader-2","extra_type":"reaction","emoji":"ok","action":"add","version":1,"payload":{"display_name":"Reader Two"}}]}}"#.utf8), isHTTPResponse: true, statusCode: 200)
+        let transport = FakeHTTPTransport(results: [response])
+        let state = makeReceiptDetailTestState(transport: transport, kind: .direct, role: "admin")
+        await state.prepareReadReceiptPanel(messageID: "m1", in: "c1").value
+        XCTAssertTrue(transport.requests().contains { $0.url?.path == "/api/im/message-extras/sync" })
+        XCTAssertFalse(transport.requests().contains { $0.url?.path.hasSuffix("/read-receipts") == true })
+        XCTAssertTrue(state.conversations[0].messages[0].reactionDetails.contains { $0.user.id == "reader-2" })
+        XCTAssertEqual(state.conversations[0].messages[0].status, .read)
+        XCTAssertNil(state.toast)
+    }
+
+    func testReceiptPermissionDenialClearsDetailsWithoutLoggingOutOrChangingReadState() async {
+        for code in ["permission_denied", "forbidden", "read_receipt_details_forbidden"] {
+            let response = HTTPTransportResult(data: Data("{\"ok\":false,\"error\":{\"code\":\"\(code)\",\"message\":\"没有权限查看或执行该操作\"}}".utf8), isHTTPResponse: true, statusCode: 403)
+            let transport = FakeHTTPTransport(results: [response])
+            let state = makeReceiptDetailTestState(transport: transport, kind: .group, role: "admin")
+            state.applyReadReceiptDetailAuthority(true, conversationID: "c1")
+            await state.loadReadReceipts(messageID: "m1", in: "c1").value
+            XCTAssertEqual(transport.requests().filter { $0.url?.path.hasSuffix("/read-receipts") == true }.count, 1)
+            let message = state.conversations[0].messages[0]
+            XCTAssertTrue(message.readBy.isEmpty)
+            XCTAssertNil(message.readCount)
+            XCTAssertFalse(message.canViewReadDetails)
+            XCTAssertEqual(message.status, .read)
+            XCTAssertEqual(message.reactionDetails.count, 1)
+            XCTAssertEqual(state.conversations[0].unread, 3)
+            XCTAssertNil(state.toast)
+            XCTAssertTrue(state.isAuthenticated)
+        }
+    }
+
+    func testAuthorizedReceiptResponseCannotOverwriteSyncedReactions() async {
+        let transport = FakeHTTPTransport(results: [receiptDetailSuccessResponse()])
+        let state = makeReceiptDetailTestState(transport: transport, kind: .group, role: "internal")
+        state.applyReadReceiptDetailAuthority(true, conversationID: "c1")
+        let reactions = state.conversations[0].messages[0].reactionDetails
+        await state.loadReadReceipts(messageID: "m1", in: "c1").value
+        XCTAssertEqual(transport.requests().count, 1)
+        XCTAssertTrue(state.conversations[0].messages[0].readBy.contains { $0.user.id == "new-reader" })
+        XCTAssertEqual(state.conversations[0].messages[0].reactionDetails, reactions)
+        XCTAssertNil(state.toast)
+    }
+
+    func testRestrictedReceiptResponsePreservesUnknownBinaryStatus() async {
+        let response = HTTPTransportResult(data: Data(#"{"ok":true,"data":{"can_view_details":false,"read_count":99,"items":[]}}"#.utf8), isHTTPResponse: true, statusCode: 200)
+        let transport = FakeHTTPTransport(results: [response])
+        let state = makeReceiptDetailTestState(transport: transport, kind: .group, role: "admin")
+        state.applyReadReceiptDetailAuthority(true, conversationID: "c1")
+        state.conversationStore.conversations[0].messages[0].status = .sent
+        state.conversationStore.conversations[0].messages[0].readStateKnown = false
+        await state.loadReadReceipts(messageID: "m1", in: "c1").value
+        let message = state.conversations[0].messages[0]
+        XCTAssertEqual(message.status, .sent)
+        XCTAssertFalse(message.readStateKnown)
+        XCTAssertNil(message.readCount)
+        XCTAssertTrue(message.readBy.isEmpty)
+        XCTAssertEqual(message.reactionDetails.count, 1)
+        XCTAssertNil(state.toast)
+    }
+
+    func testLateReceiptResponseIsDiscardedAfterScopeSelectionOrAuthorityChanges() async throws {
+        for change in ["role", "tenant", "session", "selection", "authority", "message"] {
+            let transport = FakeHTTPTransport(results: [receiptDetailSuccessResponse()], delayNanoseconds: 120_000_000)
+            let state = makeReceiptDetailTestState(transport: transport, kind: .group, role: "admin")
+            state.applyReadReceiptDetailAuthority(true, conversationID: "c1")
+            state.conversationStore.conversations[0].messages[0].readBy = []
+            state.conversationStore.conversations[0].messages[0].status = .sent
+            let task = state.loadReadReceipts(messageID: "m1", in: "c1")
+            for _ in 0..<100 where transport.requests().isEmpty {
+                try await Task.sleep(nanoseconds: 2_000_000)
+            }
+            XCTAssertFalse(transport.requests().isEmpty)
+            switch change {
+            case "role", "tenant":
+                state.currentEnterprise = Enterprise(id: change == "tenant" ? "tenant-2" : "tenant-1",
+                    name: "Test", code: "Test", role: change == "role" ? "member" : "admin",
+                    status: "normal", memberCount: 1, isDefault: true, accentHex: 0)
+            case "session": state.localMessageSessionGeneration &+= 1
+            case "selection": state.leaveRealtimeConversation("c1")
+            case "authority": state.applyReadReceiptDetailAuthority(false, conversationID: "c1")
+            default: state.conversationStore.conversations[0].messages.removeAll()
+            }
+            await task.value
+            if let message = state.conversations[0].messages.first {
+                XCTAssertTrue(message.readBy.isEmpty, change)
+                XCTAssertEqual(message.status, .sent, change)
+                XCTAssertEqual(message.reactionDetails.count, 1, change)
+            }
+            XCTAssertNil(state.toast)
+        }
+    }
+
+    private func receiptDetailSuccessResponse() -> HTTPTransportResult {
+        HTTPTransportResult(data: Data(#"{"ok":true,"data":{"read":true,"can_view_details":true,"items":[{"message_id":"m1","im_uid":"new-reader","receipt_type":"read","channel_seq":1}],"read_count":1,"unread_count":0,"reactions":[{"operator_uid":"stale-reactor","emoji":"old"}]}}"#.utf8), isHTTPResponse: true, statusCode: 200)
+    }
+
+    private func makeReceiptDetailTestState(transport: HTTPTransport, kind: ConversationKind, role: String) -> AppState {
+        let syncEngine = DefaultSyncEngine()
+        _ = syncEngine.beginRemoteSnapshotRefresh()
+        let state = AppState(api: makeCallEndingAPI(transport: transport), voiceMediaClient: NoopVoiceMediaClient(),
+                             remoteSyncEngine: syncEngine, apiContextOverride: makeAuthenticatedAPIContext())
+        state.currentEnterprise = Enterprise(id: "tenant-1", name: "Test", code: "Test", role: role,
+                                             status: "normal", memberCount: 1, isDefault: true, accentHex: 0)
+        state.currentUser = makeUser(id: "uid-1")
+        state.isAuthenticated = true
+        state.setReadReceiptsEnabled(true)
+        var conversation = makeConversation(id: "c1", kind: kind, unread: 3, lastMsgSeq: 1, lastReadSeq: 0)
+        var message = makeMessage(id: "m1", seq: 1, status: .read, isOutgoing: true)
+        message.readBy = [makeReadReceipt(userID: "old-reader")]
+        message.readCount = 1
+        message.reactionDetails = [ReactionDetail(id: "real", emoji: "ok", user: makeUser(id: "reader-1"), time: "10:00")]
+        conversation.messages = [message]
+        state.conversationStore.conversations = [conversation]
+        _ = state.conversationSelectionEpochFence.select(scope: state.remoteDataScopeKey(for: state.apiContext), conversationID: "c1")
+        state.toast = nil
+        return state
+    }
+    // WDT_RECEIPT_DETAIL_SCOPE_20261023_END
 
     // WDT_CHAT_FIX2_DELETE_REFRESH_20261023_BEGIN
     func testRemovalRefreshUsesPublishedSnapshotAndIgnoresOrdinaryUpdates() {

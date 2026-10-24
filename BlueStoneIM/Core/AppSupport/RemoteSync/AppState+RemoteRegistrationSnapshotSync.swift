@@ -6413,6 +6413,10 @@ extension AppState {
             case .securityBlocked(let info):
                 return info.userMessage
             case .forbidden(let message):
+                // WDT_RECEIPT_DETAIL_SCOPE_20261023: legacy unstructured denial is neutral too.
+                if message.split(whereSeparator: { $0.isWhitespace }).first?.lowercased() == "permission_denied" {
+                    return "无权限执行该操作"
+                }
                 if message.contains("account_locked") || message.contains("账号已锁定") {
                     return "账号已锁定，请联系商户后台管理员解锁"
                 }
@@ -6456,6 +6460,9 @@ extension AppState {
             case .businessForbidden(let code, let message, _):
                 let normalizedCode = code.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
                 switch normalizedCode {
+                // WDT_RECEIPT_DETAIL_SCOPE_20261023: generic permissions have no group lifecycle context.
+                case "permission_denied":
+                    return "无权限执行该操作"
                 case "phone_auth_disabled":
                     return PhoneAuthPresentationPolicy.disabledMessage
                 case "group_member_muted":
@@ -6622,7 +6629,7 @@ extension AppState {
                 case "group_owner_cannot_leave":
                     return "群主需先转让群主或解散该群"
                 case "permission_denied":
-                    return "只有群主可以解散该群"
+                    return "无权限执行该操作" // WDT_RECEIPT_DETAIL_SCOPE_20261023
                 case "confirmation_required":
                     return "请确认后再解散该群"
                 case "invalid_confirmation":
@@ -6722,6 +6729,10 @@ extension AppState {
             case .loginSecurity(let code, let message, let info):
                 return loginSecurityMessage(code: code, message: message, info: info)
             case .server(let message):
+                // WDT_RECEIPT_DETAIL_SCOPE_20261023
+                if message.split(whereSeparator: { $0.isWhitespace }).first?.lowercased() == "permission_denied" {
+                    return "无权限执行该操作"
+                }
                 if let groupLifecycleMessage = Self.groupLifecycleUserMessage(for: message) {
                     return groupLifecycleMessage
                 }
@@ -6793,7 +6804,9 @@ extension AppState {
         if normalized.contains("group_owner_cannot_leave") {
             return "群主需先转让群主或解散该群"
         }
-        if normalized.contains("permission_denied") {
+        // WDT_RECEIPT_DETAIL_SCOPE_20261023: only dedicated dissolve codes carry this meaning.
+        let codes = Set(normalized.split(whereSeparator: { $0.isWhitespace }).map(String.init))
+        if codes.contains("group_dissolve_permission_denied") || codes.contains("group_dissolve_forbidden") {
             return "只有群主可以解散该群"
         }
         if normalized.contains("confirmation_required") || normalized.contains("invalid_confirmation") {
@@ -6811,6 +6824,21 @@ extension AppState {
             return "群聊不可用"
         }
         return nil
+    }
+
+    // WDT_RECEIPT_DETAIL_SCOPE_20261023: used only at the actual dissolve/preview endpoints.
+    static func groupDissolvePermissionMessage(for error: Error) -> String? {
+        let code: String
+        switch error {
+        case IMAPIError.businessForbidden(let value, _, _), IMAPIError.conflict(let value, _):
+            code = value
+        case IMAPIError.forbidden(let value), IMAPIError.httpStatus(403, let value):
+            code = value.split(whereSeparator: { $0.isWhitespace }).first.map(String.init) ?? ""
+        default:
+            return nil
+        }
+        guard code.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "permission_denied" else { return nil }
+        return "只有群主可以解散该群"
     }
 
     func capabilityUserMessage(

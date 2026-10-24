@@ -1860,11 +1860,30 @@ final class RemoteAPIModelsTests: XCTestCase {
     @MainActor
     func testGroupLifecycleErrorCodesUseSafeCopy() {
         XCTAssertEqual(AppState.groupLifecycleUserMessage(for: "group_owner_cannot_leave"), "群主需先转让群主或解散该群")
-        XCTAssertEqual(AppState.groupLifecycleUserMessage(for: "permission_denied"), "只有群主可以解散该群")
+        // WDT_RECEIPT_DETAIL_SCOPE_20261023: generic denial must never imply dissolution.
+        XCTAssertNil(AppState.groupLifecycleUserMessage(for: "permission_denied"))
+        XCTAssertNil(AppState.groupLifecycleUserMessage(for: "permission_denied 没有权限查看或执行该操作"))
+        XCTAssertNil(AppState.groupLifecycleUserMessage(for: "read_receipt_details_forbidden"))
+        XCTAssertEqual(AppState.groupLifecycleUserMessage(for: "group_dissolve_permission_denied"), "只有群主可以解散该群")
         XCTAssertEqual(AppState.groupLifecycleUserMessage(for: "confirmation_required"), "请确认后再解散该群")
         XCTAssertEqual(AppState.groupLifecycleUserMessage(for: "invalid_confirmation"), "请确认后再解散该群")
         XCTAssertEqual(AppState.groupLifecycleUserMessage(for: "group_already_dissolved"), "该群聊不存在或已解散")
         XCTAssertEqual(AppState.groupLifecycleUserMessage(for: "group_dissolve_in_progress"), "群聊正在解散中，请稍后")
+    }
+
+    // WDT_RECEIPT_DETAIL_SCOPE_20261023
+    @MainActor
+    func testReceiptPermissionErrorsHaveSeparateOperationContext() {
+        let state = AppState()
+        let generic = IMAPIError.businessForbidden(code: "permission_denied", message: "没有权限查看或执行该操作", error: nil)
+        XCTAssertEqual(state.userFacingError(generic), "无权限执行该操作")
+        XCTAssertEqual(AppState.groupDissolvePermissionMessage(for: generic), "只有群主可以解散该群")
+        XCTAssertTrue(AppState.isReadReceiptDetailPermissionDenied(generic))
+        XCTAssertTrue(AppState.isReadReceiptDetailPermissionDenied(IMAPIError.httpStatus(403, message: "unknown")))
+        XCTAssertFalse(AppState.isReadReceiptDetailPermissionDenied(IMAPIError.unauthorized("expired")))
+        XCTAssertFalse(AppState.isReadReceiptDetailPermissionDenied(IMAPIError.httpStatus(404, message: "not found")))
+        XCTAssertFalse(AppState.isReadReceiptDetailPermissionDenied(IMAPIError.businessForbidden(code: "read_receipts_not_enabled", message: "", error: nil)))
+        XCTAssertNil(AppState.groupDissolvePermissionMessage(for: IMAPIError.businessForbidden(code: "read_receipt_details_forbidden", message: "", error: nil)))
     }
 
     @MainActor

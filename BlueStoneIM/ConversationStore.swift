@@ -4929,7 +4929,8 @@ final class ConversationStore: ObservableObject {
         conversationID: String,
         makeReadReceipt: (RemoteMessageReceipt, Conversation) -> ReadReceipt,
         makeUnreadReceipt: (RemoteMessageReadParticipant, Conversation) -> ReadReceipt,
-        makeReactionDetail: (RemoteMessageReactionReceipt) -> ReactionDetail
+        makeReactionDetail: (RemoteMessageReactionReceipt) -> ReactionDetail,
+        preserveSyncedReactions: Bool = false
     ) -> Bool {
         let normalizedMessageID = messageID.trimmingCharacters(in: .whitespacesAndNewlines)
         let normalizedConversationID = conversationID.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -4976,8 +4977,11 @@ final class ConversationStore: ObservableObject {
             updated.unreadBy = []
             updated.unreadCount = nil
         }
-        let reactionDetails = response.reactions.map { makeReactionDetail($0) }
-        updated.reactionDetails = reactionDetails.isEmpty ? previous.reactionDetails : reactionDetails
+        // WDT_RECEIPT_DETAIL_SCOPE_20261023: a late personnel response must not resurrect removed reactions.
+        if !preserveSyncedReactions {
+            let reactionDetails = response.reactions.map { makeReactionDetail($0) }
+            updated.reactionDetails = reactionDetails.isEmpty ? previous.reactionDetails : reactionDetails
+        }
         updated.readStateKnown = true
         updated.canViewReadDetails = canViewDetails
         if isRead {

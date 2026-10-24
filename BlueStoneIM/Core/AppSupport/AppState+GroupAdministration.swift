@@ -1459,7 +1459,12 @@ extension AppState {
             return preview
         } catch {
             guard isCurrentRemoteScope(scope) else { return nil }
-            handleRemoteError(error, fallback: "解散预览失败")
+            // WDT_RECEIPT_DETAIL_SCOPE_20261023: preserve the message only in the dissolve context.
+            if let message = Self.groupDissolvePermissionMessage(for: error) {
+                toast = "解散预览失败：\(message)"
+            } else {
+                handleRemoteError(error, fallback: "解散预览失败")
+            }
             return nil
         }
     }
@@ -1503,7 +1508,12 @@ extension AppState {
             return true
         } catch {
             guard isCurrentRemoteScope(scope) else { return false }
-            handleRemoteError(error, fallback: "解散该群失败")
+            // WDT_RECEIPT_DETAIL_SCOPE_20261023
+            if let message = Self.groupDissolvePermissionMessage(for: error) {
+                toast = "解散该群失败：\(message)"
+            } else {
+                handleRemoteError(error, fallback: "解散该群失败")
+            }
             return false
         }
     }

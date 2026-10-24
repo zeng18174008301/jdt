@@ -1402,6 +1402,10 @@ extension AppState {
     }
 
     func subscribeRealtimeConversation(_ conversationID: String) {
+        // WDT_RECEIPT_DETAIL_SCOPE_20261023: switching pages clears only the previous personnel details.
+        if let previousID = activeRealtimeConversationID, previousID != conversationID {
+            clearReadReceiptDetailAuthority(conversationID: previousID)
+        }
         flushPendingRealtimeMessagesIfNeeded(reason: "switch_conversation")
         _ = conversationSelectionEpochFence.select(
             scope: remoteDataScopeKey(for: apiContext),
@@ -1423,6 +1427,7 @@ extension AppState {
     }
 
     func leaveRealtimeConversation(_ conversationID: String) {
+        clearReadReceiptDetailAuthority(conversationID: conversationID) // WDT_RECEIPT_DETAIL_SCOPE_20261023
         conversationSelectionEpochFence.leave(
             scope: remoteDataScopeKey(for: apiContext),
             conversationID: conversationID

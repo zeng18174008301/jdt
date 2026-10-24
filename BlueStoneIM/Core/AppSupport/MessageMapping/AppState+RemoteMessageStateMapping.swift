@@ -422,6 +422,8 @@ extension AppState {
         guard let claim = conversationStore.beginMessageReceiptsSyncClaim(command) else { return }
         defer { conversationStore.finishMessageReceiptsSync(claim) }
         let generation = localMessageSessionGeneration
+        // WDT_RECEIPT_DETAIL_SCOPE_20261023: a response from the previous tenant role cannot grant detail access.
+        var detailScope = readReceiptDetailScope
         let senderIdentities = currentMessageSenderIdentitySet()
         let conversationID = conversations.first(where: {
             ($0.id == command.channelID || remoteChannelID(for: $0) == command.channelID)
@@ -433,8 +435,10 @@ extension AppState {
                 senderIdentities: senderIdentities,
                 channelIDForConversation: { remoteChannelID(for: $0) }
             ) : nil
+        var detailAuthority = conversationID.flatMap { readReceiptDetailAuthorities[$0] }
         func isCurrentRequest() -> Bool {
             guard generation == localMessageSessionGeneration,
+                  detailScope == readReceiptDetailScope, // WDT_RECEIPT_DETAIL_SCOPE_20261023: discard pre-revocation receipts.
                   isCurrentRemoteRefresh(session.refreshSession, scope: session.scope),
                   context.appID == apiContext.appID,
                   context.sessionEpoch == apiContext.sessionEpoch,
@@ -472,14 +476,18 @@ extension AppState {
                     ) || didChange
                     let previous = conversationID.flatMap { conversationStore.conversation(id: $0) }
                     setReadReceiptsEnabled(false)
+                    detailScope = readReceiptDetailScope // Keep this request's own privacy cleanup eligible for persistence.
                     didChange = previous != conversationID.flatMap { conversationStore.conversation(id: $0) } || didChange
                     break
                 }
                 // WDT_CHAT_FIX1_RECEIPT_PRIVACY_20261023: honor visibility even when the response has no items.
-                if let allowed = result.canViewReadReceiptDetails, let conversationID {
-                    didChange = conversationStore.updateReadReceiptDetailsVisibility(
+                if detailScope == readReceiptDetailScope,
+                   let allowed = result.canViewReadReceiptDetails, let conversationID,
+                   detailAuthority == readReceiptDetailAuthorities[conversationID] {
+                    didChange = applyReadReceiptDetailAuthority(
                         allowed, conversationID: conversationID
                     ) || didChange
+                    detailAuthority = readReceiptDetailAuthorities[conversationID]
                 }
                 didChange = applyRemoteReadReceipts(
                     result.items, channelID: command.channelID, persistChanges: false
@@ -503,6 +511,7 @@ extension AppState {
             } else if isCapabilityError(error, code: "read_receipts_not_enabled") {
                 let previous = conversationID.flatMap { conversationStore.conversation(id: $0) }
                 setReadReceiptsEnabled(false)
+                detailScope = readReceiptDetailScope
                 didChange = previous != conversationID.flatMap { conversationStore.conversation(id: $0) } || didChange
             } else if isNotFriendsError(error),
                let conversation = conversations.first(where: { $0.id == command.channelID || remoteChannelID(for: $0) == command.channelID }) {
@@ -781,6 +790,8 @@ extension AppState {
             videoCallLicenseKnown: fileUploadConfig.videoCallLicenseKnown
         ))
         if !enabled {
+            // WDT_RECEIPT_DETAIL_SCOPE_20261023: re-enabling requires a fresh explicit capability.
+            invalidateReadReceiptDetailAuthorities()
             conversationStore.stripReadReceiptDetailsFromAllMessages()
         }
     }
@@ -793,6 +804,7 @@ extension AppState {
             resetRTCDeviceCapabilityReportState()
         }
         if !config.readReceiptsEnabled {
+            invalidateReadReceiptDetailAuthorities() // WDT_RECEIPT_DETAIL_SCOPE_20261023
             conversationStore.stripReadReceiptDetailsFromAllMessages()
         }
     }

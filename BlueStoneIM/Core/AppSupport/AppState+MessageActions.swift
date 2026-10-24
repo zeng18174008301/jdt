@@ -277,21 +277,129 @@ extension AppState {
         toast = "已复制消息内容"
     }
 
-    // WDT_CHAT_FIX1_RECEIPT_PRIVACY_20261023: do not expose stale cached counts before the permission response arrives.
-    func canViewMessageReadDetails(_ message: ChatMessage, in conversation: Conversation) -> Bool {
-        guard message.canViewReadDetails else { return false }
-        guard conversation.kind == .group else { return true }
-        let channelID = remoteChannelID(for: conversation)
-        // WDT_IOS1_RECEIPT_ROLE_20261023_BEGIN
-        guard groups.contains(where: { $0.id == conversation.id || $0.id == channelID }) else { return false }
-        // Receipt identities follow the server tenant-role capability, independently of group management.
-        let role = currentEnterprise.role.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        return ["admin", "internal", "internal_user", "staff", "employee", "member_internal", "管理员", "内部用户"].contains(role)
-        // WDT_IOS1_RECEIPT_ROLE_20261023_END
+    // WDT_RECEIPT_DETAIL_SCOPE_20261023_BEGIN
+    struct ReadReceiptDetailScope: Equatable {
+        let scope: String
+        let sessionEpoch: String
+        let sessionGeneration: UInt64
+        let authorityGeneration: UInt64
+        let enterpriseID: String
+        let role: String
     }
 
-    func loadReadReceipts(messageID: String, in conversationID: String) {
-        Task {
+    struct ReadReceiptDetailAuthority: Equatable {
+        let scope: ReadReceiptDetailScope
+        let allowed: Bool
+        let revision = UUID()
+    }
+
+    var readReceiptDetailScope: ReadReceiptDetailScope {
+        ReadReceiptDetailScope(
+            scope: remoteDataScopeKey(for: apiContext), sessionEpoch: apiContext.sessionEpoch,
+            sessionGeneration: localMessageSessionGeneration,
+            authorityGeneration: readReceiptDetailAuthorityGeneration,
+            enterpriseID: currentEnterprise.id,
+            role: currentEnterprise.role.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        )
+    }
+
+    var hasReadReceiptDetailTenantRole: Bool {
+        // WDT_IOS1_RECEIPT_ROLE_20261023: group owner/admin is not a tenant capability.
+        ["admin", "internal", "internal_user", "staff", "employee", "member_internal", "管理员", "内部用户"]
+            .contains(readReceiptDetailScope.role)
+    }
+
+    func invalidateReadReceiptDetailAuthorities() {
+        readReceiptDetailAuthorityGeneration &+= 1
+        readReceiptDetailAuthorities.removeAll()
+        for id in conversations.map(\.id) {
+            conversationStore.updateReadReceiptDetailsVisibility(false, conversationID: id)
+        }
+    }
+
+    func clearReadReceiptDetailAuthority(conversationID: String) {
+        // Keep a new denial revision so an in-flight sync with an unknown capability cannot grant after leaving.
+        readReceiptDetailAuthorities[conversationID] = ReadReceiptDetailAuthority(scope: readReceiptDetailScope, allowed: false)
+        conversationStore.updateReadReceiptDetailsVisibility(false, conversationID: conversationID)
+    }
+
+    @discardableResult
+    func applyReadReceiptDetailAuthority(_ allowed: Bool, conversationID: String) -> Bool {
+        guard let conversation = conversationStore.conversation(id: conversationID) else { return false }
+        let effectiveAllowed = allowed && conversation.kind == .group && hasReadReceiptDetailTenantRole
+            && apiContext.hasIMSession && fileUploadConfig.readReceiptsEnabled
+        let scope = readReceiptDetailScope
+        let old = readReceiptDetailAuthorities[conversationID]
+        if old?.scope != scope || old?.allowed != effectiveAllowed {
+            readReceiptDetailAuthorities[conversationID] = ReadReceiptDetailAuthority(scope: scope, allowed: effectiveAllowed)
+        }
+        return conversationStore.updateReadReceiptDetailsVisibility(effectiveAllowed, conversationID: conversationID)
+    }
+
+    func canViewMessageReadDetails(_ message: ChatMessage, in conversation: Conversation) -> Bool {
+        guard conversation.kind == .group, message.isOutgoing, !message.isDeletedLocally,
+              message.canViewReadDetails, fileUploadConfig.readReceiptsEnabled,
+              apiContext.hasIMSession, hasReadReceiptDetailTenantRole,
+              let authority = readReceiptDetailAuthorities[conversation.id] else { return false }
+        return authority.allowed && authority.scope == readReceiptDetailScope
+    }
+
+    // The panel always hydrates reactions from extras; personnel permission is checked independently.
+    @discardableResult
+    func prepareReadReceiptPanel(messageID: String, in conversationID: String) -> Task<Void, Never> {
+        let scope = readReceiptDetailScope
+        let selectionEpoch = conversationSelectionEpochFence.epoch
+        return Task {
+            guard scope == readReceiptDetailScope,
+                  selectionEpoch == conversationSelectionEpochFence.epoch,
+                  let conversation = conversationStore.conversation(id: conversationID),
+                  let message = conversation.messages.first(where: { $0.id == messageID }),
+                  message.isOutgoing, !message.isDeletedLocally else { return }
+            if !canViewMessageReadDetails(message, in: conversation) {
+                conversationStore.updateReadReceiptDetailsVisibility(false, conversationID: conversationID)
+            }
+            let channelID = remoteChannelID(for: conversation)
+            let channelType = apiChannelType(for: conversation.kind)
+            await syncMessageExtrasForConversation(channelID: channelID, channelType: channelType)
+            guard scope == readReceiptDetailScope,
+                  selectionEpoch == conversationSelectionEpochFence.epoch else { return }
+            if conversation.kind == .group, hasReadReceiptDetailTenantRole,
+               fileUploadConfig.readReceiptsEnabled,
+               readReceiptDetailAuthorities[conversationID]?.scope != scope || readReceiptDetailAuthorities[conversationID]?.allowed != true {
+                await syncReadReceiptsForConversation(channelID: channelID, channelType: channelType)
+            }
+            guard scope == readReceiptDetailScope,
+                  selectionEpoch == conversationSelectionEpochFence.epoch,
+                  let current = conversationStore.conversation(id: conversationID),
+                  let currentMessage = current.messages.first(where: { $0.id == messageID }) else { return }
+            guard canViewMessageReadDetails(currentMessage, in: current) else {
+                conversationStore.updateReadReceiptDetailsVisibility(false, conversationID: conversationID)
+                return
+            }
+            await loadReadReceipts(messageID: messageID, in: conversationID).value
+        }
+    }
+
+    static func isReadReceiptDetailPermissionDenied(_ error: Error) -> Bool {
+        switch error {
+        case IMAPIError.businessForbidden(let code, _, _), IMAPIError.conflict(let code, _):
+            return ["permission_denied", "forbidden", "read_receipt_details_forbidden"]
+                .contains(code.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
+        case IMAPIError.forbidden, IMAPIError.httpStatus(403, _):
+            return true
+        default:
+            return false
+        }
+    }
+    // WDT_RECEIPT_DETAIL_SCOPE_20261023_END
+
+    @discardableResult
+    func loadReadReceipts(messageID: String, in conversationID: String) -> Task<Void, Never> {
+        let requestScope = readReceiptDetailScope
+        let selectionEpoch = conversationSelectionEpochFence.epoch
+        return Task {
+            guard requestScope == readReceiptDetailScope,
+                  selectionEpoch == conversationSelectionEpochFence.epoch else { return }
             guard let initialConversationIndex = conversations.firstIndex(where: { $0.id == conversationID }),
                   let initialMessageIndex = conversations[initialConversationIndex].messages.firstIndex(where: { $0.id == messageID }) else { return }
             guard conversations[initialConversationIndex].messages[initialMessageIndex].isOutgoing else {
@@ -301,6 +409,24 @@ extension AppState {
             guard fileUploadConfig.readReceiptsEnabled else {
                 return
             }
+            // WDT_RECEIPT_DETAIL_SCOPE_20261023: direct/unknown/ordinary users never query personnel.
+            guard canViewMessageReadDetails(conversations[initialConversationIndex].messages[initialMessageIndex],
+                                            in: conversations[initialConversationIndex]) else {
+                conversationStore.updateReadReceiptDetailsVisibility(false, conversationID: conversationID)
+                return
+            }
+            let authority = readReceiptDetailAuthorities[conversationID]
+            let channelID = remoteChannelID(for: conversations[initialConversationIndex])
+            @MainActor
+            func isCurrentRequest() -> Bool {
+                guard !Task.isCancelled, requestScope == readReceiptDetailScope,
+                      selectionEpoch == conversationSelectionEpochFence.epoch,
+                      authority == readReceiptDetailAuthorities[conversationID],
+                      let conversation = conversationStore.conversation(id: conversationID),
+                      remoteChannelID(for: conversation) == channelID,
+                      let message = conversation.messages.first(where: { $0.id == messageID }) else { return false }
+                return canViewMessageReadDetails(message, in: conversation)
+            }
             let context = apiContext
             guard context.hasIMSession else {
                 toast = "登录会话不可用，请重新登录"
@@ -308,28 +434,48 @@ extension AppState {
             }
             let scope = remoteDataScopeKey(for: context)
             let response: RemoteMessageReadReceiptResponse
-            let generation = localMessageSessionGeneration
             do {
                 response = try await api.messageReadReceipts(context: context, messageID: messageID)
             } catch {
-                guard isCurrentRemoteScope(scope), generation == localMessageSessionGeneration,
-                      context.sessionEpoch == apiContext.sessionEpoch else { return }
+                guard isCurrentRequest() else { return }
                 logSyncEndpointFailure("/api/im/messages/{message_id}/read-receipts", error: error)
-                if shouldShowGroupHistoryLimitedMessage(for: error, conversationID: conversationID) {
-                    toast = groupHistoryLimitedMessage
-                    return
-                }
                 if isCapabilityError(error, code: "read_receipts_not_enabled") {
                     setReadReceiptsEnabled(false)
                     return
                 }
-                handleRemoteError(error, fallback: "已读状态获取失败")
+                // WDT_RECEIPT_DETAIL_SCOPE_20261023: an expected privacy denial is not a group or session failure.
+                if Self.isReadReceiptDetailPermissionDenied(error) {
+                    if applyReadReceiptDetailAuthority(false, conversationID: conversationID) {
+                        await persistConversationSnapshotImmediately(conversationID: conversationID, scope: scope, source: .localMutation)
+                    }
+                    return
+                }
+                switch error {
+                case IMAPIError.httpStatus(404, _):
+                    toast = "消息不存在或已不可见"
+                case IMAPIError.businessForbidden(let code, _, _)
+                    where ["message_not_found", "message_not_visible", "message_invisible", "message_already_deleted"].contains(code),
+                     IMAPIError.conflict(let code, _)
+                    where ["message_not_found", "message_not_visible", "message_invisible", "message_already_deleted"].contains(code):
+                    toast = "消息不存在或已不可见"
+                case IMAPIError.businessForbidden:
+                    applyReadReceiptDetailAuthority(false, conversationID: conversationID)
+                    toast = "无法获取已读明细，当前请求未获授权"
+                default:
+                    handleRemoteError(error, fallback: "已读状态获取失败")
+                }
                 return
             }
-            guard isCurrentRemoteScope(scope), generation == localMessageSessionGeneration,
-                  context.sessionEpoch == apiContext.sessionEpoch else { return }
+            guard isCurrentRequest() else { return }
             if response.readReceiptsEnabled == false || response.featureStatus.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "disabled" {
                 setReadReceiptsEnabled(false)
+                return
+            }
+            // A restricted response is not evidence that an unknown message is unread.
+            guard response.canViewDetails else {
+                if applyReadReceiptDetailAuthority(false, conversationID: conversationID) {
+                    await persistConversationSnapshotImmediately(conversationID: conversationID, scope: scope, source: .localMutation)
+                }
                 return
             }
             let didChange = conversationStore.applyRemoteReadReceiptDetails(
@@ -364,7 +510,8 @@ extension AppState {
                         time: participant.readAt.map(displayTime) ?? "未读"
                     )
                 },
-                makeReactionDetail: reactionDetail(from:)
+                makeReactionDetail: reactionDetail(from:),
+                preserveSyncedReactions: true // WDT_RECEIPT_DETAIL_SCOPE_20261023: extras owns the current reaction snapshot.
             )
             if didChange, conversations.first(where: { $0.id == conversationID })?.kind == .group,
                !shouldShowGroupMemberCount {
