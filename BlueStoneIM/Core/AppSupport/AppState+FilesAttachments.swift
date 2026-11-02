@@ -538,10 +538,18 @@ extension AppState {
         return resolvedAttachmentURL(message.attachmentDownloadURL.isEmpty ? message.attachmentPreviewURL : message.attachmentDownloadURL)
     }
 
+    // Android chat posters are derived from the original, not remote image URLs.
+    func resolvedAttachmentBubbleThumbnailURL(for message: ChatMessage) -> URL? {
+        if attachmentMediaCategory(for: message) == "video" {
+            return cachedLocalAttachmentThumbnailURL(for: message)
+        }
+        return resolvedAttachmentThumbnailURL(for: message)
+    }
+
     func resolvedAttachmentThumbnailURL(for message: ChatMessage) -> URL? {
-        // WDT_CHAT_FIX3_VIDEO_COVER_20261023: videos prefer server posters and never use a movie URL as an image.
+        // Prefer a derived local poster; a movie URL must never be decoded as an image.
         let category = attachmentMediaCategory(for: message)
-        if category != "video", let localThumbnail = cachedLocalAttachmentThumbnailURL(for: message) {
+        if let localThumbnail = cachedLocalAttachmentThumbnailURL(for: message) {
             return localThumbnail
         }
         let explicit = [
@@ -549,11 +557,9 @@ extension AppState {
             message.attachmentCoverURL,
             message.attachmentPosterURL
         ]
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .first { !$0.isEmpty }
-        if let explicit, let url = resolvedAttachmentURL(explicit) {
-            return url
-        }
+            .compactMap { resolvedAttachmentURL($0, allowPosterEndpoint: true) }
+            .first
+        if let explicit { return explicit }
         if category == "image" {
             return resolvedAttachmentPreviewURL(for: message) ?? resolvedAttachmentDownloadURL(for: message)
         }
@@ -563,8 +569,143 @@ extension AppState {
         return nil
     }
 
+    func loadServerVideoPoster(_ message: ChatMessage, conversationID: String,
+        pause: @MainActor (UInt64) async throws -> Void = { try await Task.sleep(nanoseconds: $0) },
+        update: @MainActor (IOSVideoPosterPresentation) -> Void) async {
+        let context = apiContext
+        let scope = remoteDataScopeKey(for: context)
+        let generation = localMessageSessionGeneration
+        let parent = tenantFileID(for: message)
+        let sourceChecksum = message.attachmentChecksum
+        func isCurrent() -> Bool {
+            guard !Task.isCancelled, isCurrentRemoteScope(scope), localMessageSessionGeneration == generation,
+                  let current = conversationStore.conversation(id: conversationID)?.messages.first(where: { $0.id == message.id }) else { return false }
+            return !current.isDeletedLocally && current.status != .recalled && tenantFileID(for: current) == parent
+                && current.attachmentChecksum == sourceChecksum && current.attachmentVersion == message.attachmentVersion
+        }
+        guard isCurrent(), let client = api as? IMAPIClient, !parent.isEmpty,
+              let cacheContext = mediaCacheScopeContext else { return }
+        if let status = await IOSServerVideoPosterReceiptStore.shared.load(root: cacheContext.rootDirectory,
+            parentID: parent, checksum: sourceChecksum, sourceVersion: message.attachmentVersion), isCurrent() {
+            let integrity = MediaFileIntegrityAuthority(expectedSizeBytes: status.size, expectedSHA256: status.posterChecksum ?? "")
+            if let hit = await lookupIndexedMediaCache(metadata: status.metadata(scope: cacheContext.scopeHash),
+                messageID: message.id, resourceKind: .thumbnail, variant: .videoPoster, integrity: integrity,
+                context: cacheContext, offline: true), isCurrent() {
+                update(.ready(hit))
+                return
+            }
+        }
+        // WDT_CHAT_MEDIA_CACHE_REUSE_20261102: also reuse covers derived from an already downloaded movie.
+        if let hit = await cachedUnifiedAttachmentThumbnailURL(for: message, conversationID: conversationID), isCurrent() {
+            update(.ready(hit))
+            return
+        }
+        let budgetKey = "\(cacheContext.scopeHash)|\(parent)"
+        func localFallback(_ checksum: String) async {
+            guard isCurrent() else { return }
+            var source = message
+            source.attachmentChecksum = checksum
+            // Cache-only: preparing a cover must never download the movie.
+            guard let original = await cachedUnifiedAttachmentURL(for: source, preferPreview: false,
+                    context: cacheContext, offline: false), isCurrent(),
+                  let resources = await AttachmentPreviewResourceBuilder.downloadedPreviewResourcesOffMain(
+                    messageID: source.id, localURL: original, mediaCategory: "video"),
+                  let poster = resources.thumbnailURL, isCurrent() else {
+                if isCurrent() { update(.missing) }
+                return
+            }
+            let cachedPoster = try? await commitIndexedMediaCache(temporaryURL: poster,
+                metadata: unifiedAttachmentMetadata(for: message, context: cacheContext),
+                resourceKind: .thumbnail, variant: .videoPoster, integrity: MediaFileIntegrityAuthority(),
+                messageID: message.id, conversationID: conversationID, context: cacheContext)
+            guard isCurrent() else { return }
+            update(.ready(cachedPoster ?? poster))
+        }
+        var refreshedNotReady = false
+        let deadline = ProcessInfo.processInfo.systemUptime + 60
+        for attempt in 0..<5 {
+            guard isCurrent() else { return }
+            guard ProcessInfo.processInfo.systemUptime < deadline else { update(.pending); return }
+            guard await IOSServerVideoPosterBudget.shared.reserve(budgetKey) else { update(.limited); return }
+            do {
+                let status: IOSServerVideoPosterStatus
+                do {
+                    status = try await client.serverVideoPosterStatus(context: context, fileID: parent, timeout: min(15, max(0.1, deadline - ProcessInfo.processInfo.systemUptime)))
+                } catch IMAPIError.httpStatus(404, _) {
+                    // Compatibility with servers without the poster-status contract.
+                    let detail = try await client.getTenantFile(context: context, fileID: parent)
+                    guard isCurrent(), detail.file.id == parent, detail.downloadAvailable,
+                          detail.file.status.lowercased() == "uploaded",
+                          !detail.file.checksum.isEmpty,
+                          MediaFileIntegrityAuthority.normalizedSHA256(detail.file.checksum.lowercased()) == detail.file.checksum.lowercased(),
+                          sourceChecksum.isEmpty || sourceChecksum.lowercased() == detail.file.checksum.lowercased() else {
+                        if isCurrent() { update(.unavailable) }; return
+                    }
+                    await localFallback(detail.file.checksum)
+                    return
+                }
+                guard isCurrent() else { return }
+                try status.validate(parentID: parent, expectedChecksum: sourceChecksum)
+                switch status.state {
+                case .ready:
+                    let metadata = status.metadata(scope: cacheContext.scopeHash)
+                    let integrity = MediaFileIntegrityAuthority(expectedSizeBytes: status.size, expectedSHA256: status.posterChecksum ?? "")
+                    if let hit = await lookupIndexedMediaCache(metadata: metadata, messageID: message.id,
+                        resourceKind: .thumbnail, variant: .videoPoster, integrity: integrity,
+                        context: cacheContext, offline: false) {
+                        await IOSServerVideoPosterReceiptStore.shared.save(status, root: cacheContext.rootDirectory,
+                            sourceVersion: message.attachmentVersion)
+                        guard isCurrent() else { return }; update(.ready(hit)); return
+                    }
+                    let bytes: Data
+                    do { bytes = try await client.serverVideoPosterBytes(context: context, status: status, timeout: min(15, max(0.1, deadline - ProcessInfo.processInfo.systemUptime))) }
+                    catch IOSServerVideoPosterError.http(404, let code, _) where code == "poster_not_ready" && !refreshedNotReady && attempt < 4 {
+                        refreshedNotReady = true
+                        update(.pending)
+                        continue
+                    }
+                    guard isCurrent() else { return }
+                    let staged = try await AttachmentTemporaryFileWriter.writeThumbnailDataOffMain(bytes)
+                    do {
+                        let url = try await commitIndexedMediaCache(temporaryURL: staged, metadata: metadata,
+                            resourceKind: .thumbnail, variant: .videoPoster, integrity: integrity,
+                            messageID: message.id, conversationID: conversationID, context: cacheContext)
+                        await AttachmentTemporaryFileWriter.removeTemporaryFileOffMain(staged)
+                        await IOSServerVideoPosterReceiptStore.shared.save(status, root: cacheContext.rootDirectory,
+                            sourceVersion: message.attachmentVersion)
+                        guard isCurrent() else { return }; update(.ready(url)); return
+                    } catch {
+                        await AttachmentTemporaryFileWriter.removeTemporaryFileOffMain(staged)
+                        throw error
+                    }
+                case .pending:
+                    update(.pending)
+                    if attempt < 4 {
+                        let remaining = max(0, min(12, deadline - ProcessInfo.processInfo.systemUptime))
+                        try await pause(UInt64(remaining * 1_000_000_000))
+                    }
+                case .none, .skipped:
+                    await localFallback(status.checksum)
+                    return
+                case .failed:
+                    update(.failed); return
+                }
+            } catch {
+                guard isCurrent() else { return }
+                if case IMAPIError.httpStatus(429, _) = error {
+                    await IOSServerVideoPosterBudget.shared.deferRetry(budgetKey, seconds: 12)
+                    update(.limited)
+                } else if case IOSServerVideoPosterError.http(429, _, let seconds) = error {
+                    await IOSServerVideoPosterBudget.shared.deferRetry(budgetKey, seconds: seconds ?? 12)
+                    update(.limited)
+                } else { update(.failed) }
+                return
+            }
+        }
+    }
+
     // WDT_CHAT_FIX3_VIDEO_COVER_20261023_BEGIN
-    func refreshedAttachmentThumbnailURL(_ message: ChatMessage, conversationID: String) async -> URL? {
+    func refreshedAttachmentThumbnailURL(_ message: ChatMessage, conversationID: String, forceLocalPoster: Bool = true) async -> URL? {
         guard attachmentMediaCategory(for: message) == "video" else {
             return try? await prepareMessageAttachmentLocalFile(message, conversationID: conversationID, preferPreview: true)
         }
@@ -572,9 +713,26 @@ extension AppState {
         let scope = remoteDataScopeKey(for: context)
         guard context.hasIMSession, attachmentCanRefreshRemoteFile(message) else { return nil }
         do {
-            let refreshed = try await refreshedAttachmentMessage(message, in: conversationID, context: context, scope: scope)
+            let refreshed: ChatMessage
+            if forceLocalPoster {
+                // prepareMessageAttachmentLocalFile validates the detail once and shares the download.
+                refreshed = message
+            } else {
+                refreshed = try await refreshedAttachmentMessage(message, in: conversationID, context: context, scope: scope)
+            }
             guard !Task.isCancelled, isCurrentRemoteScope(scope) else { return nil }
-            return resolvedAttachmentThumbnailURL(for: refreshed)
+            if !forceLocalPoster, let poster = resolvedAttachmentThumbnailURL(for: refreshed),
+               poster != resolvedAttachmentThumbnailURL(for: message) {
+                return poster
+            }
+            // Legacy callers also use cache-only fallback; never fetch a movie for a poster.
+            guard let cacheContext = mediaCacheScopeContext,
+                  let localURL = await cachedUnifiedAttachmentURL(for: refreshed, preferPreview: false,
+                    context: cacheContext, offline: true), isCurrentRemoteScope(scope), !Task.isCancelled else { return nil }
+            let resources = await AttachmentPreviewResourceBuilder.downloadedPreviewResourcesOffMain(
+                messageID: refreshed.id, localURL: localURL, mediaCategory: "video")
+            guard isCurrentRemoteScope(scope), !Task.isCancelled else { return nil }
+            return resources?.thumbnailURL
         } catch {
             return nil
         }
@@ -588,6 +746,16 @@ extension AppState {
     func attachmentCanRefreshRemoteFile(_ message: ChatMessage) -> Bool {
         let fileID = tenantFileID(for: message).trimmingCharacters(in: .whitespacesAndNewlines)
         return !fileID.isEmpty
+    }
+
+    func chatAttachmentImageCacheKey(for message: ChatMessage, videoPoster: Bool) -> String {
+        let resource = attachmentResourceComponents(for: message)
+        let stableID = [resource.fileID, resource.attachmentID, resource.mediaID, message.attachmentCacheKey]
+            .first { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty } ?? message.id
+        return scopedContentCacheIdentity([
+            videoPoster ? "chat-server-poster" : "chat-original",
+            stableID, message.attachmentChecksum.lowercased(), message.attachmentVersion
+        ])
     }
 
     func attachmentThumbnailCacheKey(for message: ChatMessage) -> String {
@@ -656,13 +824,18 @@ extension AppState {
             ?? fileStore.attachmentDownloadSnapshot(attachmentID: attachmentProgressKey(for: message, preferPreview: true))
     }
 
-    private func resolvedAttachmentURL(_ rawValue: String) -> URL? {
-        guard !isTenantFileAPIEndpoint(rawValue) else { return nil }
+    private func resolvedAttachmentURL(_ rawValue: String, allowPosterEndpoint: Bool = false) -> URL? {
         let resolved = resolveTenantAssetURL(rawValue)
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !resolved.isEmpty else { return nil }
-        guard !isTenantFileAPIEndpoint(resolved) else { return nil }
-        return URL(string: resolved)
+        guard !resolved.isEmpty, let url = URL(string: resolved) else { return nil }
+        if isTenantFileAPIEndpoint(resolved) {
+            let parts = url.path.split(separator: "/")
+            // Image fields can point at poster/thumbnail/cover or other media routes.
+            // Only known JSON endpoints are excluded, rather than the whole files prefix.
+            let isJSONEndpoint = parts.count <= 4 || (parts.count == 5 && parts.last == "presign-download")
+            guard allowPosterEndpoint, !isJSONEndpoint else { return nil }
+        }
+        return url
     }
 
     func isTenantFileAPIEndpoint(_ rawValue: String) -> Bool {
@@ -960,6 +1133,8 @@ extension AppState {
     }
 
     func prepareMessageAttachmentLocalFile(_ message: ChatMessage, conversationID: String, preferPreview: Bool = false) async throws -> URL {
+        // WDT_CHAT_MEDIA_CACHE_REUSE_20261102: a cell may still hold the snapshot from before file-detail refresh.
+        let message = currentAttachmentCacheMessage(message, conversationID: conversationID)
         let scope = contentCacheScopeKey
         let attachmentID = attachmentProgressKey(for: message, preferPreview: preferPreview)
         let localURL = try await withSharedAttachmentDownload(attachmentID: attachmentID) { token in
@@ -1192,7 +1367,8 @@ extension AppState {
                     targetMessage,
                     in: conversationID,
                     context: context,
-                    scope: scope
+                    scope: scope,
+                    requireSignedDownload: true
                 )
                 guard let refreshedURL = self.attachmentRemoteURL(
                     for: refreshedMessage,
@@ -1258,6 +1434,16 @@ extension AppState {
         return localURL
     }
 
+    // WDT_CHAT_MEDIA_CACHE_REUSE_20261102: cache-only lookup for a recycled chat cell, before loading UI/network work.
+    func cachedMessageAttachmentLocalFile(_ message: ChatMessage, conversationID: String) async -> URL? {
+        let message = currentAttachmentCacheMessage(message, conversationID: conversationID)
+        guard !message.isDeletedLocally, message.status != .recalled,
+              let context = mediaCacheScopeContext else { return nil }
+        let url = await cachedUnifiedAttachmentURL(for: message, preferPreview: false, context: context, offline: true)
+        guard !Task.isCancelled, context == mediaCacheScopeContext else { return nil }
+        return url
+    }
+
     private func cachedUnifiedAttachmentURL(
         for message: ChatMessage,
         preferPreview: Bool,
@@ -1265,6 +1451,15 @@ extension AppState {
         offline: Bool
     ) async -> URL? {
         let metadata = unifiedAttachmentMetadata(for: message, context: context)
+        // WDT_CHAT_MEDIA_CACHE_REUSE_20261102: opening a downloaded image/movie need not fetch a second preview copy.
+        if preferPreview, ["image", "video"].contains(attachmentMediaCategory(for: message)),
+           let original = await lookupIndexedMediaCache(
+            metadata: metadata, messageID: message.id, resourceKind: .original,
+            integrity: unifiedAttachmentIntegrity(for: message, resourceKind: .original),
+            context: context, offline: offline
+           ) {
+            return original
+        }
         let resourceKind: MediaResourceKind = preferPreview ? .preview : .original
         return await lookupIndexedMediaCache(
             metadata: metadata,
@@ -1278,8 +1473,10 @@ extension AppState {
 
     func cachedUnifiedAttachmentThumbnailURL(
         for message: ChatMessage,
+        conversationID: String? = nil,
         offline: Bool = true
     ) async -> URL? {
+        let message = currentAttachmentCacheMessage(message, conversationID: conversationID)
         guard let context = mediaCacheScopeContext else { return nil }
         let variant: MediaCacheVariant = attachmentMediaCategory(for: message) == "video"
             ? .videoPoster
@@ -1301,6 +1498,7 @@ extension AppState {
         conversationID: String
     ) async -> URL? {
         guard !data.isEmpty, let context = mediaCacheScopeContext else { return nil }
+        let message = currentAttachmentCacheMessage(message, conversationID: conversationID)
         let variant: MediaCacheVariant = attachmentMediaCategory(for: message) == "video"
             ? .videoPoster
             : .thumbnail640
@@ -1426,6 +1624,13 @@ extension AppState {
         return committedURL
     }
 
+    private func currentAttachmentCacheMessage(_ message: ChatMessage, conversationID: String?) -> ChatMessage {
+        guard let conversationID,
+              let current = conversationStore.conversation(id: conversationID)?.messages.first(where: { $0.id == message.id }),
+              tenantFileID(for: current) == tenantFileID(for: message) else { return message }
+        return current
+    }
+
     private func unifiedAttachmentMetadata(
         for message: ChatMessage,
         context: IOSMediaCacheScopeContext
@@ -1434,7 +1639,7 @@ extension AppState {
         let remoteURL = attachmentRemoteURL(for: message, preferPreview: false)
         let fileExtension = attachmentFileExtension(for: message, remoteURL: remoteURL, mediaCategory: mediaCategory)
         let resource = attachmentResourceComponents(for: message)
-        return MediaResourceMetadata(
+        var metadata = MediaResourceMetadata(
             scope: context.scopeHash,
             fileID: resource.fileID,
             attachmentID: resource.attachmentID,
@@ -1452,6 +1657,18 @@ extension AppState {
             previewMimeType: attachmentMimeType(from: message),
             previewExtension: fileExtension
         )
+        // Derived bytes need the original's stable content identity even when version is absent.
+        if metadata.version.isEmpty,
+           let (kind, value) = metadata.identity(for: .original).contentVersionKindAndValue {
+            let derivedVersion = "source:\(kind.rawValue):\(value)"
+            metadata.thumbnailVersion = derivedVersion
+            metadata.previewVersion = derivedVersion
+        }
+        if mediaCategory == "video" {
+            metadata.thumbnailMimeType = "image/jpeg"
+            metadata.thumbnailExtension = "jpg"
+        }
+        return metadata
     }
 
     private func unifiedAttachmentIntegrity(
@@ -1564,11 +1781,23 @@ extension AppState {
         }
     }
 
-    private func refreshedAttachmentMessage(_ message: ChatMessage, in conversationID: String, context: IMAPIContext, scope: String, additionalValidation: ((RemoteUserFileDetail) -> Bool)? = nil) async throws -> ChatMessage {
+    private func refreshedAttachmentMessage(_ message: ChatMessage, in conversationID: String, context: IMAPIContext, scope: String, additionalValidation: ((RemoteUserFileDetail) -> Bool)? = nil, requireSignedDownload: Bool = false) async throws -> ChatMessage {
         var targetMessage = message
         let fileID = tenantFileID(for: message).trimmingCharacters(in: .whitespacesAndNewlines)
         if !fileID.isEmpty {
             let detail = try await api.getTenantFile(context: context, fileID: fileID)
+            var signedDownloadURL: String?
+            guard !Task.isCancelled, isCurrentRemoteScope(scope), additionalValidation?(detail) ?? true else {
+                throw CancellationError()
+            }
+            if detail.downloadAvailable,
+               requireSignedDownload || resolvedAttachmentURL(detail.downloadURL) == nil,
+               let client = api as? IMAPIClient {
+                signedDownloadURL = try await client.presignTenantFileDownloadURL(context: context, fileID: fileID)
+                guard let signedDownloadURL, resolvedAttachmentURL(signedDownloadURL) != nil else {
+                    throw AttachmentDownloadError.missingURL
+                }
+            }
             guard !Task.isCancelled, isCurrentRemoteScope(scope), additionalValidation?(detail) ?? true else {
                 throw CancellationError()
             }
@@ -1582,7 +1811,7 @@ extension AppState {
             targetMessage.attachmentPreviewAvailable = detail.previewAvailable
             targetMessage.attachmentDownloadAvailable = detail.downloadAvailable
             targetMessage.attachmentPreviewURL = detail.previewURL
-            targetMessage.attachmentDownloadURL = detail.downloadURL
+            targetMessage.attachmentDownloadURL = signedDownloadURL ?? detail.downloadURL
             targetMessage.attachmentMediaCategory = detail.file.mediaCategory
             targetMessage.attachmentExtension = detail.file.fileExtension
             targetMessage.attachmentThumbnailURL = detail.file.thumbnailURL
@@ -1595,6 +1824,8 @@ extension AppState {
             targetMessage.attachmentDurationSeconds = detail.file.durationSeconds
             targetMessage.attachmentUploadStatus = detail.file.status
             updateMessageAttachment(targetMessage, in: conversationID)
+            await persistConversationSnapshotImmediately(conversationID: conversationID, scope: scope, source: .localMutation)
+            guard !Task.isCancelled, isCurrentRemoteScope(scope) else { throw CancellationError() }
         }
         return targetMessage
     }
@@ -1809,7 +2040,6 @@ extension AppState {
                 offline: offline
               ) else { return nil }
         guard context.sessionGeneration == localMessageSessionGeneration,
-              await IOSMediaCacheStoreRegistry.shared.accepts(context),
               let indexedURL = mediaCacheURL(
                 relativePath: indexed.entry.relativePath,
                 context: context
@@ -1818,7 +2048,8 @@ extension AppState {
                 in: context.rootDirectory,
                 preferredExtension: metadata.preferredExtension(for: resourceKind)
               ).standardizedFileURL,
-              let store = try? await IOSMediaCacheStoreRegistry.shared.store(for: context) else {
+              let store = try? await IOSMediaCacheStoreRegistry.shared.store(for: context),
+              await IOSMediaCacheStoreRegistry.shared.accepts(context) else {
             return nil
         }
         // JHT_MOD_BEGIN MEDIA_CACHE_FILE_IO_PERF_20260912 - 修改开始：缓存文件存在性校验放到后台，避免消息滚动时阻塞 MainActor

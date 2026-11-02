@@ -1602,20 +1602,23 @@ extension AppState {
         let version = try await ConversationPageLoader.load(
             request: { cursor in
                 let diagnostic = SyncFailureDiagnostic.HTTPObservation(.conversationPage)
-                return try await SyncFailureDiagnostic.$httpObservation.withValue(diagnostic) {
+                let page = try await SyncFailureDiagnostic.$httpObservation.withValue(diagnostic) {
                     defer { diagnostic.finish() }
                     return try await diagnostic.perform {
                         try await self.api.conversationPage(context: authority.context, cursor: cursor)
                     }
                 }
+                try await self.waitForConversationListInteractionToEnd(scope: scope)
+                return page
             },
             validate: validate,
             onPage: { page in
                 applyingPage = true
                 defer { applyingPage = false }
+                let lookup = self.makeConversationUserLookup()
                 let current = currentRows()
-                let accepted = self.canonicalRemoteConversations(page.conversations).filter { remote in
-                    let key = self.normalizedRemoteChannelID(remote.channelID, channelType: remote.channelType)
+                let accepted = self.canonicalRemoteConversations(page.conversations, lookup: lookup).filter { remote in
+                    let key = self.normalizedRemoteChannelID(remote.channelID, channelType: remote.channelType, lookup: lookup)
                     let unchanged = presentation.accept(key, current: current)
                     // A page may contain an older server summary than an already
                     // received local message, even before this refresh began.
@@ -1623,7 +1626,7 @@ extension AppState {
                 }
                 self.applyRemoteConversations(accepted, replacing: false)
                 presentation.didApply(accepted.map {
-                    self.normalizedRemoteChannelID($0.channelID, channelType: $0.channelType)
+                    self.normalizedRemoteChannelID($0.channelID, channelType: $0.channelType, lookup: lookup)
                 }, current: currentRows())
                 self.isInitialDataLoading = false
                 if firstPage {
@@ -2701,7 +2704,12 @@ extension AppState {
             guard !Task.isCancelled,
                   groupDirectoryRefreshGeneration.isCurrent(directoryGeneration),
                   isCurrentRemoteRefresh(refreshSession, scope: scope) else { return }
-            applyRemoteGroups(remoteGroups)
+            await applyRemoteGroupsCooperatively(remoteGroups) {
+                self.groupDirectoryRefreshGeneration.isCurrent(directoryGeneration)
+                    && self.isCurrentRemoteRefresh(refreshSession, scope: scope)
+            }
+            guard !Task.isCancelled, groupDirectoryRefreshGeneration.isCurrent(directoryGeneration),
+                  isCurrentRemoteRefresh(refreshSession, scope: scope) else { return }
             refreshInitialGroupBundles(remoteGroups, scope: scope, refreshSession: refreshSession)
         } catch {
             guard !Task.isCancelled,
@@ -2732,7 +2740,11 @@ extension AppState {
                   groupDirectoryRefreshGeneration.isCurrent(directoryGeneration),
                   isAuthenticated,
                   isCurrentRemoteScope(scope) else { return false }
-            applyRemoteGroups(remoteGroups)
+            await applyRemoteGroupsCooperatively(remoteGroups) {
+                self.groupDirectoryRefreshGeneration.isCurrent(directoryGeneration) && self.isCurrentRemoteScope(scope)
+            }
+            guard !Task.isCancelled, groupDirectoryRefreshGeneration.isCurrent(directoryGeneration),
+                  isAuthenticated, isCurrentRemoteScope(scope) else { return false }
             return true
         } catch {
             guard !Task.isCancelled,
@@ -5082,8 +5094,9 @@ extension AppState {
     ) -> [LocalMessageConversationSnapshot] {
         let actorID = (apiContext.imUID ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         // JHT_MOD_BEGIN APPSTATE_LOCAL_MESSAGE_PROJECTION_SPLIT_20260912 - 修改开始：快照批量投影委托给 Core/AppSupport builder，AppState 只提供上下文
+        let lookup = makeConversationUserLookup()
         let inputs = source.map { conversation in
-            localMessageProjectionInput(from: conversation)
+            localMessageProjectionInput(from: conversation, lookup: lookup)
         }
         return LocalMessageProjectionBuilder.snapshots(
             from: inputs,
@@ -5114,11 +5127,12 @@ extension AppState {
     // JHT_MOD_BEGIN APPSTATE_LOCAL_MESSAGE_PROJECTION_SPLIT_20260912 - 修改开始：AppState 只负责解析原有 channel 上下文，实际投影在 support builder
     private func localMessageProjectionInput(
         from conversation: Conversation,
-        projectedMessages: [ChatMessage]? = nil
+        projectedMessages: [ChatMessage]? = nil,
+        lookup: ConversationUserLookup? = nil
     ) -> LocalMessageProjectionInput {
         LocalMessageProjectionInput(
             conversation: conversation,
-            channelID: remoteChannelID(for: conversation),
+            channelID: remoteChannelID(for: conversation, lookup: lookup),
             channelType: apiChannelType(for: conversation.kind),
             projectedMessages: projectedMessages
         )
@@ -6239,8 +6253,9 @@ extension AppState {
         let cacheableConversations = shouldShowGroupMemberCount
             ? conversations
             : conversations.map { $0.scrubbingGroupMemberTotals() }
+        let lookup = makeConversationUserLookup()
         let inputs = cacheableConversations.map { conversation in
-            localMessageProjectionInput(from: conversation)
+            localMessageProjectionInput(from: conversation, lookup: lookup)
         }
         let actorID = (apiContext.imUID ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         scheduleLocalMessageProjectionWrite(
@@ -6265,8 +6280,9 @@ extension AppState {
             ? conversations
             : conversations.map { $0.scrubbingGroupMemberTotals() }
         // JHT_MOD_BEGIN APPSTATE_LOCAL_MESSAGE_PROJECTION_ASYNC_PERF_20260912 - 修改开始：远端快照缓存写入前的批量投影放到后台
+        let lookup = makeConversationUserLookup()
         let inputs = cacheableConversations.map { conversation in
-            localMessageProjectionInput(from: conversation)
+            localMessageProjectionInput(from: conversation, lookup: lookup)
         }
         let actorID = (apiContext.imUID ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         scheduleLocalMessageProjectionWrite(

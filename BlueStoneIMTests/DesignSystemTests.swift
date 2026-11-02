@@ -264,7 +264,197 @@ final class DesignSystemTests: XCTestCase {
         first.uninstall()
         XCTAssertTrue(gesture.delegate === replacement)
     }
+
+    // WDT_CHAT_EDGE_BACK_20261102_BEGIN
+    func testChatBackSwipeOnlyInstallsWhileVisibleAndRestoresContainerOwner() throws {
+        let navigation = UINavigationController(rootViewController: UIViewController())
+        navigation.loadViewIfNeeded()
+        let gesture = try XCTUnwrap(navigation.interactivePopGestureRecognizer)
+        let containerOwner = SystemBackSwipeInstaller.Coordinator()
+        containerOwner.install(on: navigation)
+        let chatOwner = SystemBackSwipeInstaller.Coordinator()
+        let host = SystemBackSwipeInstaller.HostController()
+        host.coordinator = chatOwner
+        host.isScreenScoped = true
+        navigation.pushViewController(host, animated: false)
+        navigation.setNavigationBarHidden(true, animated: false)
+        gesture.isEnabled = false
+
+        host.installIfVisible()
+        XCTAssertFalse(gesture.isEnabled, "An offscreen update must not take ownership")
+        XCTAssertTrue(gesture.delegate === containerOwner)
+
+        host.beginAppearanceTransition(true, animated: false)
+        host.endAppearanceTransition()
+        XCTAssertTrue(gesture.isEnabled)
+        XCTAssertTrue(gesture.delegate === chatOwner)
+        XCTAssertTrue(chatOwner.gestureRecognizerShouldBegin(gesture))
+
+        host.beginAppearanceTransition(false, animated: false)
+        host.endAppearanceTransition()
+        host.installIfVisible()
+        XCTAssertTrue(gesture.delegate === containerOwner)
+        XCTAssertFalse(gesture.isEnabled, "Leaving chat must restore the prior enabled state")
+
+        host.beginAppearanceTransition(true, animated: false)
+        host.endAppearanceTransition()
+        XCTAssertTrue(gesture.isEnabled)
+        XCTAssertTrue(gesture.delegate === chatOwner, "Reentering chat must re-enable edge back")
+        chatOwner.uninstall()
+        containerOwner.uninstall()
+    }
+
+    func testChatBackSwipeDoesNotBypassBatchSelectionOrPopRoot() throws {
+        let navigation = UINavigationController(rootViewController: UIViewController())
+        navigation.loadViewIfNeeded()
+        let gesture = try XCTUnwrap(navigation.interactivePopGestureRecognizer)
+        let coordinator = SystemBackSwipeInstaller.Coordinator()
+        coordinator.install(on: navigation)
+        defer { coordinator.uninstall() }
+        navigation.pushViewController(UIViewController(), animated: false)
+        coordinator.allowsBackSwipe = false
+        XCTAssertFalse(coordinator.gestureRecognizerShouldBegin(gesture))
+        coordinator.allowsBackSwipe = true
+        XCTAssertTrue(coordinator.gestureRecognizerShouldBegin(gesture))
+        navigation.popViewController(animated: false)
+        XCTAssertFalse(coordinator.gestureRecognizerShouldBegin(gesture))
+    }
+    // WDT_CHAT_EDGE_BACK_20261102_END
     // WDT_IOS1_NAV_COMPAT_20261023_END
+
+    // WDT_CHAT_EDGE_BACK_FIX_20261102_BEGIN
+    func testChatInteractiveBackReenablesNativeGestureAfterNavigationPreferencesChange() async throws {
+        let root = UIViewController()
+        let chat = UIViewController()
+        let navigation = UINavigationController(rootViewController: root)
+        navigation.setViewControllers([root, chat], animated: false)
+        navigation.setNavigationBarHidden(true, animated: false)
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let window = UIWindow(windowScene: scene)
+        window.rootViewController = navigation
+        window.makeKeyAndVisible()
+        defer { window.isHidden = true; window.rootViewController = nil }
+        chat.view.layoutIfNeeded()
+        try await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertTrue(chat.view.window === window)
+        XCTAssertNil(navigation.transitionCoordinator)
+        let gesture = try XCTUnwrap(navigation.interactivePopGestureRecognizer)
+        let probe = ChatInteractiveBackSwipeInstaller.ProbeView()
+        probe.frame = CGRect(x: 0, y: 0, width: 1, height: 1)
+        chat.view.addSubview(probe)
+        defer {
+            ChatInteractiveBackSwipeInstaller.dismantleUIView(probe, coordinator: ())
+        }
+        let original = gesture.delegate
+        gesture.isEnabled = false
+        probe.refreshIfVisible()
+        XCTAssertTrue(navigation.interactivePopGestureRecognizer === gesture, "Keep UIKit's interactive transition, not a separate swipe-to-dismiss recognizer")
+        XCTAssertTrue(gesture.delegate === probe.owner)
+        XCTAssertTrue(gesture.isEnabled)
+        XCTAssertFalse(probe.isUserInteractionEnabled, "The 1pt probe must not intercept chat touches")
+
+        gesture.isEnabled = false
+        probe.refreshIfVisible()
+        XCTAssertTrue(gesture.isEnabled, "Reconcile even when the recognizer instance has not changed")
+        gesture.delegate = original
+        gesture.isEnabled = false
+        probe.refreshIfVisible()
+        XCTAssertTrue(gesture.delegate === probe.owner)
+        XCTAssertTrue(gesture.isEnabled)
+
+        ChatInteractiveBackSwipeInstaller.dismantleUIView(probe, coordinator: ())
+        probe.refreshIfVisible()
+        XCTAssertTrue(gesture.delegate === original)
+        XCTAssertFalse(gesture.isEnabled, "A queued refresh must not reinstall after teardown")
+    }
+
+    func testChatInteractiveBackIsScopedToTopChatAndDoesNotBypassSelection() async throws {
+        let root = UIViewController()
+        let chat = UIViewController()
+        let navigation = UINavigationController(rootViewController: root)
+        navigation.setViewControllers([root, chat], animated: false)
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let window = UIWindow(windowScene: scene)
+        window.rootViewController = navigation
+        window.makeKeyAndVisible()
+        defer { window.isHidden = true; window.rootViewController = nil }
+        chat.view.layoutIfNeeded()
+        try await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertTrue(chat.view.window === window)
+        XCTAssertNil(navigation.transitionCoordinator)
+        let owner = ChatInteractiveBackSwipeInstaller.Owner()
+        let gesture = try XCTUnwrap(navigation.interactivePopGestureRecognizer)
+        owner.install(on: navigation, screen: chat)
+        defer { owner.uninstall() }
+        XCTAssertTrue(owner.gestureRecognizerShouldBegin(gesture))
+        let transcript = UIScrollView(frame: chat.view.bounds)
+        chat.view.addSubview(transcript)
+        XCTAssertTrue(owner.gestureRecognizer(gesture, shouldBeRequiredToFailBy: transcript.panGestureRecognizer))
+        let unrelatedPan = UIPanGestureRecognizer()
+        navigation.view.addGestureRecognizer(unrelatedPan)
+        XCTAssertFalse(owner.gestureRecognizer(gesture, shouldBeRequiredToFailBy: unrelatedPan))
+        XCTAssertFalse(owner.gestureRecognizer(gesture, shouldBeRequiredToFailBy: gesture))
+
+        owner.allowsBackSwipe = false
+        XCTAssertFalse(owner.gestureRecognizerShouldBegin(gesture))
+        XCTAssertFalse(owner.gestureRecognizer(gesture, shouldBeRequiredToFailBy: transcript.panGestureRecognizer))
+        owner.allowsBackSwipe = true
+        XCTAssertTrue(owner.gestureRecognizerShouldBegin(gesture))
+
+        navigation.pushViewController(UIViewController(), animated: false)
+        XCTAssertFalse(owner.gestureRecognizerShouldBegin(gesture), "An offscreen chat must not handle another screen's swipe")
+        let replacement = SystemBackSwipeInstaller.Coordinator()
+        gesture.delegate = replacement
+        owner.uninstall()
+        XCTAssertTrue(gesture.delegate === replacement, "Do not overwrite a subsequent screen's gesture owner")
+        navigation.popToRootViewController(animated: false)
+        owner.install(on: navigation, screen: chat)
+        XCTAssertFalse(owner.gestureRecognizerShouldBegin(gesture))
+    }
+
+    func testChatInteractiveBackInstallsInHiddenBarSwiftUINavigationAndSupportsReentry() async throws {
+        let probe = LegacyNavigationProbe()
+        let host = UIHostingController(rootView: ChatInteractiveNavigationProbeView(probe: probe))
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let window = UIWindow(windowScene: scene)
+        window.rootViewController = host
+        window.makeKeyAndVisible()
+        host.view.layoutIfNeeded()
+        defer { window.isHidden = true; window.rootViewController = nil }
+        func navigation(in controller: UIViewController) -> UINavigationController? {
+            if let navigation = controller as? UINavigationController { return navigation }
+            for child in controller.children {
+                if let navigation = navigation(in: child) { return navigation }
+            }
+            return nil
+        }
+        try await Task.sleep(nanoseconds: 150_000_000)
+        let navigation = try XCTUnwrap(navigation(in: host))
+        for id in ["first-chat", "second-chat"] {
+            probe.route = LegacyNavigationRoute(id: id)
+            for _ in 0..<75 {
+                if navigation.viewControllers.count == 2, navigation.transitionCoordinator == nil,
+                   navigation.interactivePopGestureRecognizer?.delegate is ChatInteractiveBackSwipeInstaller.Owner { break }
+                try await Task.sleep(nanoseconds: 20_000_000)
+            }
+            let gesture = try XCTUnwrap(navigation.interactivePopGestureRecognizer)
+            let owner = try XCTUnwrap(gesture.delegate as? ChatInteractiveBackSwipeInstaller.Owner)
+            XCTAssertEqual(navigation.viewControllers.count, 2)
+            XCTAssertTrue(navigation.isNavigationBarHidden)
+            XCTAssertTrue(gesture.isEnabled)
+            XCTAssertTrue(owner.gestureRecognizerShouldBegin(gesture))
+
+            navigation.popViewController(animated: false)
+            for _ in 0..<50 {
+                if probe.route == nil { break }
+                try await Task.sleep(nanoseconds: 20_000_000)
+            }
+            XCTAssertNil(probe.route, "Native pop must still synchronize the SwiftUI conversation route")
+            XCTAssertEqual(navigation.viewControllers.count, 1)
+            XCTAssertFalse(gesture.delegate === owner)
+        }
+    }
+    // WDT_CHAT_EDGE_BACK_FIX_20261102_END
 
     // WDT_IOS1_CHANGE_COMPAT_20261023_BEGIN
     func testLegacyOnChangeReportsActualPreviousValueAndSkipsInitialRender() async throws {
@@ -1431,6 +1621,29 @@ private struct LegacyNavigationProbeView: View {
     }
 }
 // WDT_IOS1_NAV_COMPAT_20261023_END
+
+// WDT_CHAT_EDGE_BACK_FIX_20261102_BEGIN
+private struct ChatInteractiveNavigationProbeView: View {
+    @ObservedObject var probe: LegacyNavigationProbe
+    var body: some View {
+        NavigationStackCompat {
+            Text("conversations").modifier(ItemNavigationCompatModifier(item: $probe.route) { item in
+                ScrollView {
+                    Text(item.id).frame(maxWidth: .infinity, minHeight: 1200)
+                }
+                .simultaneousGesture(DragGesture(minimumDistance: 8).onChanged { _ in })
+                .background(
+                    ChatInteractiveBackSwipeInstaller(allowsBackSwipe: true)
+                        .frame(width: 1, height: 1)
+                        .allowsHitTesting(false)
+                )
+                .navigationBarBackButtonHidden(true)
+                .navigationBarHidden(true)
+            })
+        }
+    }
+}
+// WDT_CHAT_EDGE_BACK_FIX_20261102_END
 
 // WDT_IOS1_IMAGE_BUDGET_20261023_BEGIN
 private actor SuspendedImageTransport: RemoteImageTransporting {

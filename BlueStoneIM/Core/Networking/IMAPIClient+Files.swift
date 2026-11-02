@@ -1,4 +1,6 @@
 import Foundation
+import CryptoKit
+import ImageIO
 
 @MainActor
 extension IMAPIClient {
@@ -680,6 +682,49 @@ extension IMAPIClient {
         )
     }
 
+    func serverVideoPosterStatus(context: IMAPIContext, fileID: String, timeout: TimeInterval = 15) async throws -> IOSServerVideoPosterStatus {
+        try await request(base: tenantBase(for: context), path: "/api/tenant/files/\(fileID.urlPathEncoded)/poster-status",
+            additionalHeaders: ["Cache-Control": "no-cache"], cachePolicy: .reloadIgnoringLocalCacheData,
+            preserveHTTPStatusErrors: true, timeoutInterval: timeout, bearerPurpose: .publicMedia,
+            propagateTaskCancellation: true, runtimeRouteReplayPolicy: .singleSend)
+    }
+
+    func serverVideoPosterBytes(context: IMAPIContext, status: IOSServerVideoPosterStatus, timeout: TimeInterval = 15) async throws -> Data {
+        let base = tenantBase(for: context)
+        guard var components = URLComponents(url: base, resolvingAgainstBaseURL: false) else { throw URLError(.badURL) }
+        components.path = "/api/tenant/files/\(status.fileID)/poster"
+        components.queryItems = [URLQueryItem(name: "v", value: status.version)]
+        guard let url = components.url else { throw URLError(.badURL) }
+        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: timeout)
+        request.setValue("image/jpeg", forHTTPHeaderField: "Accept")
+        request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
+        let response = try await httpTransport.data(for: request, rejectingCrossOriginRedirectsFrom: url)
+        if let final = response.responseURL,
+           final.scheme != url.scheme || final.host != url.host || final.port != url.port { throw URLError(.badServerResponse) }
+        guard response.statusCode == 200 else {
+            let json = try? JSONSerialization.jsonObject(with: response.data) as? [String: Any]
+            let error = json?["error"] as? [String: Any]
+            throw IOSServerVideoPosterError.http(response.statusCode ?? 0, error?["code"] as? String,
+                response.value(forHTTPHeaderField: "Retry-After").flatMap(Int.init))
+        }
+        guard response.value(forHTTPHeaderField: "Content-Type")?.split(separator: ";").first?.lowercased() == "image/jpeg" else {
+            throw IOSServerVideoPosterError.invalidBytes
+        }
+        try await Task.detached(priority: .utility) { try Self.validateVideoPosterBytes(response.data, status: status) }.value
+        return response.data
+    }
+
+    func presignTenantFileDownloadURL(context: IMAPIContext, fileID: String) async throws -> String {
+        let result: RemoteAttachmentDownloadAddress = try await publicMediaRequest(
+            context: context,
+            path: "/api/tenant/files/\(fileID.urlPathEncoded)/presign-download",
+            method: "POST",
+            body: [:]
+        )
+        guard let url = result.value else { throw IMAPIError.server("文件下载地址暂不可用") }
+        return url
+    }
+
     func presignTenantFileDownload(context: IMAPIContext, fileID: String) async throws -> RemoteUserFileDetail {
         try await publicMediaRequest(
             context: context,
@@ -725,5 +770,41 @@ private extension String {
         var allowed = CharacterSet.urlQueryAllowed
         allowed.remove(charactersIn: ":#[]@!$&'()*+,;=/?")
         return addingPercentEncoding(withAllowedCharacters: allowed) ?? self
+    }
+}
+
+// The presign response may contain only a URL, without the file-detail object.
+struct RemoteAttachmentDownloadAddress: Decodable {
+    let value: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case downloadURL = "download_url", signedURL = "signed_url"
+        case downloadPublic = "download_public", download, url, previewURL = "preview_url"
+    }
+    private struct NestedDownload: Decodable { let url: String? }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        value = try [
+            c.decodeIfPresent(String.self, forKey: .downloadURL),
+            c.decodeIfPresent(String.self, forKey: .signedURL),
+            c.decodeIfPresent(NestedDownload.self, forKey: .download)?.url,
+            c.decodeIfPresent(String.self, forKey: .url),
+            c.decodeIfPresent(String.self, forKey: .downloadPublic),
+            c.decodeIfPresent(String.self, forKey: .previewURL)
+        ].compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }.first { !$0.isEmpty }
+    }
+}
+
+extension IMAPIClient {
+    nonisolated static func validateVideoPosterBytes(_ bytes: Data, status: IOSServerVideoPosterStatus) throws {
+        guard bytes.count <= 1_048_576, Int64(bytes.count) == status.size,
+              bytes.starts(with: [0xff, 0xd8, 0xff]),
+              SHA256.hash(data: bytes).map({ String(format: "%02x", $0) }).joined() == status.posterChecksum?.lowercased(),
+              let source = CGImageSourceCreateWithData(bytes as CFData, nil),
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              properties[kCGImagePropertyPixelWidth] as? Int == status.width,
+              properties[kCGImagePropertyPixelHeight] as? Int == status.height,
+              CGImageSourceCreateImageAtIndex(source, 0, nil) != nil else { throw IOSServerVideoPosterError.invalidBytes }
     }
 }

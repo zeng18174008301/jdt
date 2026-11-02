@@ -2477,21 +2477,28 @@ struct RemoteLoadingStateView: View {
 }
 
 // WDT_IOS1_NAV_COMPAT_20261023_BEGIN
-// One owner per navigation container. UIKit keeps its own transition target and action.
+// UIKit keeps its own transition target and action; screen-scoped owners restore their predecessor.
 struct SystemBackSwipeInstaller: UIViewControllerRepresentable {
+    // WDT_CHAT_EDGE_BACK_20261102: opt in only for screens that hide the navigation bar.
+    var isScreenScoped = false
+    var allowsBackSwipe = true
+
     func makeCoordinator() -> Coordinator { Coordinator() }
 
     func makeUIViewController(context: Context) -> HostController {
         let host = HostController()
         host.coordinator = context.coordinator
+        host.isScreenScoped = isScreenScoped
+        context.coordinator.allowsBackSwipe = allowsBackSwipe
         return host
     }
 
     func updateUIViewController(_ host: HostController, context: Context) {
         host.coordinator = context.coordinator
+        host.isScreenScoped = isScreenScoped
+        context.coordinator.allowsBackSwipe = allowsBackSwipe
         DispatchQueue.main.async { [weak host] in
-            guard let host else { return }
-            host.coordinator?.install(from: host)
+            host?.installIfVisible()
         }
     }
 
@@ -2502,6 +2509,14 @@ struct SystemBackSwipeInstaller: UIViewControllerRepresentable {
 
     final class HostController: UIViewController {
         weak var coordinator: Coordinator?
+        var isScreenScoped = false
+        private var isVisible = false
+
+        func installIfVisible() {
+            guard !isScreenScoped || isVisible else { return }
+            coordinator?.install(from: self)
+        }
+
         override func viewDidLoad() {
             super.viewDidLoad()
             view.isUserInteractionEnabled = false
@@ -2509,11 +2524,21 @@ struct SystemBackSwipeInstaller: UIViewControllerRepresentable {
         }
         override func viewDidAppear(_ animated: Bool) {
             super.viewDidAppear(animated)
-            coordinator?.install(from: self)
+            isVisible = true
+            installIfVisible()
+        }
+
+        override func viewDidDisappear(_ animated: Bool) {
+            super.viewDidDisappear(animated)
+            isVisible = false
+            if isScreenScoped {
+                coordinator?.uninstall()
+            }
         }
     }
 
     final class Coordinator: NSObject, UIGestureRecognizerDelegate {
+        var allowsBackSwipe = true
         private weak var navigation: UINavigationController?
         private weak var installedGesture: UIGestureRecognizer?
         private weak var originalDelegate: (any UIGestureRecognizerDelegate)?
@@ -2555,13 +2580,159 @@ struct SystemBackSwipeInstaller: UIViewControllerRepresentable {
 
         func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
             guard gestureRecognizer === installedGesture, let navigation else { return false }
-            return navigation.viewControllers.count > 1
+            return allowsBackSwipe
+                && navigation.viewControllers.count > 1
                 && navigation.transitionCoordinator == nil
                 && navigation.presentedViewController == nil
         }
     }
 }
 // WDT_IOS1_NAV_COMPAT_20261023_END
+
+// WDT_CHAT_EDGE_BACK_FIX_20261102_BEGIN
+// Use the native recognizer's existing target/action so UIKit owns progress and cancellation.
+struct ChatInteractiveBackSwipeInstaller: UIViewRepresentable {
+    var allowsBackSwipe: Bool
+
+    func makeUIView(context: Context) -> ProbeView { ProbeView() }
+
+    func updateUIView(_ view: ProbeView, context: Context) {
+        view.owner.allowsBackSwipe = allowsBackSwipe
+        view.scheduleRefresh()
+    }
+
+    static func dismantleUIView(_ view: ProbeView, coordinator: ()) {
+        view.isActive = false
+        view.owner.uninstall()
+    }
+
+    final class ProbeView: UIView {
+        let owner = Owner()
+        var isActive = true
+        private var refreshScheduled = false
+        private var waitingForTransition = false
+
+        init() {
+            super.init(frame: .zero)
+            isUserInteractionEnabled = false
+            backgroundColor = .clear
+        }
+
+        required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            if window == nil { owner.uninstall() }
+            scheduleRefresh()
+        }
+
+        override func layoutSubviews() {
+            super.layoutSubviews()
+            scheduleRefresh()
+        }
+
+        func scheduleRefresh() {
+            guard isActive, !refreshScheduled else { return }
+            refreshScheduled = true
+            // SwiftUI may apply hidden-navigation-bar preferences after updating this probe.
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.refreshScheduled = false
+                self.refreshIfVisible()
+            }
+        }
+
+        func refreshIfVisible() {
+            guard isActive, window != nil else { owner.uninstall(); return }
+            var ancestor = jhtNearestViewController()
+            while let screen = ancestor {
+                if let navigation = screen.parent as? UINavigationController {
+                    if let transition = navigation.transitionCoordinator {
+                        if !waitingForTransition {
+                            waitingForTransition = true
+                            let registered = transition.animate(alongsideTransition: nil) { [weak self] _ in
+                                self?.waitingForTransition = false
+                                self?.scheduleRefresh()
+                            }
+                            if !registered { waitingForTransition = false }
+                        }
+                        return
+                    }
+                    guard navigation.topViewController === screen else { owner.uninstall(); return }
+                    owner.install(on: navigation, screen: screen)
+                    return
+                }
+                ancestor = screen.parent
+            }
+            owner.uninstall()
+        }
+    }
+
+    final class Owner: NSObject, UIGestureRecognizerDelegate {
+        var allowsBackSwipe = true
+        private weak var navigation: UINavigationController?
+        private weak var screen: UIViewController?
+        private weak var installedGesture: UIGestureRecognizer?
+        private weak var originalDelegate: (any UIGestureRecognizerDelegate)?
+        private var originalEnabled = false
+
+        func install(on navigation: UINavigationController, screen: UIViewController) {
+            guard navigation.topViewController === screen,
+                  screen.viewIfLoaded?.window != nil,
+                  navigation.transitionCoordinator == nil,
+                  let gesture = navigation.interactivePopGestureRecognizer else { return }
+            if installedGesture !== gesture {
+                uninstall()
+                installedGesture = gesture
+                originalDelegate = gesture.delegate
+                originalEnabled = gesture.isEnabled
+            } else if gesture.delegate !== self {
+                // UIKit can replace the delegate when applying navigation preferences.
+                originalDelegate = gesture.delegate
+                originalEnabled = gesture.isEnabled
+            }
+            self.navigation = navigation
+            self.screen = screen
+            if gesture.delegate !== self { gesture.delegate = self }
+            if !gesture.isEnabled { gesture.isEnabled = true }
+        }
+
+        func uninstall() {
+            if let gesture = installedGesture, gesture.delegate === self {
+                gesture.delegate = originalDelegate
+                gesture.isEnabled = originalEnabled
+            }
+            installedGesture = nil
+            navigation = nil
+            screen = nil
+            originalDelegate = nil
+        }
+
+        private var canBegin: Bool {
+            guard allowsBackSwipe, let navigation, let screen else { return false }
+            return screen.viewIfLoaded?.window != nil
+                && navigation.topViewController === screen
+                && navigation.viewControllers.count > 1
+                && navigation.transitionCoordinator == nil
+                && navigation.presentedViewController == nil
+                && screen.presentedViewController == nil
+        }
+
+        func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+            gestureRecognizer === installedGesture && canBegin
+        }
+
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+            shouldBeRequiredToFailBy otherGestureRecognizer: UIGestureRecognizer) -> Bool {
+            // Only competing gestures inside chat yield to the edge pan; no permanent dependencies.
+            guard gestureRecognizer === installedGesture, otherGestureRecognizer !== gestureRecognizer,
+                  canBegin, let screenView = screen?.viewIfLoaded,
+                  let otherView = otherGestureRecognizer.view else { return false }
+            return otherView.isDescendant(of: screenView)
+        }
+    }
+}
+// WDT_CHAT_EDGE_BACK_FIX_20261102_END
 
 private extension UIApplication {
     func jhtTopViewController() -> UIViewController? {

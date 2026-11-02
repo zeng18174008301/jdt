@@ -1090,10 +1090,10 @@ final class ConversationStore: ObservableObject {
     ) -> Bool {
         let normalizedChannelID = channelID.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !normalizedChannelID.isEmpty,
-              let index = conversations.firstIndex(where: { conversation in
-                  conversation.id == normalizedChannelID || channelIDForConversation(conversation) == normalizedChannelID
-              }),
+              let index = conversations.firstIndex(where: { $0.id == normalizedChannelID })
+                ?? conversations.firstIndex(where: { $0.kind == .group && channelIDForConversation($0) == normalizedChannelID }),
               let updated = applyingHistoryVisibilityBoundary(boundary, to: conversations[index]) else { return false }
+        guard updated != conversations[index] else { return false }
         var next = conversations
         next[index] = updated
         return publishConversationsIfChanged(next)
@@ -1635,7 +1635,7 @@ final class ConversationStore: ObservableObject {
                     conversation.avatarUpdatedAt = avatarUpdatedAt
                 }
             }
-            conversations[index] = conversation
+            if conversations[index] != conversation { conversations[index] = conversation }
             return conversation
         }
 
@@ -2297,12 +2297,12 @@ final class ConversationStore: ObservableObject {
         guard !normalizedMessageID.isEmpty else { return false }
         let normalizedConversationID = conversationID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         for cIndex in conversations.indices {
+            guard let mIndex = conversations[cIndex].messages.firstIndex(where: { $0.id == normalizedMessageID }) else { continue }
             if !normalizedConversationID.isEmpty,
                conversations[cIndex].id != normalizedConversationID,
                channelIDForConversation?(conversations[cIndex]) != normalizedConversationID {
                 continue
             }
-            guard let mIndex = conversations[cIndex].messages.firstIndex(where: { $0.id == normalizedMessageID }) else { continue }
             markMessageAsRecalled(&conversations[cIndex].messages[mIndex], recallText: recallText)
             updateConversationLatestFromMessages(at: cIndex)
             return true
@@ -3426,12 +3426,9 @@ final class ConversationStore: ObservableObject {
         _ = readReceiptsEnabled
         let lookupID = command.apiChannelID.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !lookupID.isEmpty else { return nil }
-        let hasOutgoingMessages = conversations
-            .first { conversation in
-                conversation.id == lookupID || channelIDForConversation(conversation) == lookupID
-            }?
-            .messages
-            .contains { $0.isOutgoing } == true
+        let conversation = conversations.first { $0.id == lookupID }
+            ?? conversations.first { channelIDForConversation($0) == lookupID }
+        let hasOutgoingMessages = conversation?.messages.contains { $0.isOutgoing } == true
         guard hasOutgoingMessages else { return nil }
         return HistoryPrefetchReadReceiptBackfillTarget(
             channelID: command.apiChannelID,
@@ -4735,7 +4732,11 @@ final class ConversationStore: ObservableObject {
     ) -> Int? {
         let normalizedGroupID = groupID.trimmingCharacters(in: .whitespacesAndNewlines)
         let normalizedGroupName = groupName.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Resolve canonical IDs first; unrelated direct chats must not run peer normalization.
+        if !normalizedGroupID.isEmpty,
+           let exact = conversations.firstIndex(where: { $0.id == normalizedGroupID }) { return exact }
         return conversations.firstIndex { conversation in
+            guard conversation.kind == .group else { return false }
             if !normalizedGroupID.isEmpty,
                conversation.id == normalizedGroupID || channelIDForConversation(conversation) == normalizedGroupID {
                 return true
@@ -4779,6 +4780,21 @@ final class ConversationStore: ObservableObject {
     }
 
     private func mergeExistingRemoteState(from previous: ChatMessage, into message: inout ChatMessage) {
+        // WDT_CHAT_MEDIA_CACHE_REUSE_20261102: history payloads can omit file-detail cache metadata.
+        if let fileID = previous.attachmentFileID, !fileID.isEmpty,
+           message.attachmentFileID == fileID, message.kind == previous.kind,
+           !previous.isDeletedLocally, !message.isDeletedLocally,
+           previous.status != .recalled, message.status != .recalled,
+           (message.attachmentVersion.isEmpty || previous.attachmentVersion.isEmpty || message.attachmentVersion == previous.attachmentVersion),
+           (message.attachmentChecksum.isEmpty || previous.attachmentChecksum.isEmpty || message.attachmentChecksum == previous.attachmentChecksum),
+           (message.attachmentSizeBytes == nil || previous.attachmentSizeBytes == nil || message.attachmentSizeBytes == previous.attachmentSizeBytes) {
+            if message.attachmentCacheKey.isEmpty { message.attachmentCacheKey = previous.attachmentCacheKey }
+            if message.attachmentVersion.isEmpty { message.attachmentVersion = previous.attachmentVersion }
+            if message.attachmentChecksum.isEmpty { message.attachmentChecksum = previous.attachmentChecksum }
+            if message.attachmentMimeType.isEmpty { message.attachmentMimeType = previous.attachmentMimeType }
+            if message.attachmentExtension.isEmpty { message.attachmentExtension = previous.attachmentExtension }
+            if message.attachmentSizeBytes == nil { message.attachmentSizeBytes = previous.attachmentSizeBytes }
+        }
 		if previous.editRevision >= message.editRevision && previous.editRevision > 0 {
 			message.text = previous.text
 			message.isEdited = previous.isEdited

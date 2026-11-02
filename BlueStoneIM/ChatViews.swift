@@ -2553,7 +2553,8 @@ struct ChatView: View {
 
         }
         .background(
-            Color.clear // WDT_IOS1_NAV_COMPAT_20261023: navigation container owns the system gesture.
+            // WDT_CHAT_EDGE_BACK_FIX_20261102: retain UIKit's interactive, cancellable edge-back transition.
+            ChatInteractiveBackSwipeInstaller(allowsBackSwipe: !isBatchForwardSelectionActive)
                 .frame(width: 1, height: 1)
                 .allowsHitTesting(false)
         )
@@ -8987,11 +8988,15 @@ private struct FileBubbleContent: View {
         VStack(alignment: .leading, spacing: 9) {
             if isMediaMessage {
                 ZStack {
-                    let thumbnailURL = state.resolvedAttachmentThumbnailURL(for: message)
+                    let thumbnailURL = state.resolvedAttachmentBubbleThumbnailURL(for: message)
                     if AttachmentGIFPresentation.isGIF(message) {
                         AttachmentGIFImage(message: message, conversationID: conversationID) {
                             thumbnailPlaceholder(symbol: mediaSymbol, title: "GIF", status: "点按查看原图")
                         }
+                    } else if mediaCategory == "video" {
+                        ServerVideoPosterThumbnail(message: message, conversationID: conversationID)
+                    } else if mediaCategory == "image" {
+                        AttachmentOriginalThumbnail(message: message, conversationID: conversationID)
                     } else if thumbnailURL != nil || state.attachmentCanRefreshRemoteFile(message) {
                         AttachmentThumbnailImage(
                             url: thumbnailURL,
@@ -9001,8 +9006,9 @@ private struct FileBubbleContent: View {
                             scopeGeneration: state.mediaCacheScopeContext?.sessionGeneration ?? 0,
                             networkRecoveryGeneration: state.mediaNetworkRecoveryGeneration,
                             recoveryURL: thumbnailRecoveryURL,
+                            recoverOnAnyFailure: mediaCategory == "video",
                             indexedCacheURL: {
-                                await state.cachedUnifiedAttachmentThumbnailURL(for: message)
+                                await state.cachedUnifiedAttachmentThumbnailURL(for: message, conversationID: conversationID)
                             },
                             indexedCacheCommit: { data in
                                 await state.cacheUnifiedAttachmentThumbnail(
@@ -9320,6 +9326,7 @@ struct AttachmentThumbnailImage<Placeholder: View, Failure: View>: View {
     var scopeGeneration: UInt64 = 0
     var networkRecoveryGeneration: Int = 0
     var recoveryURL: (() async -> URL?)? = nil
+    var recoverOnAnyFailure: Bool = false
     var indexedCacheURL: (() async -> URL?)? = nil
     var indexedCacheCommit: ((Data) async -> URL?)? = nil
     @ViewBuilder var placeholder: () -> Placeholder
@@ -9449,7 +9456,7 @@ struct AttachmentThumbnailImage<Placeholder: View, Failure: View>: View {
             guard !Task.isCancelled else { return }
             AvatarImageCache.shared.storePrepared(loaded, for: generationKey, maxPixelSize: requestedMaxPixelSize)
             applyThumbnailState(image: loaded, failed: false)
-        } else if (requestedURL == nil || result?.shouldRefreshSignedURL == true),
+        } else if (recoverOnAnyFailure || requestedURL == nil || result?.shouldRefreshSignedURL == true),
                   let requestedRecoveryURL,
                   let recoveredURL = await requestedRecoveryURL() {
             let recoveredResult = await AttachmentThumbnailSingleFlight.shared.perform(key: "recovery|\(generationKey)") {
@@ -16218,6 +16225,96 @@ private struct ReactionDetailRow: View {
             }
             Spacer()
             StatusPill(title: "回应", color: IMColor.brand)
+        }
+    }
+}
+
+
+struct ServerVideoPosterThumbnail: View {
+    @EnvironmentObject private var state: AppState
+    let message: ChatMessage
+    let conversationID: String
+    @State private var presentation: IOSVideoPosterPresentation = .pending
+    @State private var retry = 0
+    @State private var displayedResource = ""
+    private var resourceBinding: String {
+        "\(state.mediaCacheScopeContext?.scopeHash ?? "")|\(state.mediaCacheScopeContext?.sessionGeneration ?? 0)|\(message.id)|\(message.attachmentFileID ?? "")|\(message.attachmentChecksum)|\(message.attachmentVersion)"
+    }
+    private var binding: String {
+        "\(resourceBinding)|\(retry)|\(state.mediaNetworkRecoveryGeneration)"
+    }
+    private var displayCacheKey: String { state.chatAttachmentImageCacheKey(for: message, videoPoster: true) }
+    var body: some View {
+        Group {
+            if !message.isDeletedLocally, message.status != .recalled,
+               let image = preparedChatAttachmentImage(state: state, cacheKey: displayCacheKey),
+               !isUnavailable {
+                Image(uiImage: image).resizable().aspectRatio(contentMode: .fill)
+            } else if case .ready(let url) = presentation {
+                AttachmentThumbnailImage(url: url, cacheKey: displayCacheKey,
+                    scopeGeneration: state.mediaCacheScopeContext?.sessionGeneration ?? 0,
+                    indexedCacheURL: { url }, // WDT_CHAT_MEDIA_CACHE_REUSE_20261102: the poster loader already verified this local file.
+                    placeholder: { ProgressView() }, failure: { Text("封面读取失败") })
+            } else {
+                VStack(spacing: 8) {
+                    Text(presentation.label).font(.system(size: 11)).multilineTextAlignment(.center)
+                    Button("刷新封面") { retry &+= 1 }.font(.system(size: 11)).buttonStyle(.plain)
+                }.padding(.horizontal, 12).padding(.bottom, 8)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+            }
+        }
+        .task(id: binding, priority: .utility) {
+            if displayedResource != resourceBinding {
+                displayedResource = resourceBinding
+                presentation = .pending
+            }
+            await state.loadServerVideoPoster(message, conversationID: conversationID) { result in
+                guard !Task.isCancelled else { return }
+                if case .ready = presentation {
+                    switch result {
+                    case .pending, .missing, .failed, .limited: return
+                    case .ready, .unavailable: break
+                    }
+                }
+                presentation = result
+            }
+        }
+    }
+    private var isUnavailable: Bool {
+        if case .unavailable = presentation { return true }
+        return false
+    }
+}
+
+@MainActor
+private func preparedChatAttachmentImage(state: AppState, cacheKey: String) -> UIImage? {
+    let key = AttachmentThumbnailCacheIdentity.generationKey(baseKey: cacheKey,
+        generation: state.mediaCacheScopeContext?.sessionGeneration ?? 0)
+    return AvatarImageCache.shared.image(for: key, maxPixelSize: 768)
+}
+
+struct AttachmentOriginalThumbnail: View {
+    @EnvironmentObject private var state: AppState
+    let message: ChatMessage
+    let conversationID: String
+    private var displayCacheKey: String { state.chatAttachmentImageCacheKey(for: message, videoPoster: false) }
+    var body: some View {
+        Group {
+            if !message.isDeletedLocally, message.status != .recalled,
+               let image = preparedChatAttachmentImage(state: state, cacheKey: displayCacheKey) {
+                Image(uiImage: image).resizable().aspectRatio(contentMode: .fill)
+            } else {
+                // Mount immediately with a stable resource key. Local URL resolution is recovery work,
+                // so returning to the chat can paint the prepared memory image in its first frame.
+                AttachmentThumbnailImage(url: nil, cacheKey: displayCacheKey,
+                    scopeGeneration: state.mediaCacheScopeContext?.sessionGeneration ?? 0,
+                    networkRecoveryGeneration: state.mediaNetworkRecoveryGeneration,
+                    recoveryURL: { try? await state.prepareMessageAttachmentLocalFile(message, conversationID: conversationID) },
+                    recoverOnAnyFailure: true,
+                    // WDT_CHAT_MEDIA_CACHE_REUSE_20261102: disk hits bypass the remote-loading debounce/recovery path.
+                    indexedCacheURL: { await state.cachedMessageAttachmentLocalFile(message, conversationID: conversationID) },
+                    placeholder: { ProgressView() }, failure: { Text("图片读取失败") })
+            }
         }
     }
 }

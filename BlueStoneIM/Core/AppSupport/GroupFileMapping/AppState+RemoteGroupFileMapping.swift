@@ -105,7 +105,7 @@ extension AppState {
         }
     }
 
-    func applyRemoteGroups(_ remoteGroups: [RemoteUserGroup]) {
+    private func prepareRemoteGroupDirectory(_ remoteGroups: [RemoteUserGroup]) {
         let existing = groups.reduce(into: [String: GroupInfo]()) { result, group in
             let key = group.id.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !key.isEmpty, result[key] == nil else { return }
@@ -125,16 +125,54 @@ extension AppState {
         if droppedDuplicateCount > 0 {
             print("[JHT Perf] groups_sync_dedupe dropped=\(droppedDuplicateCount) input=\(remoteGroups.count)")
         }
-        for group in groups {
-            ensureGroupConversationExists(group)
-            applyGroupHistoryBoundary(group)
-            scheduleGroupMuteBoundaryRefresh(for: group, context: apiContext)
-        }
+    }
+
+    private func finishRemoteGroupDirectoryProjection() {
         if !shouldShowGroupMemberCount {
             scrubHiddenGroupMemberTotals(scope: remoteDataScopeKey(for: apiContext))
         }
         reapplyAllAvatarRealtimeProjections()
         scheduleRemoteSnapshotCacheWrite(scope: remoteDataScopeKey(for: apiContext))
+    }
+
+    func applyRemoteGroups(_ remoteGroups: [RemoteUserGroup]) {
+        prepareRemoteGroupDirectory(remoteGroups)
+        // Group-only aliases are resolved once, never through every direct peer for every group.
+        let aliases = Dictionary(uniqueKeysWithValues: conversations.filter { $0.kind == .group }.map {
+            ($0.id, remoteChannelID(for: $0))
+        })
+        let groupChannel: (Conversation) -> String = { row in
+            row.kind == .group ? aliases[row.id] ?? row.id : ""
+        }
+        for group in groups {
+            ensureGroupConversationExists(group, channelIDForConversation: groupChannel)
+            applyGroupHistoryBoundary(group, channelIDForConversation: groupChannel)
+            scheduleGroupMuteBoundaryRefresh(for: group, context: apiContext)
+        }
+        finishRemoteGroupDirectoryProjection()
+    }
+
+    func applyRemoteGroupsCooperatively(_ remoteGroups: [RemoteUserGroup], isCurrent: () -> Bool) async {
+        guard !Task.isCancelled, isCurrent() else { return }
+        prepareRemoteGroupDirectory(remoteGroups)
+        // Group-only aliases are resolved once, never through every direct peer for every group.
+        let aliases = Dictionary(uniqueKeysWithValues: conversations.filter { $0.kind == .group }.map {
+            ($0.id, remoteChannelID(for: $0))
+        })
+        let groupChannel: (Conversation) -> String = { row in
+            row.kind == .group ? aliases[row.id] ?? row.id : ""
+        }
+        let directory = groups
+        for (index, original) in directory.enumerated() {
+            guard !Task.isCancelled, isCurrent() else { return }
+            let group = groups.first(where: { $0.id == original.id }) ?? original
+            ensureGroupConversationExists(group, channelIDForConversation: groupChannel)
+            applyGroupHistoryBoundary(group, channelIDForConversation: groupChannel)
+            scheduleGroupMuteBoundaryRefresh(for: group, context: apiContext)
+            if index % 8 == 7 { try? await Task.sleep(nanoseconds: 1_000_000) }
+        }
+        guard !Task.isCancelled, isCurrent() else { return }
+        finishRemoteGroupDirectoryProjection()
     }
 
     func refreshGroupBundle(
@@ -842,7 +880,7 @@ extension AppState {
         groupJoinRequests[groupID] = items
     }
 
-    func ensureGroupConversationExists(_ group: GroupInfo) {
+    func ensureGroupConversationExists(_ group: GroupInfo, channelIDForConversation: ((Conversation) -> String)? = nil) {
         guard !isGroupConversationLocallyHidden(groupID: group.id) else { return }
         conversationStore.ensureGroupConversation(
             groupID: group.id,
@@ -856,18 +894,19 @@ extension AppState {
             avatarUpdatedAt: group.avatarUpdatedAt,
             avatarIsAuthoritative: true,
             accentHex: stableSeed(group.id),
-            channelIDForConversation: { self.remoteChannelID(for: $0) }
+            channelIDForConversation: channelIDForConversation ?? { self.remoteChannelID(for: $0) }
         )
     }
 
-    func applyGroupHistoryBoundary(_ group: GroupInfo) {
+    func applyGroupHistoryBoundary(_ group: GroupInfo, channelIDForConversation: ((Conversation) -> String)? = nil) {
         applyHistoryVisibilityBoundaryForGroup(
             channelID: group.id,
             boundary: ConversationStore.HistoryVisibilityBoundary(
                 fromSeq: group.historyVisibleFromSeq,
                 limited: group.historyLimited,
                 confirmed: true
-            )
+            ),
+            channelIDForConversation: channelIDForConversation
         )
     }
 
@@ -2092,8 +2131,8 @@ extension AppState {
                 groupAvatarUpdatedAt = previous?.avatarUpdatedAt ?? ""
             }
             let normalizedChannelType = normalizedReadWatermarkChannelType(channelID: channelID, channelType: remote.channelType)
-            let readStateKey = conversationReadStateKey(channelID: channelID, channelType: normalizedChannelType)
-            let readWatermarkScope = currentReadWatermarkScope(channelID: channelID, channelType: normalizedChannelType)
+            let readStateKey = conversationReadStateKey(channelID: channelID, channelType: normalizedChannelType, lookup: lookup)
+            let readWatermarkScope = currentReadWatermarkScope(channelID: channelID, channelType: normalizedChannelType, lookup: lookup)
             let exactReadSeq = conversationStore.effectiveReadSeq(readStateKey: readStateKey, scope: readWatermarkScope)
             let legacyReadSeq = readWatermarkScope == nil ? locallyReadSeq(for: remote) : 0
             let lastReadSeq = max(previous?.lastReadSeq ?? 0, remote.lastReadSeq, legacyReadSeq, exactReadSeq)

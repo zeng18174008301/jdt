@@ -36,11 +36,12 @@ extension AppState {
         return currentMessageSenderIdentitySet().contains(normalized)
     }
 
-    func remarkPreferredDisplayName(for user: IMUser, fallback: String? = nil) -> String {
+    func remarkPreferredDisplayName(for user: IMUser, fallback: String? = nil, contactLookup: DirectConversationCallPeerResolver.ContactLookup? = nil) -> String {
         remarkPreferredDisplayName(
             identifiers: [user.id, user.userID, user.username],
             candidates: [user.name, user.username, user.userID],
-            fallback: fallback ?? (user.id.isEmpty ? "未知用户" : user.id)
+            fallback: fallback ?? (user.id.isEmpty ? "未知用户" : user.id),
+            contactLookup: contactLookup
         )
     }
 
@@ -89,11 +90,11 @@ extension AppState {
         return remarkPreferredDisplayName(for: live)
     }
 
-    func remarkPreferredDisplayName(identifiers: [String], candidates: [String?], fallback: String) -> String {
+    func remarkPreferredDisplayName(identifiers: [String], candidates: [String?], fallback: String, contactLookup: DirectConversationCallPeerResolver.ContactLookup? = nil) -> String {
         let normalizedIdentifiers = identifiers
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
-        if let remark = contactRemarkValue(matching: normalizedIdentifiers) {
+        if let remark = contactRemarkValue(matching: normalizedIdentifiers, contactLookup: contactLookup) {
             return remark
         }
         return preferredDisplayName(candidates: candidates, identifiers: normalizedIdentifiers, fallback: fallback)
@@ -111,7 +112,7 @@ extension AppState {
             .filter { !$0.isEmpty })
     }
 
-    func contactRemarkValue(matching identifiers: [String]) -> String? {
+    func contactRemarkValue(matching identifiers: [String], contactLookup: DirectConversationCallPeerResolver.ContactLookup? = nil) -> String? {
         guard !identifiers.isEmpty,
               !identifiers.contains(where: { isCurrentUserIdentity($0) }) else { return nil }
         for identifier in identifiers {
@@ -119,9 +120,13 @@ extension AppState {
                 return remark
             }
         }
-        guard let contact = contacts.first(where: { contact in
-            identifiers.contains { user(contact, matchesIdentifier: $0) }
-        }) else { return nil }
+        let matchedContact: IMUser?
+        if let contactLookup {
+            matchedContact = contactLookup.firstContact(matchingAny: identifiers.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) })
+        } else {
+            matchedContact = contacts.first { contact in identifiers.contains { user(contact, matchesIdentifier: $0) } }
+        }
+        guard let contact = matchedContact else { return nil }
         for identifier in [contact.id, contact.userID, contact.username] {
             let key = identifier.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !key.isEmpty else { continue }
@@ -303,6 +308,8 @@ extension AppState {
 
             for task in tasks {
                 let result = await task.value
+                do { try await waitForConversationListInteractionToEnd(scope: scope) }
+                catch { return }
                 guard isCurrentRemoteRefresh(refreshSession, scope: scope) else { return }
                 guard isCurrentGroupHistoryBoundaryResponse(context: context, channelID: result.remote.channelID, channelType: result.remote.channelType, generation: result.boundaryGeneration) else { continue }
                 if let error = result.error {
@@ -885,9 +892,10 @@ extension AppState {
         scheduleSequenceRecovery: Bool = true
     ) {
         let kind = conversationKind(from: channelType, channelID: channelID)
-        let existingIndex = conversations.firstIndex { conversation in
-            conversation.id == channelID || remoteChannelID(for: conversation) == channelID
-        }
+        let existingIndex = conversations.firstIndex { $0.id == channelID } ?? {
+            let lookup = makeConversationUserLookup()
+            return conversations.firstIndex { remoteChannelID(for: $0, lookup: lookup) == channelID }
+        }()
         let previousRaw = existingIndex.map { conversations[$0] }
         let resolvedHistoryBoundary = kind == .group
             ? (explicitHistoryBoundary ?? conversationStore.historyBoundary(for: previousRaw))

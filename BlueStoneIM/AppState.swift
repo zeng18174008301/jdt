@@ -845,6 +845,8 @@ final class AppState: ObservableObject {
     var pendingForcedRemoteSnapshotSuccessorScopes: Set<String> = []
     var realtimeIngestBuffer = RealtimeMessageIngestBuffer()
     var realtimeIngestFlushTask: Task<Void, Never>?
+    var realtimeResubscriptionTask: Task<Void, Never>?
+    var isConversationListUserInteracting = false
     var deliveryAckHighWaterByScope: [String: Int64] = [:]
     var deliveryAckTasksByScope: [String: Task<Void, Never>] = [:]
     // JHT_MOD_BEGIN DELIVERY_ACK_SWEEP_SLICE_PERF_20260912 - 修改开始：送达回执全量扫描改为可取消分片，避免主线程连续卡顿

@@ -1795,6 +1795,12 @@ enum DirectConversationCallPeerResolver {
             indicesByIdentity = indices
         }
 
+        // Match the original contacts.first(where:) ordering across all supplied aliases.
+        func firstContact(matchingAny identifiers: [String]) -> IMUser? {
+            let index = identifiers.compactMap { indicesByIdentity[$0]?.min() }.min()
+            return index.map { contacts[$0] }
+        }
+
         fileprivate func firstContact(matching identifier: String) -> IMUser? {
             guard let index = indicesByIdentity[identifier]?.min() else { return nil }
             return contacts[index]

@@ -643,7 +643,6 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = H00000000000000000000002 /* Build configuration list for PBXNativeTarget "BlueStoneIM" */;
 			buildPhases = (
-				F00000000000000000000005 /* APP2 Release Configuration Gate */,
 				F00000000000000000000001 /* Sources */,
 				C00000000000000000000001 /* Frameworks */,
 				F00000000000000000000002 /* Resources */,
@@ -751,29 +750,6 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXResourcesBuildPhase section */
-
-/* Begin PBXShellScriptBuildPhase section */
-		F00000000000000000000005 /* APP2 Release Configuration Gate */ = {
-			isa = PBXShellScriptBuildPhase;
-			alwaysOutOfDate = 1;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			inputFileListPaths = (
-			);
-			inputPaths = (
-				"$(SRCROOT)/scripts/check-app2-release-configuration.sh",
-			);
-			name = "APP2 Release Configuration Gate";
-			outputFileListPaths = (
-			);
-			outputPaths = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-			shellPath = /bin/sh;
-			shellScript = "/usr/bin/env bash \"${SRCROOT}/scripts/check-app2-release-configuration.sh\"\n";
-		};
-/* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		F00000000000000000000001 /* Sources */ = {
@@ -951,20 +927,6 @@
 /* End PBXVariantGroup section */
 
 /* Begin XCBuildConfiguration section */
-		AD0376BA30372BD700BFDE97 /* Debug-App2 */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				PRODUCT_NAME = BlueStoneIMTests;
-			};
-			name = "Debug-App2";
-		};
-		AD0376BB30372BD700BFDE97 /* Release-App2 */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				PRODUCT_NAME = BlueStoneIMTests;
-			};
-			name = "Release-App2";
-		};
 		I00000000000000000000001 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -1086,11 +1048,10 @@
 				APS_ENVIRONMENT = development;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = BlueStoneIM/BlueStoneIMDebug.entitlements;
-				"CODE_SIGN_IDENTITY[sdk=iphoneos*]" = "iPhone Developer";
+				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Manual;
 				CURRENT_PROJECT_VERSION = 5;
 				DEVELOPMENT_TEAM = "";
-				"DEVELOPMENT_TEAM[sdk=iphoneos*]" = A3PN7W63G3;
 				ENABLE_DEBUG_DYLIB = NO;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -1111,11 +1072,10 @@
 					"@executable_path",
 					"@loader_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.0.2;
-				PRODUCT_BUNDLE_IDENTIFIER = com.wendatongqiye.app;
+				MARKETING_VERSION = 1.0.3;
+				PRODUCT_BUNDLE_IDENTIFIER = app.yxtest.com;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
-				"PROVISIONING_PROFILE_SPECIFIER[sdk=iphoneos*]" = app.mltest.com_dev;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SUPPORTS_MACCATALYST = NO;
 				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
@@ -1150,6 +1110,7 @@
 				APS_ENVIRONMENT = production;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = BlueStoneIM/BlueStoneIMRelease.entitlements;
+				CODE_SIGN_IDENTITY = "Apple Development";
 				"CODE_SIGN_IDENTITY[sdk=iphoneos*]" = "iPhone Distribution";
 				CODE_SIGN_STYLE = Manual;
 				CURRENT_PROJECT_VERSION = 5;
@@ -1173,7 +1134,7 @@
 					"@executable_path",
 					"@loader_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.0.2;
+				MARKETING_VERSION = 1.0.3;
 				PRODUCT_BUNDLE_IDENTIFIER = com.wendatongqiye.app;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
@@ -1259,194 +1220,6 @@
 			};
 			name = Release;
 		};
-		I00000000000000000000007 /* Debug-App2 */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				ALWAYS_SEARCH_USER_PATHS = NO;
-				CLANG_ANALYZER_NONNULL = YES;
-				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
-				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
-				CLANG_ENABLE_MODULES = YES;
-				CLANG_ENABLE_OBJC_ARC = YES;
-				CLANG_ENABLE_OBJC_WEAK = YES;
-				CLANG_WARN_BOOL_CONVERSION = YES;
-				CLANG_WARN_COMMA = YES;
-				CLANG_WARN_CONSTANT_CONVERSION = YES;
-				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
-				CLANG_WARN_EMPTY_BODY = YES;
-				CLANG_WARN_ENUM_CONVERSION = YES;
-				CLANG_WARN_INFINITE_RECURSION = YES;
-				CLANG_WARN_INT_CONVERSION = YES;
-				CLANG_WARN_UNREACHABLE_CODE = YES;
-				COPY_PHASE_STRIP = NO;
-				DEBUG_INFORMATION_FORMAT = dwarf;
-				ENABLE_STRICT_OBJC_MSGSEND = YES;
-				ENABLE_TESTABILITY = YES;
-				GCC_C_LANGUAGE_STANDARD = gnu17;
-				GCC_NO_COMMON_BLOCKS = YES;
-				GCC_OPTIMIZATION_LEVEL = 0;
-				GCC_PREPROCESSOR_DEFINITIONS = (
-					"DEBUG=1",
-					"$(inherited)",
-				);
-				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
-				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
-				MTL_FAST_MATH = YES;
-				MTL_LANGUAGE_REVISION = Metal24;
-				ONLY_ACTIVE_ARCH = YES;
-				SDKROOT = iphoneos;
-				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG APP_VARIANT_APP2";
-				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
-			};
-			name = "Debug-App2";
-		};
-		I00000000000000000000008 /* Release-App2 */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				ALWAYS_SEARCH_USER_PATHS = NO;
-				CLANG_ANALYZER_NONNULL = YES;
-				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
-				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
-				CLANG_ENABLE_MODULES = YES;
-				CLANG_ENABLE_OBJC_ARC = YES;
-				CLANG_ENABLE_OBJC_WEAK = YES;
-				CLANG_WARN_BOOL_CONVERSION = YES;
-				CLANG_WARN_COMMA = YES;
-				CLANG_WARN_CONSTANT_CONVERSION = YES;
-				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
-				CLANG_WARN_EMPTY_BODY = YES;
-				CLANG_WARN_ENUM_CONVERSION = YES;
-				CLANG_WARN_INFINITE_RECURSION = YES;
-				CLANG_WARN_INT_CONVERSION = YES;
-				CLANG_WARN_UNREACHABLE_CODE = YES;
-				COPY_PHASE_STRIP = NO;
-				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
-				ENABLE_NS_ASSERTIONS = NO;
-				ENABLE_STRICT_OBJC_MSGSEND = YES;
-				GCC_C_LANGUAGE_STANDARD = gnu17;
-				GCC_NO_COMMON_BLOCKS = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
-				MTL_ENABLE_DEBUG_INFO = NO;
-				MTL_FAST_MATH = YES;
-				MTL_LANGUAGE_REVISION = Metal24;
-				SDKROOT = iphoneos;
-				SWIFT_ACTIVE_COMPILATION_CONDITIONS = APP_VARIANT_APP2;
-				SWIFT_COMPILATION_MODE = wholemodule;
-				VALIDATE_PRODUCT = YES;
-			};
-			name = "Release-App2";
-		};
-		I00000000000000000000009 /* Debug-App2 */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				APS_ENVIRONMENT = development;
-				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				CODE_SIGN_ENTITLEMENTS = BlueStoneIM/BlueStoneIM.entitlements;
-				CODE_SIGN_STYLE = Manual;
-				CURRENT_PROJECT_VERSION = 5;
-				DEVELOPMENT_TEAM = "";
-				ENABLE_DEBUG_DYLIB = NO;
-				ENABLE_PREVIEWS = YES;
-				GENERATE_INFOPLIST_FILE = NO;
-				INFOPLIST_FILE = BlueStoneIM/Info.plist;
-				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.business";
-				INFOPLIST_KEY_WXTAppBootstrapBackupBaseURL = "";
-				INFOPLIST_KEY_WXTAppBootstrapBaseURL = "";
-				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/Frameworks",
-					"@executable_path",
-					"@loader_path/Frameworks",
-				);
-				MARKETING_VERSION = 1.0.2;
-				PRODUCT_BUNDLE_IDENTIFIER = com.wenxintong.app2.unconfigured;
-				PRODUCT_NAME = WenxintongApp2;
-				PROVISIONING_PROFILE_SPECIFIER = "";
-				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
-				SUPPORTS_MACCATALYST = NO;
-				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
-				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
-				SWIFT_EMIT_LOC_STRINGS = YES;
-				SWIFT_OBJC_BRIDGING_HEADER = BlueStoneIM/GIFFallbackDecoder.h;
-				SWIFT_VERSION = 6.0;
-				TARGETED_DEVICE_FAMILY = 1;
-				WXT_ACCESS_DISCOVERY_APP_ID = WXT_UNCONFIGURED_APP2;
-				WXT_ACCESS_DISCOVERY_CHANNEL = "app2-unconfigured";
-				WXT_ACCESS_DISCOVERY_SIGNING_REQUIRED = NO;
-				WXT_APP2_RELEASE_CONFIGURED = NO;
-				WXT_APP_BOOTSTRAP_BACKUP_BASE_URL = "";
-				WXT_APP_BOOTSTRAP_BASE_URL = "";
-				WXT_APP_BOOTSTRAP_BASE_URL_1 = "";
-				WXT_APP_BOOTSTRAP_BASE_URL_2 = "";
-				WXT_APP_BOOTSTRAP_BASE_URL_3 = "";
-				WXT_APP_CHANNEL = "app2-unconfigured";
-				WXT_APP_DISPLAY_NAME = "文信通备用（未配置）";
-				WXT_APP_RUNTIME_ID = WXT_UNCONFIGURED_APP2;
-				WXT_APP_VARIANT = app2;
-				WXT_BUILD_IDENTITY = "";
-				WXT_FORMAL_BUILD = NO;
-				WXT_PRELOGIN_APP_ID = WXT_UNCONFIGURED_APP2;
-				WXT_PRELOGIN_BOOTSTRAP_ENABLED = NO;
-				WXT_PRELOGIN_CHANNEL = "app2-unconfigured";
-				WXT_SOURCE_COMMIT = "";
-			};
-			name = "Debug-App2";
-		};
-		I00000000000000000000010 /* Release-App2 */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				APS_ENVIRONMENT = production;
-				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				CODE_SIGN_ENTITLEMENTS = BlueStoneIM/BlueStoneIM.entitlements;
-				CODE_SIGN_STYLE = Manual;
-				CURRENT_PROJECT_VERSION = 5;
-				GENERATE_INFOPLIST_FILE = NO;
-				INFOPLIST_FILE = BlueStoneIM/Info.plist;
-				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.business";
-				INFOPLIST_KEY_WXTAppBootstrapBackupBaseURL = "";
-				INFOPLIST_KEY_WXTAppBootstrapBaseURL = "";
-				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/Frameworks",
-					"@executable_path",
-					"@loader_path/Frameworks",
-				);
-				MARKETING_VERSION = 1.0.2;
-				PRODUCT_BUNDLE_IDENTIFIER = com.wenxintong.app2.unconfigured;
-				PRODUCT_NAME = WenxintongApp2;
-				PROVISIONING_PROFILE_SPECIFIER = "";
-				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
-				SUPPORTS_MACCATALYST = NO;
-				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
-				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
-				SWIFT_EMIT_LOC_STRINGS = YES;
-				SWIFT_OBJC_BRIDGING_HEADER = BlueStoneIM/GIFFallbackDecoder.h;
-				SWIFT_VERSION = 6.0;
-				TARGETED_DEVICE_FAMILY = 1;
-				WXT_ACCESS_DISCOVERY_APP_ID = WXT_UNCONFIGURED_APP2;
-				WXT_ACCESS_DISCOVERY_CHANNEL = "app2-unconfigured";
-				WXT_ACCESS_DISCOVERY_SIGNING_REQUIRED = NO;
-				WXT_APP2_RELEASE_CONFIGURED = NO;
-				WXT_APP_BOOTSTRAP_BACKUP_BASE_URL = "";
-				WXT_APP_BOOTSTRAP_BASE_URL = "";
-				WXT_APP_BOOTSTRAP_BASE_URL_1 = "";
-				WXT_APP_BOOTSTRAP_BASE_URL_2 = "";
-				WXT_APP_BOOTSTRAP_BASE_URL_3 = "";
-				WXT_APP_CHANNEL = "app2-unconfigured";
-				WXT_APP_DISPLAY_NAME = "文信通备用（未配置）";
-				WXT_APP_RUNTIME_ID = WXT_UNCONFIGURED_APP2;
-				WXT_APP_VARIANT = app2;
-				WXT_BUILD_IDENTITY = "";
-				WXT_FORMAL_BUILD = YES;
-				WXT_PRELOGIN_APP_ID = WXT_UNCONFIGURED_APP2;
-				WXT_PRELOGIN_BOOTSTRAP_ENABLED = NO;
-				WXT_PRELOGIN_CHANNEL = "app2-unconfigured";
-				WXT_SOURCE_COMMIT = "";
-			};
-			name = "Release-App2";
-		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -1455,8 +1228,6 @@
 			buildConfigurations = (
 				I00000000000000000000001 /* Debug */,
 				I00000000000000000000002 /* Release */,
-				I00000000000000000000007 /* Debug-App2 */,
-				I00000000000000000000008 /* Release-App2 */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
@@ -1466,8 +1237,6 @@
 			buildConfigurations = (
 				I00000000000000000000003 /* Debug */,
 				I00000000000000000000004 /* Release */,
-				I00000000000000000000009 /* Debug-App2 */,
-				I00000000000000000000010 /* Release-App2 */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
@@ -1477,8 +1246,6 @@
 			buildConfigurations = (
 				I00000000000000000000005 /* Debug */,
 				I00000000000000000000006 /* Release */,
-				AD0376BA30372BD700BFDE97 /* Debug-App2 */,
-				AD0376BB30372BD700BFDE97 /* Release-App2 */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

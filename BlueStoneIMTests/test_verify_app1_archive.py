@@ -283,11 +283,7 @@ class App1ArchiveVerifierTests(unittest.TestCase):
         self.assertNotIn('SCHEME="${SCHEME:-', internal_archiver)
         self.assertNotIn("--mode formal", internal_archiver)
 
-        app2_scheme = (SCHEME_ROOT / "BlueStoneIM-App2.xcscheme").read_text(
-            encoding="utf-8"
-        )
-        self.assertIn("verify-app2-archive.sh", app2_scheme)
-        self.assertNotIn("--mode internal-validation", app2_scheme)
+        self.assertFalse((SCHEME_ROOT / "BlueStoneIM-App2.xcscheme").exists())
 
 
 if __name__ == "__main__":

@@ -293,6 +293,7 @@ struct ConversationListView: View {
     @State private var cachedAnnouncementItems: [InboxItem] = []
     @State private var conversationCacheRebuildTask: Task<Void, Never>?
     @State private var conversationStoreChangeCoalescer = ConversationStoreChangeCoalescer()
+    @State private var conversationRowProjectionCache = ConversationRowProjectionCache()
     // JHT_MOD_BEGIN CHAT_ROUTE_DEFER_CONVERSATION_LIST_REBUILD_PERF_20260912 - 修改开始：聊天页覆盖列表时只记录 UI 缓存脏标记，避免不可见列表抢主线程重建
     @State private var conversationRenderCacheDirtyWhileRouteActive = false
     // JHT_MOD_END CHAT_ROUTE_DEFER_CONVERSATION_LIST_REBUILD_PERF_20260912 - 修改结束
@@ -300,6 +301,8 @@ struct ConversationListView: View {
     @State private var hasBuiltInitialRenderCaches = false
     @State private var isNearConversationListTop = true
     @State private var showConversationActivityHint = false
+    @State private var isConversationListInteracting = false
+    @State private var conversationRenderCacheDirtyWhileInteracting = false
     @State private var conversationListTopScrollRequest = 0
     @State private var globalSearchResponse: RemoteTenantSearchResponse?
     @State private var selectedGlobalSearchType: String?
@@ -430,148 +433,56 @@ struct ConversationListView: View {
 
         ZStack {
             AuroraBackground()
-            ScrollViewReader { scrollProxy in
-                ScrollView(showsIndicators: false) {
-                    LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
-                        Color.clear
-                            .frame(height: 1)
-                            .id(conversationListTopAnchorID)
-                            .background(
-                                GeometryReader { proxy in
-                                    Color.clear.preference(
-                                        key: ConversationListTopOffsetPreferenceKey.self,
-                                        value: proxy.frame(in: .named(conversationListCoordinateSpaceName)).minY
-                                    )
-                                }
-                            )
-
-                        VStack(alignment: .leading, spacing: 18) {
-                            ConversationTopCard(enterprise: state.currentEnterprise) {
-                                showEnterpriseSheet = true
-                            } openConversation: { conversationID in
-                                openConversation(conversationID)
-                            }
-                            if state.networkBannerVisible && !renderAnnouncementItems.isEmpty {
-                                AnnouncementBanner(
-                                    items: renderAnnouncementItems,
-                                    selection: $announcementIndex,
-                                    selectedItem: $selectedAnnouncement
-                                )
-                            }
+            RecycledConversationTable(
+                items: conversationSections.ordered,
+                displaysRows: !isGlobalSearchActive && filter != "@我",
+                searchRevision: query,
+                rowContext: mentionTarget + "|" + state.systemNoticeAvatarURL + "|" + String(Int(listClockTick.timeIntervalSince1970 / 60)),
+                header: AnyView(recycledConversationHeader.environmentObject(state)),
+                search: AnyView(PinnedSearchHeader {
+                    SearchField(text: $query, placeholder: "搜索联系人、群聊、聊天记录、文件")
+                        .accessibilityIdentifier("conversation_search_field")
+                }.environmentObject(state)),
+                filter: AnyView(filterBar.padding(.horizontal, 18).padding(.bottom, 18).environmentObject(state)),
+                footer: AnyView(recycledConversationFooter.environmentObject(state)),
+                headerRevision: ConversationListHeaderRevision(enterprise: state.currentEnterprise,
+                    announcementIndex: announcementIndex, announcements: cachedAnnouncementItems,
+                    showsAnnouncements: state.networkBannerVisible),
+                filterRevision: "\(filter)|\(cachedAlertingUnreadTotal)|\(cachedUnreadMentionCount)",
+                dynamicFooter: isGlobalSearchActive || filter == "@我" || renderMatchingConversations.isEmpty || state.isLoadingMoreConversations || state.isConversationSnapshotPartial,
+                scrollRequest: conversationListTopScrollRequest,
+                interactionChanged: { interacting in
+                    isConversationListInteracting = interacting
+                    state.isConversationListUserInteracting = interacting
+                    if interacting {
+                        if conversationCacheRebuildTask != nil {
+                            conversationRenderCacheDirtyWhileInteracting = true
+                            conversationCacheRebuildTask?.cancel()
+                            conversationCacheRebuildTask = nil
                         }
-                        .padding(.horizontal, 18)
-                        .padding(.top, 10)
-                        .padding(.bottom, 8)
-
-                        Section {
-                            filterBar
-                                .padding(.horizontal, 18)
-                                .padding(.bottom, 18)
-
-                            if isGlobalSearchActive {
-                                TenantGlobalSearchResultsView(
-                                    query: trimmedSearchQuery,
-                                    response: globalSearchResponse,
-                                    excludedResultIDs: invalidatedGlobalSearchResultIDs,
-                                    invalidations: globalSearchInvalidations,
-                                    isLoading: isGlobalSearching,
-                                    isLoadingMore: isGlobalSearchLoadingMore,
-                                    selectedType: selectedGlobalSearchType,
-                                    onSelectType: { type in
-                                        selectedGlobalSearchType = type
-                                        scheduleGlobalSearch()
-                                    },
-                                    onRemoveFilter: removeGlobalSearchFilter,
-                                    onLoadMore: loadMoreGlobalSearchResults,
-                                    onSelect: handleGlobalSearchSelection
-                                )
-                                .padding(.horizontal, 18)
-                            } else if state.isInitialDataLoading && !state.hasLoadedRemoteSnapshot && state.conversations.isEmpty && filter != "@我" {
-                                RemoteLoadingStateView(
-                                    title: "正在同步会话",
-                                    subtitle: "登录成功，正在立即拉取真实会话和最近消息。"
-                                )
-                                .padding(.horizontal, 18)
-                            } else if let syncFailureMessage = state.syncFailureMessage, state.conversations.isEmpty, filter != "@我" {
-                                EmptyStateView(
-                                    symbol: "arrow.clockwise.icloud",
-                                    title: "聊天数据同步失败",
-                                    subtitle: syncFailureMessage,
-                                    actionTitle: state.isSyncRetrying ? "正在重试..." : "重试同步"
-                                ) {
-                                    state.retryRemoteSync()
-                                }
-                                .padding(.horizontal, 18)
-                            } else if filter == "@我" {
-                                MentionMessageList(records: renderMentionRecords, mentionTarget: mentionTarget) { record in
-                                    openConversation(
-                                        record.conversationID,
-                                        initialSearchJumpTarget: mentionJumpTarget(for: record)
-                                    )
-                                }
-                                .padding(.horizontal, 18)
-                            } else if renderMatchingConversations.isEmpty {
-                                let isUnfilteredEmpty = trimmedSearchQuery.isEmpty && filter == "全部"
-                                EmptyStateView(
-                                    symbol: "bubble.left",
-                                    title: isUnfilteredEmpty ? "暂无会话" : "没有匹配会话",
-                                    subtitle: isUnfilteredEmpty ? "当前账号暂未返回可见会话。" : "换个关键词，或切换筛选条件查看全部会话。"
-                                ) {
-                                    query = ""
-                                    filter = "全部"
-                                }
-                                .padding(.horizontal, 18)
-                            } else {
-                                // Keep one identity scope when a row moves into or out of pinning.
-                                // JHT_MOD_BEGIN CONVERSATION_LIST_DATA_SCALE_PERF_20260912 - 修改开始：复用缓存好的排序结果，避免 body 中反复拼接数组
-                                ForEach(conversationSections.ordered) { item in
-                                // JHT_MOD_END CONVERSATION_LIST_DATA_SCALE_PERF_20260912 - 修改结束
-                                    conversationRow(for: item)
-                                        .padding(.horizontal, 18)
-                                        .padding(.bottom, 12)
-                                }
-                            }
-                            if !isGlobalSearchActive, filter != "@我", !state.conversations.isEmpty {
-                                if state.isLoadingMoreConversations {
-                                    HStack {
-                                        ProgressView()
-                                        Text("正在加载更多会话…")
-                                    }
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                } else if state.isConversationSnapshotPartial {
-                                    Button("部分会话尚未加载，点击重试") { state.retryRemoteSync() }
-                                        .font(.caption)
-                                        .disabled(state.isSyncRetrying)
-                                }
-                            }
-                            Color.clear.frame(height: 12)
-                        } header: {
-                            PinnedSearchHeader {
-                                SearchField(text: $query, placeholder: "搜索联系人、群聊、聊天记录、文件")
-                                    .accessibilityIdentifier("conversation_search_field")
-                            }
-                        }
+                    } else if conversationRenderCacheDirtyWhileInteracting {
+                        conversationRenderCacheDirtyWhileInteracting = false
+                        scheduleConversationRenderCacheRebuild()
                     }
-                }
-                .coordinateSpace(name: conversationListCoordinateSpaceName)
-                .onPreferenceChange(ConversationListTopOffsetPreferenceKey.self) { offset in
-                    let isNearTop = offset > -96
-                    guard isNearConversationListTop != isNearTop else { return }
-                    isNearConversationListTop = isNearTop
-                    if isNearTop {
+                },
+                nearTop: { near in
+                    isNearConversationListTop = near
+                    if near { showConversationActivityHint = false }
+                },
+                row: { item in AnyView(conversationRow(for: item).padding(.horizontal, 18).padding(.bottom, 12).environmentObject(state)) }
+            )
+            .overlay(alignment: .top) {
+                if showConversationActivityHint && filter != "@我" && query.isEmpty {
+                    Button {
                         showConversationActivityHint = false
-                    }
-                }
-                .overlay(alignment: .top) {
-                    conversationActivityHint(scrollProxy: scrollProxy)
-                }
-                .onChangeCompat(of: conversationListTopScrollRequest) { _, request in
-                    guard request > 0 else { return }
-                    Task { @MainActor in
-                        try? await Task.sleep(nanoseconds: 60_000_000)
-                        scrollConversationListToTop(scrollProxy)
-                    }
+                        conversationListTopScrollRequest &+= 1
+                    } label: {
+                        Label("有新会话", systemImage: "arrow.up.circle.fill")
+                            .font(.system(size: 13, weight: .black)).foregroundStyle(.white)
+                            .padding(.horizontal, 14).frame(height: 34).background(Capsule().fill(IMColor.brand))
+                    }.buttonStyle(.plain).padding(.top, 66)
+                        .accessibilityIdentifier("conversation_new_activity_hint")
+                        .accessibilityLabel("有新会话，回到顶部")
                 }
             }
         }
@@ -666,6 +577,9 @@ struct ConversationListView: View {
             }
         }
         .onDisappear {
+            isConversationListInteracting = false
+            state.isConversationListUserInteracting = false
+            conversationRenderCacheDirtyWhileInteracting = false
             if isGlobalSearching || isGlobalSearchLoadingMore {
                 postGlobalSearchAnalytics(eventType: "cancel", response: globalSearchResponse)
             }
@@ -725,6 +639,100 @@ struct ConversationListView: View {
         }
     }
 
+    private var recycledConversationHeader: some View {
+VStack(alignment: .leading, spacing: 18) {
+                            ConversationTopCard(enterprise: state.currentEnterprise) {
+                                showEnterpriseSheet = true
+                            } openConversation: { conversationID in
+                                openConversation(conversationID)
+                            }
+                            if state.networkBannerVisible && !cachedAnnouncementItems.isEmpty {
+                                AnnouncementBanner(
+                                    items: cachedAnnouncementItems,
+                                    selection: $announcementIndex,
+                                    selectedItem: $selectedAnnouncement
+                                )
+                            }
+                        }
+                        .padding(.horizontal, 18)
+                        .padding(.top, 10)
+                        .padding(.bottom, 8)
+    }
+
+    @ViewBuilder private var recycledConversationFooter: some View {
+        let renderMatchingConversations = cachedConversationSections.matching
+        let renderMentionRecords = filter == "@我" ? cachedMentionRecords : []
+                            if isGlobalSearchActive {
+                                TenantGlobalSearchResultsView(
+                                    query: trimmedSearchQuery,
+                                    response: globalSearchResponse,
+                                    excludedResultIDs: invalidatedGlobalSearchResultIDs,
+                                    invalidations: globalSearchInvalidations,
+                                    isLoading: isGlobalSearching,
+                                    isLoadingMore: isGlobalSearchLoadingMore,
+                                    selectedType: selectedGlobalSearchType,
+                                    onSelectType: { type in
+                                        selectedGlobalSearchType = type
+                                        scheduleGlobalSearch()
+                                    },
+                                    onRemoveFilter: removeGlobalSearchFilter,
+                                    onLoadMore: loadMoreGlobalSearchResults,
+                                    onSelect: handleGlobalSearchSelection
+                                )
+                                .padding(.horizontal, 18)
+                            } else if state.isInitialDataLoading && !state.hasLoadedRemoteSnapshot && state.conversations.isEmpty && filter != "@我" {
+                                RemoteLoadingStateView(
+                                    title: "正在同步会话",
+                                    subtitle: "登录成功，正在立即拉取真实会话和最近消息。"
+                                )
+                                .padding(.horizontal, 18)
+                            } else if let syncFailureMessage = state.syncFailureMessage, state.conversations.isEmpty, filter != "@我" {
+                                EmptyStateView(
+                                    symbol: "arrow.clockwise.icloud",
+                                    title: "聊天数据同步失败",
+                                    subtitle: syncFailureMessage,
+                                    actionTitle: state.isSyncRetrying ? "正在重试..." : "重试同步"
+                                ) {
+                                    state.retryRemoteSync()
+                                }
+                                .padding(.horizontal, 18)
+                            } else if filter == "@我" {
+                                MentionMessageList(records: renderMentionRecords, mentionTarget: mentionTarget) { record in
+                                    openConversation(
+                                        record.conversationID,
+                                        initialSearchJumpTarget: mentionJumpTarget(for: record)
+                                    )
+                                }
+                                .padding(.horizontal, 18)
+                            } else if renderMatchingConversations.isEmpty {
+                                let isUnfilteredEmpty = trimmedSearchQuery.isEmpty && filter == "全部"
+                                EmptyStateView(
+                                    symbol: "bubble.left",
+                                    title: isUnfilteredEmpty ? "暂无会话" : "没有匹配会话",
+                                    subtitle: isUnfilteredEmpty ? "当前账号暂未返回可见会话。" : "换个关键词，或切换筛选条件查看全部会话。"
+                                ) {
+                                    query = ""
+                                    filter = "全部"
+                                }
+                                .padding(.horizontal, 18)
+                            }
+                            if !isGlobalSearchActive, filter != "@我", !state.conversations.isEmpty {
+                                if state.isLoadingMoreConversations {
+                                    HStack {
+                                        ProgressView()
+                                        Text("正在加载更多会话…")
+                                    }
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                } else if state.isConversationSnapshotPartial {
+                                    Button("部分会话尚未加载，点击重试") { state.retryRemoteSync() }
+                                        .font(.caption)
+                                        .disabled(state.isSyncRetrying)
+                                }
+                            }
+                            Color.clear.frame(height: 12)
+    }
+
     private func conversationRow(for item: ConversationRenderItem) -> some View {
         let conversation = item.conversation
         // JHT_MOD_BEGIN CONVERSATION_LIST_DATA_SCALE_PERF_20260912 - 修改开始：交互行使用轻量展示模型，点击/长按仍沿用原会话业务对象
@@ -736,6 +744,7 @@ struct ConversationListView: View {
             unreadMention: item.unreadMention,
             systemNoticeAvatarURL: state.systemNoticeAvatarURL
         ) {
+            guard let conversation = state.conversationStore.conversation(id: item.id) else { return }
             if conversation.kind == .system, conversation.unread > 0 {
                 state.markConversationRead(conversation.id, showToast: false)
             }
@@ -744,6 +753,7 @@ struct ConversationListView: View {
                 initialSearchJumpTarget: earliestUnreadMentionJumpTarget(in: conversation)
             )
         } onLongPress: {
+            guard let conversation = state.conversationStore.conversation(id: item.id) else { return }
             guard conversationListSupportsMutableActions(conversation) else { return }
             UIImpactFeedbackGenerator(style: .medium).impactOccurred()
             actionConversation = conversation
@@ -1312,10 +1322,23 @@ struct ConversationListView: View {
         // JHT_MOD_BEGIN CONVERSATION_LIST_LAG_DIAG_RENDER_SECTIONS - 修改开始：记录会话列表筛选、展示字段预计算、排序耗时
         #if DEBUG
         let renderStartedAt = Date()
+        ConversationListLayoutDiagnostics.sectionRebuilds += 1
         #endif
         // JHT_MOD_END CONVERSATION_LIST_LAG_DIAG_RENDER_SECTIONS - 修改结束
         let keyword = trimmedSearchQuery
+        conversationRowProjectionCache.prepare(
+            context: ConversationRowProjectionContext(
+                viewer: state.currentUser, viewerIDs: state.currentUserIdentitySet(),
+                tenant: state.remoteDataScopeKey(for: state.apiContext) + "|" + state.currentEnterprise.name, mentionTarget: mentionTarget,
+                minute: Int(listClockTick.timeIntervalSince1970 / 60),
+                showsGroupCount: state.shouldShowGroupMemberCount,
+                showsProcessingNotices: state.shouldShowMessageProcessingNotices,
+                certificationRevision: state.certificationPresentationRevision
+            ),
+            activeIDs: Set(state.conversations.map(\.id))
+        )
         let contactLookup = DirectConversationCallPeerResolver.ContactLookup(contacts: state.contacts)
+        let userLookup = state.makeConversationUserLookup()
         // JHT_MOD_BEGIN CONVERSATION_LIST_DIRECT_IDENTITY_CACHE_PERF_20260912 - 修改开始：本轮渲染复用当前身份集合，避免每条私聊会话重复构造 Set
         let currentProfileIdentityIDs = state.currentUserIdentitySet()
         var directResolverCurrentIdentityIDs = Set(state.userIdentityCandidates(for: state.currentUser))
@@ -1363,7 +1386,7 @@ struct ConversationListView: View {
             }
 
             if let uid = firstUniqueDirectPeerIDForRender(
-                state.directChannelParts(state.remoteChannelID(for: conversation)) + state.directChannelParts(conversation.id)
+                state.directChannelParts(state.remoteChannelID(for: conversation, lookup: userLookup)) + state.directChannelParts(conversation.id)
             ) {
                 return uid
             }
@@ -1388,6 +1411,14 @@ struct ConversationListView: View {
         }
         for conversation in state.conversations {
             guard conversationMatchesCurrentList(conversation, keyword: keyword) else { continue }
+            if let item = conversationRowProjectionCache.value(for: conversation) {
+                matching.append(item)
+                if item.rowModel.isPinned { pinned.append(item) } else { regular.append(item) }
+                continue
+            }
+            #if DEBUG
+            ConversationListLayoutDiagnostics.rowProjections += 1
+            #endif
             // JHT_MOD_BEGIN CONVERSATION_LIST_SCROLL_PERF_BEGIN_ROW_PRESENTATION_BUILD - 修改开始：会话列表行展示数据提前缓存，减少滑动时逐行查全局状态
             let directPeer = conversation.kind == .direct
                 ? directConversationProfilePeerForRender(conversation)
@@ -1396,7 +1427,7 @@ struct ConversationListView: View {
                 guard conversation.kind == .direct, let directPeer else {
                     return conversation.title
                 }
-                return state.remarkPreferredDisplayName(for: directPeer)
+                return state.remarkPreferredDisplayName(for: directPeer, contactLookup: contactLookup)
             }()
             let directCertificationUID = conversation.kind == .direct
                 ? (directConversationCertificationUIDForRender(conversation, resolvedPeer: directPeer) ?? directPeer?.id ?? "")
@@ -1438,8 +1469,10 @@ struct ConversationListView: View {
             // JHT_MOD_END CONVERSATION_LIST_SCROLL_PERF_END_ROW_PRESENTATION_BUILD - 修改结束：会话列表行展示数据提前缓存，减少滑动时逐行查全局状态
             // WDT_CONVERSATION_LIST_SORT_20261021: row time and ordering share one projection; stored data is untouched.
             let messageTimestamp = conversationListMessageTimestamp(conversation)
+            var summary = conversation
+            summary.messages = []
             let item = ConversationRenderItem(
-                conversation: conversation,
+                conversation: summary,
                 displayTitle: displayTitle,
                 unreadMention: latestUnreadMention(in: conversation),
                 sortScore: conversationSortScore(conversation, messageTimestamp: messageTimestamp),
@@ -1450,7 +1483,7 @@ struct ConversationListView: View {
                     kind: conversation.kind,
                     displayTitle: displayTitle,
                     groupMemberCount: conversation.kind == .group && state.shouldShowGroupMemberCount
-                        ? groupCounts[state.remoteChannelID(for: conversation)] ?? groupCounts[conversation.id]
+                        ? groupCounts[state.remoteChannelID(for: conversation, lookup: userLookup)] ?? groupCounts[conversation.id]
                         : nil,
                     lastMessage: state.visibleConversationLastMessage(conversation),
                     time: messageTimestamp == 0 ? "" : conversation.time,
@@ -1465,6 +1498,7 @@ struct ConversationListView: View {
                 )
                 // JHT_MOD_END CONVERSATION_LIST_DATA_SCALE_PERF_20260912 - 修改结束
             )
+            conversationRowProjectionCache.store(item, source: conversation)
             matching.append(item)
             if item.rowModel.isPinned {
                 pinned.append(item)
@@ -1552,6 +1586,7 @@ struct ConversationListView: View {
 
     private func invalidateConversationRenderInputSignature() {
         cachedConversationRenderInputSignature = nil
+        conversationRowProjectionCache.invalidate()
     }
     // JHT_MOD_END CONVERSATION_LIST_SKIP_UNCHANGED_RENDER_20260912 - 修改结束
 
@@ -1658,6 +1693,10 @@ struct ConversationListView: View {
     }
 
     private func rebuildConversationRenderCaches(trackActivity: Bool = false) {
+        guard !isConversationListInteracting else {
+            conversationRenderCacheDirtyWhileInteracting = true
+            return
+        }
         rebuildConversationSectionsCache(trackActivity: trackActivity)
         rebuildMentionCache(includeRecords: filter == "@我")
         rebuildAlertingUnreadCache()
@@ -1710,6 +1749,10 @@ struct ConversationListView: View {
     }
 
     private func scheduleConversationRenderCacheRebuild(now: Date = Date()) {
+        guard !isConversationListInteracting else {
+            conversationRenderCacheDirtyWhileInteracting = true
+            return
+        }
         // JHT_MOD_BEGIN CHAT_ROUTE_DEFER_CONVERSATION_LIST_REBUILD_PERF_20260912 - 修改开始：列表不可见时不启动延迟重建任务
         if selectedConversationRoute != nil {
             markConversationRenderCacheDirtyWhileRouteActive(reason: "render_cache_schedule")
@@ -2310,6 +2353,45 @@ private struct TenantSearchHighlightedText: View {
     }
 }
 
+private struct ConversationRowProjectionContext: Equatable {
+    let viewer: IMUser
+    let viewerIDs: Set<String>
+    let tenant: String
+    let mentionTarget: String
+    let minute: Int
+    let showsGroupCount: Bool
+    let showsProcessingNotices: Bool
+    let certificationRevision: Int
+}
+
+private final class ConversationRowProjectionCache {
+    private struct Entry {
+        let source: Conversation
+        let item: ConversationRenderItem
+    }
+    private var context: ConversationRowProjectionContext?
+    private var entries: [String: Entry] = [:]
+
+    func prepare(context: ConversationRowProjectionContext, activeIDs: Set<String>) {
+        if self.context != context {
+            entries.removeAll(keepingCapacity: true)
+            self.context = context
+        } else {
+            entries = entries.filter { activeIDs.contains($0.key) }
+        }
+    }
+    func value(for source: Conversation) -> ConversationRenderItem? {
+        // Relative 'just now' summaries without an authoritative timestamp retain their existing clock semantics.
+        guard !(source.sortTimestamp <= 0 && source.time == "刚刚"),
+              let entry = entries[source.id], entry.source == source else { return nil }
+        return entry.item
+    }
+    func store(_ item: ConversationRenderItem, source: Conversation) {
+        entries[source.id] = Entry(source: source, item: item)
+    }
+    func invalidate() { entries.removeAll(keepingCapacity: true) }
+}
+
 private struct ConversationRenderItem: Identifiable {
     let conversation: Conversation
     let displayTitle: String
@@ -2363,7 +2445,7 @@ private struct ConversationRenderInputSignature: Equatable {
     let currentUserUsername: String
     let currentUserName: String
     let currentIdentityIDs: [String]
-    let conversations: [ConversationRenderConversationInputSignature]
+    let conversations: [Conversation]
 
     init(filter: String, query: String, currentUser: IMUser, currentIdentityIDs: [String], conversations: [Conversation]) {
         self.filter = filter
@@ -2373,7 +2455,8 @@ private struct ConversationRenderInputSignature: Equatable {
         currentUserUsername = currentUser.username
         currentUserName = currentUser.name
         self.currentIdentityIDs = currentIdentityIDs
-        self.conversations = conversations.map(ConversationRenderConversationInputSignature.init)
+        // Swift arrays share unchanged message buffers; avoid allocating a signature for every historical message.
+        self.conversations = conversations
     }
 }
 
@@ -4341,3 +4424,265 @@ private func highlightedMentionText(_ text: String, targets: [String], baseColor
     }
     return found ? result : Text(text).foregroundColor(baseColor)
 }
+
+// The same reuse/diffing strategy used by JianHuiTong, with jdt's existing SwiftUI content and actions.
+private struct ConversationListHeaderRevision: Equatable {
+    let enterprise: Enterprise
+    let announcementIndex: Int
+    let announcements: [InboxItem]
+    let showsAnnouncements: Bool
+}
+
+private struct RecycledConversationTable: UIViewControllerRepresentable {
+    let items: [ConversationRenderItem]
+    let displaysRows: Bool
+    let searchRevision: String
+    let rowContext: String
+    let header: AnyView
+    let search: AnyView
+    let filter: AnyView
+    let footer: AnyView
+    let headerRevision: ConversationListHeaderRevision
+    let filterRevision: String
+    let dynamicFooter: Bool
+    let scrollRequest: Int
+    let interactionChanged: (Bool) -> Void
+    let nearTop: (Bool) -> Void
+    let row: (ConversationRenderItem) -> AnyView
+
+    func makeUIViewController(context: Context) -> RecycledConversationController {
+        let controller = RecycledConversationController()
+        controller.apply(self)
+        return controller
+    }
+    func updateUIViewController(_ controller: RecycledConversationController, context: Context) {
+        controller.apply(self)
+    }
+}
+
+private final class RecycledConversationController: UIViewController, UITableViewDelegate {
+    private enum Item: Hashable { case filter, conversation(String), footer }
+    private let table = UITableView(frame: .zero, style: .plain)
+    private let headerHost = UIHostingController(rootView: AnyView(EmptyView()))
+    private let searchHost = UIHostingController(rootView: AnyView(EmptyView()))
+    private var source: UITableViewDiffableDataSource<Int, Item>!
+    private var input: RecycledConversationTable?
+    private var pending: RecycledConversationTable?
+    private var itemsByID: [String: ConversationRenderItem] = [:]
+    private var lastScrollRequest = 0
+    private var isNearTop: Bool?
+    private var headerNeedsMeasurement = true
+    private var measuredHeaderWidth: CGFloat = 0
+    private var searchNeedsMeasurement = true
+    private var measuredSearchWidth: CGFloat = 0
+    private var measuredSearchHeight: CGFloat = 64
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        view.backgroundColor = .clear
+        table.backgroundColor = .clear
+        table.separatorStyle = .none
+        table.showsVerticalScrollIndicator = false
+        table.isPrefetchingEnabled = false
+        table.delaysContentTouches = false
+        // Existing row geometry: 56pt avatar + 28pt card padding + 12pt separation.
+        table.estimatedRowHeight = 96
+        table.rowHeight = UITableView.automaticDimension
+        table.estimatedSectionHeaderHeight = 64
+        table.sectionHeaderTopPadding = 0
+        table.delegate = self
+        table.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(table)
+        NSLayoutConstraint.activate([
+            table.leadingAnchor.constraint(equalTo: view.leadingAnchor), table.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            table.topAnchor.constraint(equalTo: view.topAnchor), table.bottomAnchor.constraint(equalTo: view.bottomAnchor)
+        ])
+        for host in [headerHost, searchHost] {
+            addChild(host); host.view.backgroundColor = .clear; host.didMove(toParent: self)
+        }
+        table.tableHeaderView = headerHost.view
+        source = UITableViewDiffableDataSource<Int, Item>(tableView: table) { [weak self] table, index, id in
+            guard let self, let input = self.input else { return UITableViewCell() }
+            let reuseID: String
+            switch id { case .conversation: reuseID = "conversation"; case .filter: reuseID = "filter"; case .footer: reuseID = "footer" }
+            let cell = (table.dequeueReusableCell(withIdentifier: reuseID) as? RecycledConversationCell)
+                ?? RecycledConversationCell(style: .default, reuseIdentifier: reuseID)
+            let content: AnyView
+            switch id {
+            case .filter: content = input.filter
+            case .footer: content = input.footer
+            case .conversation(let key):
+                guard let item = self.itemsByID[key] else { return cell }
+                content = input.row(item)
+            }
+            cell.configure(content, parent: self)
+            return cell
+        }
+    }
+
+    func apply(_ next: RecycledConversationTable) {
+        loadViewIfNeeded()
+        // Never reorder or resize rows under an active finger/deceleration.
+        if table.isDragging || table.isDecelerating { pending = next; return }
+        let previous = input
+        input = next
+        let visibleItems = next.displaysRows ? next.items : []
+        let previousItems = itemsByID
+        itemsByID = Dictionary(uniqueKeysWithValues: visibleItems.map { ($0.id, $0) })
+        if previous == nil || previous?.searchRevision != next.searchRevision {
+            searchHost.rootView = next.search
+            searchNeedsMeasurement = true
+        }
+        let headerChanged = previous?.headerRevision != next.headerRevision
+        let filterChanged = previous?.filterRevision != next.filterRevision
+        if headerChanged {
+            headerHost.rootView = next.header
+            headerNeedsMeasurement = true
+            updateHeaderSize()
+        }
+        let ids: [Item] = [.filter] + visibleItems.map { .conversation($0.id) } + [.footer]
+        let oldIDs = source.snapshot().itemIdentifiers
+        let existing = Set(oldIDs)
+        let contextChanged = previous?.rowContext != next.rowContext
+        var changed: [Item] = visibleItems.compactMap { item in
+            guard existing.contains(.conversation(item.id)) else { return nil }
+            let old = previousItems[item.id]
+            return contextChanged || old?.rowModel != item.rowModel || old?.unreadMention != item.unreadMention
+                ? .conversation(item.id) : nil
+        }
+        if filterChanged && existing.contains(.filter) { changed.append(.filter) }
+        if (next.dynamicFooter || previous?.dynamicFooter == true) && existing.contains(.footer) { changed.append(.footer) }
+        if ids != oldIDs || !changed.isEmpty {
+            var snapshot = NSDiffableDataSourceSnapshot<Int, Item>()
+            snapshot.appendSections([0]); snapshot.appendItems(ids)
+            let nextIDSet = Set(ids)
+            snapshot.reconfigureItems(changed.filter { nextIDSet.contains($0) })
+            source.apply(snapshot, animatingDifferences: false)
+        }
+        if next.scrollRequest > lastScrollRequest {
+            // A long animated traversal competes with incoming diffable snapshots and estimated row heights.
+            table.setContentOffset(CGPoint(x: 0, y: -table.adjustedContentInset.top), animated: false)
+        }
+        lastScrollRequest = next.scrollRequest
+    }
+
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        updateHeaderSize()
+    }
+    private func updateHeaderSize() {
+        let width = table.bounds.width
+        guard width > 0, headerNeedsMeasurement || abs(measuredHeaderWidth - width) > 0.5 else { return }
+        // Clear the dirty flag before measuring: assigning tableHeaderView schedules another layout pass.
+        headerNeedsMeasurement = false
+        measuredHeaderWidth = width
+        #if DEBUG
+        ConversationListLayoutDiagnostics.headerMeasurements += 1
+        #endif
+        let height = headerHost.sizeThatFits(in: CGSize(width: width, height: UIView.layoutFittingCompressedSize.height)).height
+        guard height.isFinite, height > 0,
+              abs(headerHost.view.frame.height - height) > 0.5 || abs(headerHost.view.frame.width - width) > 0.5 else { return }
+        headerHost.view.frame = CGRect(x: 0, y: 0, width: width, height: height)
+        table.tableHeaderView = headerHost.view
+    }
+    func tableView(_ tableView: UITableView, viewForHeaderInSection section: Int) -> UIView? { searchHost.view }
+    func tableView(_ tableView: UITableView, heightForRowAt indexPath: IndexPath) -> CGFloat {
+        if case .conversation? = source.itemIdentifier(for: indexPath) { return 96 }
+        return UITableView.automaticDimension
+    }
+    func tableView(_ tableView: UITableView, estimatedHeightForRowAt indexPath: IndexPath) -> CGFloat {
+        if case .conversation? = source.itemIdentifier(for: indexPath) { return 96 }
+        return UITableView.automaticDimension
+    }
+    func tableView(_ tableView: UITableView, heightForHeaderInSection section: Int) -> CGFloat {
+        let width = tableView.bounds.width
+        guard width > 0 else { return measuredSearchHeight }
+        guard searchNeedsMeasurement || abs(measuredSearchWidth - width) > 0.5 else { return measuredSearchHeight }
+        searchNeedsMeasurement = false
+        measuredSearchWidth = width
+        #if DEBUG
+        ConversationListLayoutDiagnostics.searchMeasurements += 1
+        #endif
+        let height = searchHost.sizeThatFits(in: CGSize(width: width, height: UIView.layoutFittingCompressedSize.height)).height
+        if height.isFinite && height > 0 { measuredSearchHeight = height }
+        return measuredSearchHeight
+    }
+    func scrollViewDidScroll(_ scrollView: UIScrollView) {
+        let near = scrollView.contentOffset.y + scrollView.adjustedContentInset.top < 96
+        guard near != isNearTop else { return }
+        isNearTop = near
+        // UIKit layout may call the delegate while SwiftUI is applying an update.
+        let callback = input?.nearTop
+        DispatchQueue.main.async { callback?(near) }
+    }
+    private func notifyInteraction(_ interacting: Bool) {
+        let callback = input?.interactionChanged
+        DispatchQueue.main.async { callback?(interacting) }
+    }
+    func scrollViewWillBeginDragging(_ scrollView: UIScrollView) { notifyInteraction(true) }
+    func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
+        if !decelerate { flushPending(); notifyInteraction(false) }
+    }
+    func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
+        flushPending(); notifyInteraction(false)
+    }
+    private func flushPending() {
+        guard let next = pending else { return }
+        pending = nil; apply(next)
+    }
+}
+
+private final class RecycledConversationCell: UITableViewCell {
+    private var host: UIHostingController<AnyView>?
+    override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
+        super.init(style: style, reuseIdentifier: reuseIdentifier)
+        backgroundColor = .clear; contentView.backgroundColor = .clear; selectionStyle = .none
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    func configure(_ content: AnyView, parent: UIViewController) {
+        if #available(iOS 16.0, *) {
+            contentConfiguration = UIHostingConfiguration { content }.margins(.all, 0)
+            return
+        }
+        if let host {
+            if host.parent == nil { parent.addChild(host); host.didMove(toParent: parent) }
+            host.rootView = content
+            host.view.invalidateIntrinsicContentSize()
+            return
+        }
+        let host = UIHostingController(rootView: content)
+        if #available(iOS 16.0, *) { host.sizingOptions = .intrinsicContentSize }
+        self.host = host
+        parent.addChild(host)
+        host.view.backgroundColor = .clear
+        host.view.translatesAutoresizingMaskIntoConstraints = false
+        contentView.addSubview(host.view)
+        NSLayoutConstraint.activate([
+            host.view.leadingAnchor.constraint(equalTo: contentView.leadingAnchor), host.view.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+            host.view.topAnchor.constraint(equalTo: contentView.topAnchor), host.view.bottomAnchor.constraint(equalTo: contentView.bottomAnchor)
+        ])
+        host.didMove(toParent: parent)
+    }
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        if window == nil, let host, host.parent != nil {
+            host.willMove(toParent: nil)
+            host.removeFromParent()
+        }
+    }
+    override func prepareForReuse() {
+        super.prepareForReuse()
+        contentConfiguration = nil
+        host?.rootView = AnyView(EmptyView())
+    }
+}
+
+#if DEBUG
+@MainActor
+enum ConversationListLayoutDiagnostics {
+    static var rowProjections = 0
+    static var sectionRebuilds = 0
+    static var headerMeasurements = 0
+    static var searchMeasurements = 0
+}
+#endif

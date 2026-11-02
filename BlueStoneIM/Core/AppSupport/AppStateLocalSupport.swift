@@ -1625,8 +1625,10 @@ enum AttachmentPreviewResourceBuilder {
             let asset = AVAsset(url: videoURL)
             let generator = AVAssetImageGenerator(asset: asset)
             generator.appliesPreferredTrackTransform = true
-            let time = CMTime(seconds: 0.12, preferredTimescale: 600)
-            let cgImage = try generator.copyCGImage(at: time, actualTime: nil)
+            generator.maximumSize = CGSize(width: 720, height: 720)
+            let cgImage = try [0.5, 1.0, 0.0].lazy.compactMap { seconds in
+                try? generator.copyCGImage(at: CMTime(seconds: seconds, preferredTimescale: 600), actualTime: nil)
+            }.first ?? generator.copyCGImage(at: .zero, actualTime: nil)
             let image = UIImage(cgImage: cgImage)
             guard let data = image.jpegData(compressionQuality: 0.82) else { return nil }
             let url = videoURL

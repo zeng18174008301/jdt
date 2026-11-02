@@ -159,6 +159,7 @@ extension AppState {
     }
 
     func appDidEnterBackground() {
+        isConversationListUserInteracting = false
 		(api as? IMAPIClient)?.runtimeColdLaunchSceneDidEnterBackground()
         #if ACCESS_DIAGNOSTICS_OVERLAY_ENABLED
         GroupForegroundSessionClearDiagnostics.suspend()
@@ -873,9 +874,9 @@ extension AppState {
         }
     }
 
-    func sendRealtimeSubscribe(for conversation: Conversation) {
+    func sendRealtimeSubscribe(for conversation: Conversation, lookup: ConversationUserLookup? = nil) {
         guard isRealtimeConnected else { return }
-        let channelID = remoteChannelID(for: conversation)
+        let channelID = remoteChannelID(for: conversation, lookup: lookup)
         let channelType = apiChannelType(for: conversation.kind)
         realtimeClient.subscribe(
             channelID: channelID,
@@ -887,12 +888,32 @@ extension AppState {
     }
 
     func resubscribeRealtimeChannels() {
-        for conversation in conversations {
-            sendRealtimeSubscribe(for: conversation)
+        realtimeResubscriptionTask?.cancel()
+        realtimeResubscriptionTask = Task(priority: .utility) { @MainActor [weak self] in
+            await self?.resubscribeRealtimeChannelsCooperatively()
         }
+    }
+
+    func resubscribeRealtimeChannelsCooperatively(
+        pause: @MainActor (UInt64) async throws -> Void = { try await Task.sleep(nanoseconds: $0) }
+    ) async {
+        guard !Task.isCancelled, isRealtimeConnected else { return }
+        let scope = remoteDataScopeKey(for: apiContext)
+        let generation = localMessageSessionGeneration
+        let lookup = makeConversationUserLookup()
+        var targets = conversations
         if let activeRealtimeConversationID,
            let active = conversations.first(where: { $0.id == activeRealtimeConversationID }) {
-            sendRealtimeSubscribe(for: active)
+            targets.append(active)
+        }
+        for (index, conversation) in targets.enumerated() {
+            if index % 16 == 0 {
+                guard !Task.isCancelled, isRealtimeConnected,
+                      generation == localMessageSessionGeneration, isCurrentRemoteScope(scope) else { return }
+            }
+            sendRealtimeSubscribe(for: conversation, lookup: lookup)
+            // Return to the actual run loop between batches so reconnect cannot monopolize touch handling.
+            if index % 16 == 15 { try? await pause(1_000_000) }
         }
     }
 
@@ -1458,10 +1479,11 @@ extension AppState {
     func currentReadWatermarkScope(
         channelID rawChannelID: String,
         channelType rawChannelType: String,
-        context: IMAPIContext? = nil
+        context: IMAPIContext? = nil,
+        lookup: ConversationUserLookup? = nil
     ) -> ConversationStore.ReadWatermarkScope? {
         let resolvedContext = context ?? apiContext
-        let normalizedChannelID = normalizedRemoteChannelID(rawChannelID, channelType: rawChannelType)
+        let normalizedChannelID = normalizedRemoteChannelID(rawChannelID, channelType: rawChannelType, lookup: lookup)
         let normalizedChannelType = normalizedReadWatermarkChannelType(
             channelID: normalizedChannelID,
             channelType: rawChannelType

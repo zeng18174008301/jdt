@@ -2304,7 +2304,7 @@ extension FileItem {
     }
 
     func thumbnailRemoteURL(for visualKind: FileVisualKind) -> URL? {
-        if let explicit = firstRenderableMediaURL(in: [thumbnailURL, coverURL, posterURL]) {
+        if let explicit = firstRenderableMediaURL(in: [thumbnailURL, coverURL, posterURL], imageResource: true) {
             return explicit
         }
         switch visualKind {
@@ -2398,14 +2398,14 @@ extension FileItem {
         return previewAvailable || !previewURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    private func firstRenderableMediaURL(in rawValues: [String]) -> URL? {
+    private func firstRenderableMediaURL(in rawValues: [String], imageResource: Bool = false) -> URL? {
         for rawValue in rawValues {
             let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty,
-                  !isTenantFileEndpointLike(trimmed),
+                  !isTenantFileEndpointLike(trimmed, imageResource: imageResource),
                   let url = URL(string: trimmed),
                   (url.isFileURL || ["http", "https"].contains(url.scheme?.lowercased() ?? "")),
-                  !isTenantFileEndpointLike(url.path) else {
+                  !isTenantFileEndpointLike(url.path, imageResource: imageResource) else {
                 continue
             }
             return url
@@ -2413,9 +2413,13 @@ extension FileItem {
         return nil
     }
 
-    private func isTenantFileEndpointLike(_ rawValue: String) -> Bool {
+    private func isTenantFileEndpointLike(_ rawValue: String, imageResource: Bool = false) -> Bool {
         let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed == "/api/tenant/files" || trimmed.hasPrefix("/api/tenant/files/")
+        let path = URL(string: trimmed)?.path ?? trimmed
+        guard path == "/api/tenant/files" || path.hasPrefix("/api/tenant/files/") else { return false }
+        guard imageResource else { return true }
+        let parts = path.split(separator: "/")
+        return parts.count <= 4 || (parts.count == 5 && parts.last == "presign-download")
     }
 }
 

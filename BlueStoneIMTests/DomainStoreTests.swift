@@ -10,6 +10,253 @@ import SwiftUI
 
 @MainActor
 final class DomainStoreTests: XCTestCase {
+    func testBackgroundConversationProjectionWaitsForScrollAndHonorsCancellation() async throws {
+        let state = AppState(voiceMediaClient: NoopVoiceMediaClient(), apiContextOverride: makeAuthenticatedAPIContext())
+        let scope = state.remoteDataScopeKey(for: state.apiContext)
+        state.isConversationListUserInteracting = true
+        var pauses = 0
+        try await state.waitForConversationListInteractionToEnd(scope: scope, pause: { _ in
+            pauses += 1
+            state.isConversationListUserInteracting = false
+        })
+        XCTAssertEqual(pauses, 1)
+        state.isConversationListUserInteracting = true
+        do {
+            try await state.waitForConversationListInteractionToEnd(scope: scope, pause: { _ in throw CancellationError() })
+            XCTFail("Cancelled background projection must not continue")
+        } catch is CancellationError {
+        }
+        state.isConversationListUserInteracting = false
+    }
+
+    func testRealtimeResubscriptionYieldsAndStopsAfterDisconnect() async {
+        let realtime = DeviceKickRealtimeTransport()
+        let state = AppState(realtimeClient: realtime, voiceMediaClient: NoopVoiceMediaClient(), apiContextOverride: makeAuthenticatedAPIContext())
+        state.isRealtimeConnected = true
+        state.contacts = (0..<1000).map { makeUser(id: "subscription-peer-\($0)") }
+        state.conversationStore.conversations = (0..<1000).map {
+            makeConversation(id: "subscription-\($0)", kind: .direct, unread: 0, lastMsgSeq: 1, lastReadSeq: 1)
+        }
+        var pauses = 0
+        await state.resubscribeRealtimeChannelsCooperatively(pause: { _ in
+            pauses += 1
+            state.isRealtimeConnected = false
+        })
+        XCTAssertEqual(pauses, 1)
+        XCTAssertEqual(realtime.subscriptions.count, 16)
+        realtime.resetSubscriptions()
+        state.isRealtimeConnected = true
+        pauses = 0
+        await state.resubscribeRealtimeChannelsCooperatively(pause: { _ in pauses += 1 })
+        XCTAssertEqual(realtime.subscriptions.count, 1000)
+        XCTAssertEqual(pauses, 62)
+        XCTAssertEqual(realtime.subscriptions.first?.channelID, state.remoteChannelID(for: state.conversations[0]))
+        XCTAssertEqual(realtime.subscriptions.last?.channelID, state.remoteChannelID(for: state.conversations[999]))
+        XCTAssertTrue(realtime.subscriptions.allSatisfy { $0.tenantID == state.apiContext.tenantID && $0.imUID == state.apiContext.imUID })
+    }
+
+    func testIndexedConversationRemarksPreserveAliasPriorityAndSelfExclusion() {
+        let state = AppState(voiceMediaClient: NoopVoiceMediaClient(), apiContextOverride: makeIsolatedAPIContext())
+        state.currentUser = makeUser(id: "self", userID: "self-account", username: "self-login")
+        let first = makeUser(id: "first", name: "第一个联系人", userID: "shared", username: "first-login")
+        let second = makeUser(id: "second", name: "第二个联系人", userID: "shared", username: "second-login")
+        state.contacts = [first, second] + (0..<1000).map { makeUser(id: "remark-contact-\($0)") }
+        state.contactRemarks = ["first-login": "第一个备注", "second-login": "第二个备注", "self-login": "不可用的自己备注"]
+        let lookup = DirectConversationCallPeerResolver.ContactLookup(contacts: state.contacts)
+        for identifiers in [["shared"], ["second", "shared"], ["second-login"], [" first "], ["unknown"], ["self-login"], ["self", "shared"]] {
+            XCTAssertEqual(state.contactRemarkValue(matching: identifiers, contactLookup: lookup),
+                           state.contactRemarkValue(matching: identifiers))
+        }
+        XCTAssertEqual(state.contactRemarkValue(matching: ["second", "shared"], contactLookup: lookup), "第一个备注")
+        XCTAssertNil(state.contactRemarkValue(matching: ["self-login"], contactLookup: lookup))
+        for user in [first, second, makeUser(id: "missing", name: "原名")] {
+            XCTAssertEqual(state.remarkPreferredDisplayName(for: user, contactLookup: lookup), state.remarkPreferredDisplayName(for: user))
+        }
+        let users = state.makeConversationUserLookup()
+        for channelID in ["self:first", "self:shared", "self:second-login", "unknown-peer"] {
+            XCTAssertEqual(state.conversationReadStateKey(channelID: channelID, channelType: "direct", lookup: users),
+                           state.conversationReadStateKey(channelID: channelID, channelType: "direct"))
+            XCTAssertEqual(state.currentReadWatermarkScope(channelID: channelID, channelType: "direct", lookup: users),
+                           state.currentReadWatermarkScope(channelID: channelID, channelType: "direct"))
+        }
+    }
+
+    func testRecallForUncachedMessageSkipsUnrelatedPeerResolution() {
+        let store = ConversationStore()
+        store.conversations = (0..<1000).map { makeConversation(id: "recall-direct-\($0)", kind: .direct, unread: 0, lastMsgSeq: 1, lastReadSeq: 1) }
+        var resolutions = 0
+        XCTAssertFalse(store.applyRecall(messageID: "uncached-message", conversationID: "target-group",
+            channelIDForConversation: { row in resolutions += 1; return row.id }))
+        XCTAssertEqual(resolutions, 0)
+    }
+
+    func testGroupDirectoryMatchingSkipsDirectPeerResolutionAndNoopPublications() {
+        let store = ConversationStore()
+        var group = makeConversation(id: "canonical-group", kind: .group, unread: 4, lastMsgSeq: 8, lastReadSeq: 2)
+        group.memberCount = 6
+        group.subtitle = "群聊"
+        store.conversations = (0..<1000).map { makeConversation(id: "direct-\($0)", kind: .direct, unread: 0, lastMsgSeq: 1, lastReadSeq: 1) } + [group]
+        var resolutions = 0
+        var publications = 0
+        let observation = store.$conversations.dropFirst().sink { _ in publications += 1 }
+        defer { observation.cancel() }
+        let updated = store.ensureGroupConversation(groupID: group.id, name: group.title, notice: group.lastMessage,
+            members: group.participants, muted: group.isMuted, memberCount: group.memberCount,
+            avatarURL: group.avatarURL, avatarVersion: group.avatarVersion, avatarUpdatedAt: group.avatarUpdatedAt,
+            avatarIsAuthoritative: true, accentHex: group.accentHex,
+            channelIDForConversation: { row in resolutions += 1; return row.id })
+        XCTAssertEqual(updated, group)
+        XCTAssertEqual(resolutions, 0, "Canonical group identity must not normalize any direct peers")
+        XCTAssertEqual(publications, 0, "Unchanged group metadata must not invalidate the entire conversation list")
+        let boundary = ConversationStore.HistoryVisibilityBoundary(fromSeq: 1, limited: false, confirmed: true)
+        _ = store.applyHistoryVisibilityBoundary(channelID: group.id, boundary: boundary,
+            channelIDForConversation: { row in resolutions += 1; return row.id })
+        XCTAssertEqual(resolutions, 0)
+        let before = publications
+        _ = store.applyHistoryVisibilityBoundary(channelID: group.id, boundary: boundary,
+            channelIDForConversation: { row in resolutions += 1; return row.id })
+        XCTAssertEqual(publications, before)
+        XCTAssertEqual(store.conversations.last?.unread, 4)
+        XCTAssertEqual(store.conversations.count, 1001)
+    }
+
+    func testGroupHistoryFallbackDoesNotNormalizeUnrelatedDirectPeers() {
+        let store = ConversationStore()
+        store.conversations = (0..<1000).map { makeConversation(id: "direct-only-\($0)", kind: .direct, unread: 0, lastMsgSeq: 1, lastReadSeq: 1) }
+        var resolutions = 0
+        let changed = store.applyHistoryVisibilityBoundary(channelID: "absent-group",
+            boundary: ConversationStore.HistoryVisibilityBoundary(fromSeq: 4, limited: true, confirmed: true),
+            channelIDForConversation: { row in resolutions += 1; return row.id })
+        XCTAssertFalse(changed)
+        XCTAssertEqual(resolutions, 0)
+    }
+
+
+    func testConversationListLoginUpdatesDoNotRemeasureUnchangedHeaders() async throws {
+        let state = AppState(voiceMediaClient: NoopVoiceMediaClient(), apiContextOverride: makeIsolatedAPIContext())
+        state.currentUser = makeUser(id: "me")
+        state.conversationStore.conversations = []
+        state.isInitialDataLoading = true
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let window = UIWindow(windowScene: scene)
+        window.frame = CGRect(x: 0, y: 0, width: 390, height: 844)
+        defer { window.isHidden = true; window.rootViewController = nil }
+        let host = UIHostingController(rootView: NavigationStackCompat { ConversationListView() }.environmentObject(state))
+        window.rootViewController = host; window.makeKeyAndVisible()
+        try await Task.sleep(nanoseconds: 150_000_000)
+        state.conversationStore.conversations = (0..<1000).map { index in
+            makeConversation(id: "login-update-\(index)", kind: .direct, unread: 0, lastMsgSeq: 20, lastReadSeq: 20)
+        }
+        state.isInitialDataLoading = false
+        try await Task.sleep(nanoseconds: 400_000_000)
+        let headersBefore = ConversationListLayoutDiagnostics.headerMeasurements
+        let searchesBefore = ConversationListLayoutDiagnostics.searchMeasurements
+        // Login publishes unrelated app state frequently. It must not invalidate table headers.
+        for index in 0..<30 {
+            state.toast = "sync-\(index)"
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        try await Task.sleep(nanoseconds: 150_000_000)
+        XCTAssertLessThanOrEqual(ConversationListLayoutDiagnostics.headerMeasurements - headersBefore, 2)
+        XCTAssertLessThanOrEqual(ConversationListLayoutDiagnostics.searchMeasurements - searchesBefore, 2)
+        for index in 0..<20 {
+            state.conversationStore.conversations[index].lastMessage = "incoming-\(index)"
+            state.conversationStore.conversations[index].unread += 1
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        try await Task.sleep(nanoseconds: 350_000_000)
+        XCTAssertLessThanOrEqual(ConversationListLayoutDiagnostics.headerMeasurements - headersBefore, 2)
+        XCTAssertLessThanOrEqual(ConversationListLayoutDiagnostics.searchMeasurements - searchesBefore, 2)
+        XCTAssertEqual(state.conversations.count, 1000)
+    }
+
+    func testConversationListReusesVisibleCellsWithOneThousandConversations() async throws {
+        let state = AppState(voiceMediaClient: NoopVoiceMediaClient(), apiContextOverride: makeIsolatedAPIContext())
+        state.currentUser = makeUser(id: "me")
+        state.conversationStore.conversations = (0..<1000).map { index in
+            var conversation = makeConversation(id: "reuse-\(index)", kind: .direct, unread: index % 3, lastMsgSeq: 20, lastReadSeq: 18)
+            conversation.title = "测试会话 \(index)"
+            conversation.messages = (1...20).map { makeMessage(id: "\(index)-\($0)", seq: Int64($0), status: .read, isOutgoing: false) }
+            return conversation
+        }
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let window = UIWindow(windowScene: scene)
+        window.frame = CGRect(x: 0, y: 0, width: 390, height: 844)
+        defer { window.isHidden = true; window.rootViewController = nil }
+        let host = UIHostingController(rootView: NavigationStackCompat { ConversationListView() }.environmentObject(state))
+        window.rootViewController = host
+        window.makeKeyAndVisible()
+        try await Task.sleep(nanoseconds: 450_000_000)
+        window.layoutIfNeeded(); host.view.layoutIfNeeded()
+        func findTable(_ view: UIView) -> UITableView? {
+            if let table = view as? UITableView { return table }
+            return view.subviews.lazy.compactMap(findTable).first
+        }
+        let table = try XCTUnwrap(findTable(host.view))
+        XCTAssertEqual(table.numberOfRows(inSection: 0), 1002)
+        XCTAssertFalse(table.isPrefetchingEnabled)
+        XCTAssertGreaterThan(table.visibleCells.count, 0)
+        XCTAssertLessThan(table.visibleCells.count, 30)
+        let image = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in
+            window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
+        }
+        let attachment = XCTAttachment(image: image)
+        attachment.name = "conversation-list-1000-rows"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+        table.scrollToRow(at: IndexPath(row: 800, section: 0), at: .middle, animated: false)
+        table.layoutIfNeeded()
+        try await Task.sleep(nanoseconds: 150_000_000)
+        XCTAssertNotNil(table.cellForRow(at: IndexPath(row: 800, section: 0)))
+        XCTAssertLessThan(table.visibleCells.count, 30)
+        // Incoming updates must wait until dragging and deceleration finish.
+        table.delegate?.scrollViewWillBeginDragging?(table)
+        try await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertTrue(state.isConversationListUserInteracting)
+        let rebuildsBeforeDrag = ConversationListLayoutDiagnostics.sectionRebuilds
+        for index in 0..<20 {
+            state.conversationStore.conversations[index].unread += 1
+        }
+        try await Task.sleep(nanoseconds: 350_000_000)
+        XCTAssertEqual(ConversationListLayoutDiagnostics.sectionRebuilds, rebuildsBeforeDrag)
+        table.delegate?.scrollViewDidEndDragging?(table, willDecelerate: true)
+        XCTAssertTrue(state.isConversationListUserInteracting)
+        try await Task.sleep(nanoseconds: 200_000_000)
+        XCTAssertEqual(ConversationListLayoutDiagnostics.sectionRebuilds, rebuildsBeforeDrag)
+        table.delegate?.scrollViewDidEndDecelerating?(table)
+        try await Task.sleep(nanoseconds: 450_000_000)
+        XCTAssertFalse(state.isConversationListUserInteracting)
+        XCTAssertGreaterThan(ConversationListLayoutDiagnostics.sectionRebuilds, rebuildsBeforeDrag)
+        // Updating one row preserves table identity and all conversations.
+        let rowProjectionsBeforeUpdate = ConversationListLayoutDiagnostics.rowProjections
+        let projectionMinute = Int(Date().timeIntervalSince1970 / 60)
+        state.conversationStore.conversations[799].unread += 1
+        try await Task.sleep(nanoseconds: 400_000_000)
+        if projectionMinute == Int(Date().timeIntervalSince1970 / 60) {
+            XCTAssertLessThan(ConversationListLayoutDiagnostics.rowProjections - rowProjectionsBeforeUpdate, 10,
+                              "One changed conversation must not rebuild one thousand row projections")
+        }
+        XCTAssertTrue(findTable(host.view) === table)
+        XCTAssertEqual(table.rectForRow(at: IndexPath(row: 800, section: 0)).height, 96, accuracy: 0.5)
+        XCTAssertEqual(table.numberOfRows(inSection: 0), 1002)
+        XCTAssertEqual(state.conversations.count, 1000)
+        func findField(_ view: UIView) -> UITextField? {
+            if let field = view as? UITextField { return field }
+            return view.subviews.lazy.compactMap(findField).first
+        }
+        let field = try XCTUnwrap(findField(host.view))
+        XCTAssertTrue(field.becomeFirstResponder())
+        field.text = "reuse-search"; field.sendActions(for: .editingChanged)
+        try await Task.sleep(nanoseconds: 400_000_000)
+        XCTAssertTrue(findTable(host.view) === table)
+        XCTAssertTrue(field.isFirstResponder, "搜索切换不能替换输入框或丢失键盘")
+        XCTAssertEqual(table.numberOfRows(inSection: 0), 2)
+        field.text = ""; field.sendActions(for: .editingChanged)
+        try await Task.sleep(nanoseconds: 400_000_000)
+        XCTAssertEqual(table.numberOfRows(inSection: 0), 1002)
+        field.resignFirstResponder()
+    }
+
     // WDT_IOS1_CHAT_STATE_20261023_BEGIN
     func testEmptyChatCanMountAndReleaseRepeatedlyForDirectAndGroupConversations() async throws {
         let state = AppState(voiceMediaClient: NoopVoiceMediaClient(), apiContextOverride: makeIsolatedAPIContext())
@@ -1336,9 +1583,11 @@ final class DomainStoreTests: XCTestCase {
             apiContextOverride: makeAuthenticatedAPIContext()
         )
         state.isAuthenticated = true
+        state.isConversationListUserInteracting = true
 
         state.appDidEnterBackground()
 
+        XCTAssertFalse(state.isConversationListUserInteracting)
         XCTAssertEqual(realtime.disconnectCalls, [false])
     }
 
@@ -6673,6 +6922,58 @@ final class DomainStoreTests: XCTestCase {
         XCTAssertTrue(updated.isEdited)
         XCTAssertEqual(updated.status, .read)
     }
+
+    // WDT_CHAT_MEDIA_CACHE_REUSE_20261102_BEGIN
+    func testHistoryRefreshRetainsOnlyMatchingAttachmentCacheMetadata() throws {
+        let store = ConversationStore()
+        var previous = makeConversation(id: "c1", kind: .group, unread: 0, lastMsgSeq: 1, lastReadSeq: 1)
+        var downloaded = makeMessage(id: "m1", seq: 1, status: .sent, isOutgoing: false, text: "photo.jpg", kind: .image)
+        downloaded.attachmentFileID = "photo"
+        downloaded.attachmentCacheKey = "objects/photo"
+        downloaded.attachmentVersion = "v1"
+        downloaded.attachmentChecksum = String(repeating: "a", count: 64)
+        downloaded.attachmentMimeType = "image/jpeg"
+        downloaded.attachmentExtension = "jpg"
+        downloaded.attachmentSizeBytes = 128
+        previous.messages = [downloaded]
+        let remote = try decodeRemoteMessage("""
+        {"message_id":"m1","channel_id":"c1","channel_type":"group","channel_seq":1,"from_uid":"u2",
+         "content_type":"image","payload":{"file_id":"photo"},"status":"normal","created_at":"2026-06-23T10:00:00Z"}
+        """)
+        var sparse = makeMessage(id: "m1", seq: 1, status: .sent, isOutgoing: false, text: "photo.jpg", kind: .image)
+        sparse.attachmentFileID = "photo"
+        func merge(_ message: ChatMessage) throws -> ChatMessage {
+            let result = store.mergeMappedRemoteMessages(previous: previous,
+                mappedRemoteMessages: [.init(remote: remote, message: message, clientMessageIDs: [], isRemoteFromCurrentUser: false, matchedLocalID: nil)],
+                readReceiptsEnabled: true, fromRealtime: false)
+            return try XCTUnwrap(result.messages.first)
+        }
+        let retained = try merge(sparse)
+        XCTAssertEqual(retained.attachmentCacheKey, downloaded.attachmentCacheKey)
+        XCTAssertEqual(retained.attachmentVersion, downloaded.attachmentVersion)
+        XCTAssertEqual(retained.attachmentChecksum, downloaded.attachmentChecksum)
+        XCTAssertEqual(retained.attachmentMimeType, downloaded.attachmentMimeType)
+        XCTAssertEqual(retained.attachmentExtension, downloaded.attachmentExtension)
+        XCTAssertEqual(retained.attachmentSizeBytes, downloaded.attachmentSizeBytes)
+        XCTAssertEqual(retained.text, sparse.text)
+        XCTAssertEqual(retained.status, sparse.status)
+        for reason in ["file", "version", "checksum", "size", "recalled", "deleted"] {
+            var changed = sparse
+            switch reason {
+            case "file": changed.attachmentFileID = "another-file"
+            case "version": changed.attachmentVersion = "v2"
+            case "checksum": changed.attachmentChecksum = String(repeating: "b", count: 64)
+            case "size": changed.attachmentSizeBytes = 256
+            case "recalled": changed.status = .recalled
+            default: changed.isDeletedLocally = true
+            }
+            let result = try merge(changed)
+            XCTAssertEqual(result.attachmentChecksum, changed.attachmentChecksum, reason)
+            XCTAssertEqual(result.attachmentVersion, changed.attachmentVersion, reason)
+            XCTAssertEqual(result.attachmentCacheKey, changed.attachmentCacheKey, reason)
+        }
+    }
+    // WDT_CHAT_MEDIA_CACHE_REUSE_20261102_END
 
     func testConversationStoreMergeMappedRemoteMessagesReplacesMatchedPendingLocalEcho() throws {
         let store = ConversationStore()
@@ -18669,11 +18970,15 @@ final class DomainStoreTests: XCTestCase {
         let outgoingCommand = try XCTUnwrap(plan.commands.first { $0.channelID == "outgoing" })
         let incomingCommand = try XCTUnwrap(plan.commands.first { $0.channelID == "incoming" })
 
+        store.conversations.insert(contentsOf: (0..<1000).map {
+            makeConversation(id: "receipt-unrelated-\($0)", kind: .direct, unread: 0, lastMsgSeq: 1, lastReadSeq: 1)
+        }, at: 0)
+        var identityResolutions = 0
         XCTAssertEqual(
             store.historyPrefetchReadReceiptBackfillTarget(
                 for: outgoingCommand,
                 readReceiptsEnabled: true,
-                channelIDForConversation: { $0.id }
+                channelIDForConversation: { identityResolutions += 1; return $0.id }
             ),
             ConversationStore.HistoryPrefetchReadReceiptBackfillTarget(
                 channelID: "outgoing",
@@ -18684,7 +18989,7 @@ final class DomainStoreTests: XCTestCase {
             store.historyPrefetchReadReceiptBackfillTarget(
                 for: outgoingCommand,
                 readReceiptsEnabled: false,
-                channelIDForConversation: { $0.id }
+                channelIDForConversation: { identityResolutions += 1; return $0.id }
             ),
             ConversationStore.HistoryPrefetchReadReceiptBackfillTarget(
                 channelID: "outgoing",
@@ -18695,9 +19000,18 @@ final class DomainStoreTests: XCTestCase {
             store.historyPrefetchReadReceiptBackfillTarget(
                 for: incomingCommand,
                 readReceiptsEnabled: true,
-                channelIDForConversation: { $0.id }
+                channelIDForConversation: { identityResolutions += 1; return $0.id }
             )
         )
+        XCTAssertEqual(identityResolutions, 0, "Canonical receipt targets must skip unrelated identity normalization")
+        let index = try XCTUnwrap(store.conversations.firstIndex { $0.id == "outgoing" })
+        var legacy = makeConversation(id: "legacy-outgoing", kind: .group, unread: 0, lastMsgSeq: 3, lastReadSeq: 0)
+        legacy.messages = store.conversations[index].messages
+        store.conversations[index] = legacy
+        XCTAssertNotNil(store.historyPrefetchReadReceiptBackfillTarget(
+            for: outgoingCommand, readReceiptsEnabled: true,
+            channelIDForConversation: { $0.id == "legacy-outgoing" ? "outgoing" : $0.id }
+        ), "Legacy channel aliases must retain receipt catch-up")
     }
 
     func testConversationStoreOlderHistoryFilterRejectsCurrentAndDuplicateMessages() throws {
@@ -21158,6 +21472,13 @@ private final class TenantDevicePolicyRaceHTTPTransport: HTTPTransport, @uncheck
 
 @MainActor
 private final class DeviceKickRealtimeTransport: RealtimeTransporting {
+    struct Subscription {
+        let channelID: String
+        let tenantID: String
+        let imUID: String
+    }
+    private(set) var subscriptions: [Subscription] = []
+    func resetSubscriptions() { subscriptions.removeAll() }
     var connectionRequestProvider: (@MainActor () -> RealtimeConnectionRequest?)?
     var canReconnect: (@MainActor () -> Bool)?
     var onConnectionUnavailable: (@MainActor () -> Void)?
@@ -21178,7 +21499,9 @@ private final class DeviceKickRealtimeTransport: RealtimeTransporting {
         isConnected = false
     }
 
-    func subscribe(channelID: String, channelType: String, tenantID: String, imUID: String, deviceID: String) {}
+    func subscribe(channelID: String, channelType: String, tenantID: String, imUID: String, deviceID: String) {
+        subscriptions.append(Subscription(channelID: channelID, tenantID: tenantID, imUID: imUID))
+    }
 }
 
 private final class StickerPanelHydrationHTTPTransport: HTTPTransport, @unchecked Sendable {

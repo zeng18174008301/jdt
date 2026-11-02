@@ -12,6 +12,11 @@ Open `BlueStoneIM.xcodeproj` or build the `BlueStoneIM` scheme with a dedicated
 DerivedData directory. Package resolution must use `Package.resolved`; validation
 must not rewrite the source tree or shared Xcode caches.
 
+The active app uses only `Debug` (development) and `Release` (distribution).
+The unconfigured App2 build configurations and scheme have been removed.
+Historical `scripts/*app2*` release tooling remains for reference and is not
+part of the current app build; it requires restoring an App2 scheme/configuration.
+
 ## Codemagic
 
 The `codemagic.yaml` workflow builds the first shared Xcode scheme,

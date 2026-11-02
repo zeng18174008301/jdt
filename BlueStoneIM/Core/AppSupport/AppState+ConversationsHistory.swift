@@ -622,14 +622,26 @@ extension AppState {
         conversationStore.latestReadableSequence(in: conversation)
     }
 
-    func conversationReadStateKey(channelID: String, channelType: String) -> String {
+    func conversationReadStateKey(channelID: String, channelType: String, lookup: ConversationUserLookup? = nil) -> String {
         conversationStore.conversationReadStateKeyContext(
             channelID: channelID,
             channelType: channelType,
             normalizeChannelID: { rawChannelID, rawChannelType in
-                normalizedRemoteChannelID(rawChannelID, channelType: rawChannelType)
+                normalizedRemoteChannelID(rawChannelID, channelType: rawChannelType, lookup: lookup)
             }
         ).syncKey
+    }
+
+    func waitForConversationListInteractionToEnd(
+        scope: String,
+        pause: @MainActor (UInt64) async throws -> Void = { try await Task.sleep(nanoseconds: $0) }
+    ) async throws {
+        while isConversationListUserInteracting {
+            try Task.checkCancellation()
+            guard isCurrentRemoteScope(scope) else { throw CancellationError() }
+            try await pause(16_000_000)
+        }
+        try Task.checkCancellation()
     }
 
     func isConversationLocallyReadThrough(_ remote: RemoteConversation) -> Bool {
@@ -930,13 +942,14 @@ extension AppState {
     @discardableResult
     func applyHistoryVisibilityBoundaryForGroup(
         channelID: String,
-        boundary: ConversationStore.HistoryVisibilityBoundary
+        boundary: ConversationStore.HistoryVisibilityBoundary,
+        channelIDForConversation: ((Conversation) -> String)? = nil
     ) -> Bool {
         pruneDerivedCachesForHistoryBoundary(channelID: channelID, boundary: boundary)
         return conversationStore.applyHistoryVisibilityBoundary(
             channelID: channelID,
             boundary: boundary,
-            channelIDForConversation: { remoteChannelID(for: $0) }
+            channelIDForConversation: channelIDForConversation ?? { row in row.kind == .group ? self.remoteChannelID(for: row) : "" }
         )
     }
 
