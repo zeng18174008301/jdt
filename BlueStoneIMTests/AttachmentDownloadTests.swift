@@ -7,7 +7,7 @@ import SwiftUI
 
 final class AttachmentDownloadTests: XCTestCase {
     @MainActor
-    func testWarmChatImagesAndPostersPaintTheirFirstFrameFromMemory() throws {
+    func testWarmChatImagesAndPostersPaintTheirFirstFrameFromMemory() async throws {
         let transport = FakeAttachmentHTTPTransport(results: [])
         let (state, source) = posterState(transport, context: attachmentContext(tenantID: "first-frame-\(UUID())"), parent: "warm-parent")
         let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
@@ -29,17 +29,28 @@ final class AttachmentDownloadTests: XCTestCase {
             window.frame = CGRect(x: 0, y: 0, width: 64, height: 64)
             window.rootViewController = host; window.makeKeyAndVisible()
             window.layoutIfNeeded(); host.view.layoutIfNeeded()
-            let frame = UIGraphicsImageRenderer(bounds: host.view.bounds).image { _ in
-                host.view.drawHierarchy(in: host.view.bounds, afterScreenUpdates: true)
+            defer { window.isHidden = true; window.rootViewController = nil }
+
+            func assertRedFrame(_ reason: String) throws {
+                let frame = UIGraphicsImageRenderer(bounds: host.view.bounds).image { _ in
+                    host.view.drawHierarchy(in: host.view.bounds, afterScreenUpdates: true)
+                }
+                var pixel = [UInt8](repeating: 0, count: 4)
+                let bitmap = try XCTUnwrap(CGContext(data: &pixel, width: 1, height: 1, bitsPerComponent: 8,
+                    bytesPerRow: 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+                bitmap.draw(try XCTUnwrap(frame.cgImage), in: CGRect(x: 0, y: 0, width: 1, height: 1))
+                XCTAssertGreaterThan(pixel[0], 200, reason)
+                XCTAssertLessThan(pixel[1], 50, reason)
+                XCTAssertLessThan(pixel[2], 50, reason)
             }
-            var pixel = [UInt8](repeating: 0, count: 4)
-            let bitmap = try XCTUnwrap(CGContext(data: &pixel, width: 1, height: 1, bitsPerComponent: 8,
-                bytesPerRow: 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
-            bitmap.draw(try XCTUnwrap(frame.cgImage), in: CGRect(x: 0, y: 0, width: 1, height: 1))
-            XCTAssertGreaterThan(pixel[0], 200)
-            XCTAssertLessThan(pixel[1], 50, "The first frame must contain the cached image, not a white placeholder")
-            XCTAssertLessThan(pixel[2], 50)
-            window.isHidden = true; window.rootViewController = nil
+
+            try assertRedFrame("The first frame should show the cached image")
+            try await Task.sleep(nanoseconds: 100_000_000)
+            AvatarImageCache.shared.removeAllImages()
+            state.objectWillChange.send()
+            try await Task.sleep(nanoseconds: 100_000_000)
+            XCTAssertNil(AvatarImageCache.shared.peekImage(for: key, maxPixelSize: 768))
+            try assertRedFrame("A visible image should survive cache eviction and an unrelated refresh")
         }
     }
 
@@ -438,7 +449,11 @@ final class AttachmentDownloadTests: XCTestCase {
         let task = Task<URL, Error> { URL(fileURLWithPath: "/tmp/contract-download-test") }
         store.replaceAttachmentDownloadTask(attachmentID: "unknown-version", with: task, token: first)
         XCTAssertNil(store.coalesceAttachmentDownload(from: "unknown-version", to: "version-2", token: first))
-        store.setAttachmentDownloadSnapshot(AttachmentDownloadSnapshot(receivedBytes: 25, totalBytes: 100), attachmentID: "unknown-version", token: first)
+        let progress = AttachmentDownloadSnapshot(receivedBytes: 25, totalBytes: 100)
+        store.updateVisibleAttachmentDownloadProgress(progress, attachmentID: "unknown-version", token: first)
+        XCTAssertNil(store.attachmentDownloadSnapshot(attachmentID: "version-2"))
+        store.beginAttachmentDownloadProgress(attachmentID: "version-2")
+        store.updateVisibleAttachmentDownloadProgress(progress, attachmentID: "unknown-version", token: first)
         XCTAssertEqual(store.attachmentDownloadSnapshot(attachmentID: "version-2")?.receivedBytes, 25)
         store.cancelAttachmentDownloadTask(attachmentID: "version-2")
         XCTAssertFalse(store.hasAttachmentDownloadTask(attachmentID: "unknown-version"))

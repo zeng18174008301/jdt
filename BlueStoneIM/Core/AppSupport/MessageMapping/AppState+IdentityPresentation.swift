@@ -314,14 +314,10 @@ extension AppState {
     }
 
     func remoteChannelID(for conversation: Conversation, lookup: ConversationUserLookup? = nil) -> String {
-        if conversation.kind == .group {
-            return groups.first(where: { $0.id == conversation.id || $0.name == conversation.title })?.id ?? conversation.id
-        }
-        return ConversationChannelIdentityMapper.remoteChannelID(
+        ConversationChannelIdentityMapper.remoteChannelID(
             for: conversation,
             currentUser: currentUser,
             apiIMUID: apiContext.imUID,
-            groups: [],
             lookup: lookup,
             fallbackCanonicalParticipantID: { [self] rawID in
                 canonicalDirectParticipantID(rawID, lookup: lookup)

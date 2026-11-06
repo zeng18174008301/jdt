@@ -233,20 +233,21 @@ final class FileStore: ObservableObject {
         for key in keys {
             attachmentDownloadTasks[key] = nil
             attachmentDownloadTokens[key] = nil
-            downloadSnapshots[key] = nil
+            if downloadSnapshots[key] != nil { downloadSnapshots[key] = nil }
         }
     }
 
     // An unknown/stale version resolves to an authoritative version before starting the body GET.
     func coalesceAttachmentDownload(from source: String, to resolved: String, token: UUID) -> Task<URL, Error>? {
         if let existing = attachmentDownloadTasks[resolved], attachmentDownloadTokens[resolved] != token {
+            if downloadSnapshots[source] != nil { beginAttachmentDownloadProgress(attachmentID: resolved) }
             return existing
         }
         guard attachmentDownloadTokens[source] == token else { return nil }
         attachmentDownloadTasks[resolved] = attachmentDownloadTasks[source]
         attachmentDownloadTokens[resolved] = token
-        downloadSnapshots[resolved] = downloadSnapshots[source]
-        downloadFailedIDs.remove(resolved)
+        if let snapshot = downloadSnapshots[source] { downloadSnapshots[resolved] = snapshot }
+        clearAttachmentDownloadFailed(attachmentID: resolved)
         return nil
     }
 
@@ -265,6 +266,17 @@ final class FileStore: ObservableObject {
 
     func attachmentDownloadSnapshot(attachmentID: String) -> AttachmentDownloadSnapshot? {
         downloadSnapshots[attachmentID]
+    }
+
+    func beginAttachmentDownloadProgress(attachmentID: String) {
+        guard downloadSnapshots[attachmentID] == nil,
+              let token = attachmentDownloadTokens[attachmentID] else { return }
+        setAttachmentDownloadSnapshot(AttachmentDownloadSnapshot(), attachmentID: attachmentID, token: token)
+    }
+
+    func updateVisibleAttachmentDownloadProgress(_ snapshot: AttachmentDownloadSnapshot, attachmentID: String, token: UUID) {
+        guard downloadSnapshots[attachmentID] != nil else { return }
+        setAttachmentDownloadSnapshot(snapshot, attachmentID: attachmentID, token: token)
     }
 
     func setAttachmentDownloadSnapshot(_ snapshot: AttachmentDownloadSnapshot, attachmentID: String, token: UUID) {
@@ -295,10 +307,10 @@ final class FileStore: ObservableObject {
     }
 
     func clearAttachmentDownloadProgress(attachmentID: String) {
-        downloadSnapshots[attachmentID] = nil
+        if downloadSnapshots[attachmentID] != nil { downloadSnapshots[attachmentID] = nil }
         // JHT_MOD_BEGIN CHAT_HISTORY_SYNC_UI_PERF_BEGIN_ATTACHMENT_DOWNLOAD_PROGRESS_THROTTLE_CLEAR - 修改开始：清理下载进度时同步清理节流状态，完成/失败/取消仍即时生效
         attachmentDownloadProgressUpdateTimes[attachmentID] = nil
-        downloadProgressByID[attachmentID] = nil
+        if downloadProgressByID[attachmentID] != nil { downloadProgressByID[attachmentID] = nil }
         // JHT_MOD_END CHAT_HISTORY_SYNC_UI_PERF_END_ATTACHMENT_DOWNLOAD_PROGRESS_THROTTLE_CLEAR - 修改结束：清理下载进度时同步清理节流状态，完成/失败/取消仍即时生效
     }
 
@@ -320,7 +332,7 @@ final class FileStore: ObservableObject {
     }
 
     func clearAttachmentDownloadFailed(attachmentID: String) {
-        downloadFailedIDs.remove(attachmentID)
+        if downloadFailedIDs.contains(attachmentID) { downloadFailedIDs.remove(attachmentID) }
     }
 
     func localAttachmentResources(cacheKey: String) -> LocalAttachmentPreviewResources? {

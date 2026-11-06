@@ -1841,6 +1841,19 @@ final class IMAPIClient: IMAPIProtocol {
         if T.self == EmptyPayload.self, let empty = EmptyPayload() as? T {
             return empty
         }
+        // Access discovery can return its config or signed envelope at the
+        // JSON root. The caller still verifies signed payloads before use.
+        if Self.isAccessDiscoveryRequestPath(url.path),
+           envelope.ok == nil, errorBody == nil {
+            if (T.self == RemoteAccessDiscoveryResponse.self || T.self == SignedAccessDiscoveryEnvelope.self),
+               let discovery = try? wireCodec.decode(T.self, from: data) {
+                return discovery
+            }
+            if T.self == RemoteAccessDiscoveryResponse.self,
+               (try? wireCodec.decode(SignedAccessDiscoveryEnvelope.self, from: data)) != nil {
+                throw AccessDiscoveryTrustError.configurationBlocked
+            }
+        }
         logRequestFailure(method: method, url: url, statusCode: statusCode, errorCode: "empty_data", requestID: requestID, error: nil)
         if classifyUncertainMessageSendOutcome, (200..<300).contains(statusCode) {
             throw MessageSendOutcomeUncertainError()
@@ -1986,10 +1999,13 @@ final class IMAPIClient: IMAPIProtocol {
         return normalized == "/api/rtc/calls/events"
     }
 
+    private nonisolated static let verboseHTTPLoggingEnabled =
+        ProcessInfo.processInfo.arguments.contains("-WDTVerboseHTTPLogging")
+
     func logHTTPRequestStart(method: String, url: URL, bodyData: Data?, dedupeKey: String?) {
         guard SyncFailureDiagnostic.friendAcceptance == nil else { return }
 #if DEBUG
-        guard !Self.isRegistrationSubmissionURL(url) else { return }
+        guard Self.verboseHTTPLoggingEnabled, !Self.isRegistrationSubmissionURL(url) else { return }
         let normalizedMethod = method.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
         let bodyBytes = bodyData?.count ?? 0
         let bodyText = Self.shouldSuppressFriendEndpointLogBody(method: normalizedMethod, url: url)
@@ -2007,7 +2023,7 @@ final class IMAPIClient: IMAPIProtocol {
     func logHTTPResponse(method: String, url: URL, statusCode: Int, requestID: String?, data: Data, elapsedMS: Int) {
         guard SyncFailureDiagnostic.friendAcceptance == nil else { return }
 #if DEBUG
-        guard !Self.isRegistrationSubmissionURL(url) else { return }
+        guard Self.verboseHTTPLoggingEnabled, !Self.isRegistrationSubmissionURL(url) else { return }
         let normalizedMethod = method.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
         let requestIDText = requestID?.isEmpty == false ? requestID! : "none"
         let statusIcon = Self.httpResponseLogIcon(statusCode)
@@ -2125,12 +2141,18 @@ final class IMAPIClient: IMAPIProtocol {
         guard !Self.isRegistrationSubmissionURL(url) else { return }
         let status = statusCode.map(String.init) ?? "none"
         let requestIDText = requestID?.isEmpty == false ? requestID! : "none"
-        let errorText = error.map { " error=\(Self.redactedSensitiveLogText($0.localizedDescription))" } ?? ""
-        let wsBase = webSocketURL(context: IMAPIContext.load())
-            .map { Self.redactedURLString($0, redactAllQueryValues: true) }
-            ?? "unavailable"
-        print(Self.apiLogDivider(icon: "❌", title: "REQUEST FAILED"))
-        print("[JHT API] ❌ request_failed method=\(method) url=\(Self.redactedURLString(url, redactAllQueryValues: true)) status=\(status) code=\(errorCode) request_id=\(requestIDText) platformBase=\(Self.redactedURLString(platformBase, redactAllQueryValues: true)) tenantBase=\(Self.redactedURLString(tenantBase, redactAllQueryValues: true)) imBase=\(Self.redactedURLString(imBase, redactAllQueryValues: true)) wsBase=\(wsBase)\(errorText)")
+#if DEBUG
+        if Self.verboseHTTPLoggingEnabled {
+            let errorText = error.map { " error=\(Self.redactedSensitiveLogText($0.localizedDescription))" } ?? ""
+            let wsBase = webSocketURL(context: IMAPIContext.load())
+                .map { Self.redactedURLString($0, redactAllQueryValues: true) }
+                ?? "unavailable"
+            print(Self.apiLogDivider(icon: "❌", title: "REQUEST FAILED"))
+            print("[JHT API] ❌ request_failed method=\(method) url=\(Self.redactedURLString(url, redactAllQueryValues: true)) status=\(status) code=\(errorCode) request_id=\(requestIDText) platformBase=\(Self.redactedURLString(platformBase, redactAllQueryValues: true)) tenantBase=\(Self.redactedURLString(tenantBase, redactAllQueryValues: true)) imBase=\(Self.redactedURLString(imBase, redactAllQueryValues: true)) wsBase=\(wsBase)\(errorText)")
+            return
+        }
+#endif
+        print("[JHT API] ❌ request_failed method=\(method) url=\(Self.redactedURLString(url, redactAllQueryValues: true)) status=\(status) code=\(errorCode) request_id=\(requestIDText)")
     }
 
     nonisolated static func rtcSignalDebug(_ message: @autoclosure () -> String) {

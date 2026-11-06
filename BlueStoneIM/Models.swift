@@ -1969,6 +1969,12 @@ struct ConversationUnreadState: Equatable {
     let hasUnreadMessages: Bool
 }
 
+func boundedConversationMessageUnreadCount(_ count: Int, lastMsgSeq: Int64, lastReadSeq: Int64) -> Int {
+    let count = max(0, count)
+    guard lastMsgSeq > 0, lastReadSeq > 0 else { return count }
+    return min(count, Int(clamping: max(0, lastMsgSeq - lastReadSeq)))
+}
+
 enum ConversationUnreadBadgeProjection {
     static func total(
         _ conversations: [Conversation],

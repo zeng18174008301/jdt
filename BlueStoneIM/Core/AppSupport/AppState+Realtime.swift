@@ -317,7 +317,7 @@ extension AppState {
             quicConfiguration: RealtimeQUICConfiguration.load()
         )
         recordAccessDiagnosticsRealtimeRequest(request, context: context)
-        print("[JHT Realtime] request url=\(redactedRealtimeURLSummary(request?.url)) fallback=\(redactedRealtimeURLSummary(fallbackURL)) local_fallback=\(Self.isLocalRealtimeFallbackURL(fallbackURL)) quic=\(request?.quicRequest != nil)")
+        DebugConsoleDiagnostics.trace("[JHT Realtime] request url=\(redactedRealtimeURLSummary(request?.url)) fallback=\(redactedRealtimeURLSummary(fallbackURL)) local_fallback=\(Self.isLocalRealtimeFallbackURL(fallbackURL)) quic=\(request?.quicRequest != nil)")
         return request
     }
 
@@ -575,15 +575,19 @@ extension AppState {
             // JHT_MOD_END IOS_RTC_REQUEST_BACKOFF_20260910
             guard self.isCurrentRemoteScope(scope) else { return }
             self.flushRealtimeRecoveryConversations(reason: reason)
-            print("[JHT Perf] realtime_recovery_refresh reason=\(reason)")
+            DebugConsoleDiagnostics.trace("[JHT Perf] realtime_recovery_refresh reason=\(reason)")
         }
         syncEngine.attachRealtimeRecoveryTask(.refresh, task: task)
     }
 
     private func shouldSkipRealtimeRecoverySnapshotForRecentPrimarySync(reason: String, now: Date) -> Bool {
         let normalizedReason = reason.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard normalizedReason == "connect_ack" else {
+        guard normalizedReason == "connect_ack" || normalizedReason == "reconnect" else {
             return false
+        }
+        let snapshot = RemoteSnapshotSyncCommand(scope: remoteDataScopeKey(for: apiContext))
+        if remoteSyncEngine.isInFlight(snapshot.request) {
+            return true
         }
         guard let lastRemoteSnapshotPrimarySyncedAt else { return false }
         let age = now.timeIntervalSince(lastRemoteSnapshotPrimarySyncedAt)
@@ -591,7 +595,7 @@ extension AppState {
               age < realtimeRecoveryRecentSnapshotCooldownSeconds else {
             return false
         }
-        print("[JHT Perf] realtime_recovery_refresh_skip reason=\(normalizedReason) gate=recent_snapshot age_ms=\(Int(age * 1000))")
+        DebugConsoleDiagnostics.trace("[JHT Perf] realtime_recovery_refresh_skip reason=\(normalizedReason) gate=recent_snapshot age_ms=\(Int(age * 1000))")
         return true
     }
 
@@ -618,7 +622,7 @@ extension AppState {
                   self.activeRealtimeConversationID == conversationID else {
                 return
             }
-            if self.remoteSyncEngine.currentRemoteSnapshotRefreshSession() == nil {
+            if !self.shouldSkipRealtimeRecoverySnapshotForRecentPrimarySync(reason: "connect_ack", now: Date()) {
                 _ = await self.refreshRemoteSnapshot(silent: true, force: true)
                 guard !Task.isCancelled,
                       self.isCurrentRemoteScope(scope),
@@ -634,7 +638,7 @@ extension AppState {
                 trimToLatestWindow: true
             )
             self.activeRealtimeConversationRecoveryTask = nil
-            print("[JHT Perf] realtime_active_conversation_recovery reason=\(reason)")
+            DebugConsoleDiagnostics.trace("[JHT Perf] realtime_active_conversation_recovery reason=\(reason)")
         }
     }
 
@@ -679,7 +683,7 @@ extension AppState {
                 syncConversationMessagesIfNeeded(conversationID, force: true, silent: true)
             }
         }
-        print("[JHT Perf] realtime_recovery_conversations reason=\(reason) count=\(conversationIDs.count)")
+        DebugConsoleDiagnostics.trace("[JHT Perf] realtime_recovery_conversations reason=\(reason) count=\(conversationIDs.count)")
     }
 
     func scheduleMessageSequenceRecovery(
@@ -883,7 +887,8 @@ extension AppState {
             channelType: channelType,
             tenantID: apiContext.tenantID ?? "",
             imUID: apiContext.imUID ?? "",
-            deviceID: apiContext.deviceID
+            deviceID: apiContext.deviceID,
+            priority: conversation.id == activeRealtimeConversationID
         )
     }
 
@@ -901,17 +906,18 @@ extension AppState {
         let scope = remoteDataScopeKey(for: apiContext)
         let generation = localMessageSessionGeneration
         let lookup = makeConversationUserLookup()
-        var targets = conversations
-        if let activeRealtimeConversationID,
-           let active = conversations.first(where: { $0.id == activeRealtimeConversationID }) {
-            targets.append(active)
+        let activeID = activeRealtimeConversationID
+        if let active = conversations.first(where: { $0.id == activeID }) {
+            sendRealtimeSubscribe(for: active, lookup: lookup)
         }
-        for (index, conversation) in targets.enumerated() {
+        for (index, conversation) in conversations.enumerated() {
             if index % 16 == 0 {
                 guard !Task.isCancelled, isRealtimeConnected,
                       generation == localMessageSessionGeneration, isCurrentRemoteScope(scope) else { return }
             }
-            sendRealtimeSubscribe(for: conversation, lookup: lookup)
+            if conversation.id != activeID {
+                sendRealtimeSubscribe(for: conversation, lookup: lookup)
+            }
             // Return to the actual run loop between batches so reconnect cannot monopolize touch handling.
             if index % 16 == 15 { try? await pause(1_000_000) }
         }
@@ -2074,7 +2080,7 @@ extension AppState {
             #if DEBUG
             let elapsedMs = Int((CFAbsoluteTimeGetCurrent() - startedAt) * 1000)
             if elapsedMs >= 8 || result.processed > 4 {
-                print("[JHT Perf] message_extras_reaction_batch_apply processed=\(result.processed) changed=\(result.changed) conversations=\(result.conversationsChanged) messages=\(result.messagesChanged) skipped=\(result.skipped.count) elapsed_ms=\(elapsedMs)")
+                DebugConsoleDiagnostics.trace("[JHT Perf] message_extras_reaction_batch_apply processed=\(result.processed) changed=\(result.changed) conversations=\(result.conversationsChanged) messages=\(result.messagesChanged) skipped=\(result.skipped.count) elapsed_ms=\(elapsedMs)")
             }
             #endif
             pendingReactionExtras.removeAll(keepingCapacity: true)

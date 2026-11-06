@@ -1,31 +1,6 @@
 import SwiftUI
 import UIKit
 
-enum ConversationListActivityDecision: Equatable {
-    case none
-    case scrollToTop
-    case showHint
-}
-
-func conversationListActivityDecision(
-    previousOrder: [String],
-    nextOrder: [String],
-    isNearTop: Bool,
-    trackingEnabled: Bool = true
-) -> ConversationListActivityDecision {
-    guard trackingEnabled,
-          !previousOrder.isEmpty,
-          !nextOrder.isEmpty,
-          previousOrder != nextOrder else {
-        return .none
-    }
-    // 列表是顶部锚定的:用户在顶部附近时,重排后的最新会话本来就直接可见,
-    // 不需要程序化 scrollTo。之前 isNearTop 时返回 .scrollToTop,实时消息频繁
-    // 重排会反复触发动画回顶,真机上会打断正在进行的拖拽手势,表现为
-    // “会话列表滑不动/刚下滑就被拉回顶部,下面的会话看不到”。
-    return isNearTop ? .none : .showHint
-}
-
 func conversationListDisplayTimestamp(_ time: String, now: Date = Date(), calendar: Calendar = .current) -> TimeInterval? {
     let value = time.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !value.isEmpty else { return nil }
@@ -142,20 +117,25 @@ private func conversationListDisplayTime(for date: Date, now: Date, calendar: Ca
 
 private enum ConversationListDateFormatterPool {
     private static let lock = NSLock()
+    nonisolated(unsafe) private static var cachedCalendar: Calendar?
     nonisolated(unsafe) private static var formatters: [String: DateFormatter] = [:]
 
     static func string(from date: Date, format: String, calendar: Calendar) -> String {
         lock.lock()
         defer { lock.unlock() }
+        if cachedCalendar != calendar {
+            cachedCalendar = calendar
+            formatters.removeAll()
+        }
         let formatter = formatters[format] ?? {
             let value = DateFormatter()
             value.locale = Locale(identifier: "zh_CN")
+            value.calendar = calendar
+            value.timeZone = calendar.timeZone
             value.dateFormat = format
             formatters[format] = value
             return value
         }()
-        formatter.calendar = calendar
-        formatter.timeZone = calendar.timeZone
         return formatter.string(from: date)
     }
 }
@@ -263,7 +243,7 @@ private enum ConversationListLagDiagnostics {
         let elapsed = elapsedMS(since: startedAt)
         guard elapsed >= thresholdMS else { return }
         let line = "[JHT Perf] conversation_list_lag event=\(event) elapsed_ms=\(elapsed) \(details())"
-        print(line)
+        DebugConsoleDiagnostics.trace(line)
         ConversationListLagTraceRecorder.record(line)
     }
 }
@@ -281,6 +261,7 @@ struct ConversationListView: View {
     @State private var announcementIndex = 0
     @State private var selectedAnnouncement: InboxItem?
     @State private var cachedConversationSections: ConversationRenderSections = .empty
+    @State private var conversationRowsRevision = 0
     // JHT_MOD_BEGIN CONVERSATION_LIST_SIGNATURE_CACHE_PERF_20260912 - 修改开始：缓存上一轮展示签名，避免无变化重建时重复扫描旧列表
     @State private var cachedConversationRenderSignature: [ConversationRenderSignature] = []
     // JHT_MOD_END CONVERSATION_LIST_SIGNATURE_CACHE_PERF_20260912 - 修改结束
@@ -289,7 +270,6 @@ struct ConversationListView: View {
     // JHT_MOD_END CONVERSATION_LIST_SKIP_UNCHANGED_RENDER_20260912 - 修改结束
     @State private var cachedMentionRecords: [MentionMessageRecord] = []
     @State private var cachedUnreadMentionCount = 0
-    @State private var cachedAlertingUnreadTotal = 0
     @State private var cachedAnnouncementItems: [InboxItem] = []
     @State private var conversationCacheRebuildTask: Task<Void, Never>?
     @State private var conversationStoreChangeCoalescer = ConversationStoreChangeCoalescer()
@@ -299,11 +279,8 @@ struct ConversationListView: View {
     // JHT_MOD_END CHAT_ROUTE_DEFER_CONVERSATION_LIST_REBUILD_PERF_20260912 - 修改结束
     @State private var listClockTick = Date()
     @State private var hasBuiltInitialRenderCaches = false
-    @State private var isNearConversationListTop = true
-    @State private var showConversationActivityHint = false
     @State private var isConversationListInteracting = false
     @State private var conversationRenderCacheDirtyWhileInteracting = false
-    @State private var conversationListTopScrollRequest = 0
     @State private var globalSearchResponse: RemoteTenantSearchResponse?
     @State private var selectedGlobalSearchType: String?
     @State private var invalidatedGlobalSearchResultIDs: Set<String> = []
@@ -320,16 +297,7 @@ struct ConversationListView: View {
 
     private let filters = ["全部", "未读", "@我"]
     private let tenantSearchSectionTypes = ["contacts", "groups", "conversations", "messages", "files"]
-    private let conversationListTopAnchorID = "conversation-list-top-anchor"
     private let conversationListCoordinateSpaceName = "conversation-list-scroll"
-
-    private func renderAlertingUnreadTotal() -> Int {
-        // JHT_MOD_BEGIN CONVERSATION_LIST_DATA_SCALE_PERF_20260912 - 修改开始：单次 reduce 统计提醒未读，避免 filter 生成临时数组
-        state.conversations.reduce(0) { total, conversation in
-            conversation.isMuted ? total : total + conversation.unread
-        }
-        // JHT_MOD_END CONVERSATION_LIST_DATA_SCALE_PERF_20260912 - 修改结束
-    }
 
     private func renderAnnouncementItems() -> [InboxItem] {
         state.inboxItems.filter { item in
@@ -435,6 +403,7 @@ struct ConversationListView: View {
             AuroraBackground()
             RecycledConversationTable(
                 items: conversationSections.ordered,
+                rowsRevision: conversationRowsRevision,
                 displaysRows: !isGlobalSearchActive && filter != "@我",
                 searchRevision: query,
                 rowContext: mentionTarget + "|" + state.systemNoticeAvatarURL + "|" + String(Int(listClockTick.timeIntervalSince1970 / 60)),
@@ -448,9 +417,8 @@ struct ConversationListView: View {
                 headerRevision: ConversationListHeaderRevision(enterprise: state.currentEnterprise,
                     announcementIndex: announcementIndex, announcements: cachedAnnouncementItems,
                     showsAnnouncements: state.networkBannerVisible),
-                filterRevision: "\(filter)|\(cachedAlertingUnreadTotal)|\(cachedUnreadMentionCount)",
+                filterRevision: "\(filter)|\(UnreadBadgeFormatter.text(alertingUnreadTotal) ?? "")|\(UnreadBadgeFormatter.text(cachedUnreadMentionCount) ?? "")",
                 dynamicFooter: isGlobalSearchActive || filter == "@我" || renderMatchingConversations.isEmpty || state.isLoadingMoreConversations || state.isConversationSnapshotPartial,
-                scrollRequest: conversationListTopScrollRequest,
                 interactionChanged: { interacting in
                     isConversationListInteracting = interacting
                     state.isConversationListUserInteracting = interacting
@@ -465,26 +433,8 @@ struct ConversationListView: View {
                         scheduleConversationRenderCacheRebuild()
                     }
                 },
-                nearTop: { near in
-                    isNearConversationListTop = near
-                    if near { showConversationActivityHint = false }
-                },
                 row: { item in AnyView(conversationRow(for: item).padding(.horizontal, 18).padding(.bottom, 12).environmentObject(state)) }
             )
-            .overlay(alignment: .top) {
-                if showConversationActivityHint && filter != "@我" && query.isEmpty {
-                    Button {
-                        showConversationActivityHint = false
-                        conversationListTopScrollRequest &+= 1
-                    } label: {
-                        Label("有新会话", systemImage: "arrow.up.circle.fill")
-                            .font(.system(size: 13, weight: .black)).foregroundStyle(.white)
-                            .padding(.horizontal, 14).frame(height: 34).background(Capsule().fill(IMColor.brand))
-                    }.buttonStyle(.plain).padding(.top, 66)
-                        .accessibilityIdentifier("conversation_new_activity_hint")
-                        .accessibilityLabel("有新会话，回到顶部")
-                }
-            }
         }
         .overlay(alignment: .top) {
             PinnedSearchTopMask()
@@ -778,7 +728,7 @@ VStack(alignment: .leading, spacing: 18) {
                 let driftMS = elapsedMS - ConversationListLagDiagnostics.hitchProbeIntervalMS
                 if driftMS >= 120 {
                     let line = "[JHT Perf] conversation_list_hitch drift_ms=\(driftMS) interval_ms=\(elapsedMS) visible_count=\(cachedConversationSections.matching.count) source_count=\(state.conversations.count) total_messages=\(ConversationListLagDiagnostics.totalMessages(in: state.conversations)) filter=\(filter) has_query=\(!trimmedSearchQuery.isEmpty)"
-                    print(line)
+                    DebugConsoleDiagnostics.trace(line)
                     ConversationListLagTraceRecorder.record(line)
                 }
                 lastTick = now
@@ -792,30 +742,6 @@ VStack(alignment: .leading, spacing: 18) {
     }
     #endif
     // JHT_MOD_END CONVERSATION_LIST_LAG_DIAG_HITCH_MONITOR - 修改结束
-
-    @ViewBuilder
-    private func conversationActivityHint(scrollProxy: ScrollViewProxy) -> some View {
-        if showConversationActivityHint && filter != "@我" && query.isEmpty {
-            Button {
-                scrollConversationListToTop(scrollProxy)
-            } label: {
-                Label("有新会话", systemImage: "arrow.up.circle.fill")
-                    .font(.system(size: 13, weight: .black))
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 14)
-                    .frame(height: 34)
-                    .background(Capsule().fill(IMColor.brand))
-                    .overlay(Capsule().stroke(.white.opacity(0.55), lineWidth: 1))
-                    .shadow(color: IMColor.brand.opacity(0.24), radius: 12, y: 6)
-            }
-            .buttonStyle(.plain)
-            .padding(.top, 66)
-            .transition(.move(edge: .top).combined(with: .opacity))
-            .accessibilityIdentifier("conversation_new_activity_hint")
-            .accessibilityLabel("有新会话，回到顶部")
-            .animation(.spring(response: 0.28, dampingFraction: 0.86), value: showConversationActivityHint)
-        }
-    }
 
     private func openConversation(
         _ conversationID: String,
@@ -838,14 +764,6 @@ VStack(alignment: .leading, spacing: 18) {
             initialSearchJumpTarget: request.jumpTarget
         )
         state.consumeNotificationConversationOpenRequest(request.id)
-    }
-
-    private func scrollConversationListToTop(_ scrollProxy: ScrollViewProxy) {
-        withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) {
-            scrollProxy.scrollTo(conversationListTopAnchorID, anchor: .top)
-        }
-        showConversationActivityHint = false
-        isNearConversationListTop = true
     }
 
     private var header: some View {
@@ -1139,12 +1057,16 @@ VStack(alignment: .leading, spacing: 18) {
         invalidatedGlobalSearchResultIDs.formUnion(matchingIDs)
     }
 
+    private var alertingUnreadTotal: Int {
+        state.conversationStore.alertingUnreadTotal
+    }
+
     private func filterCount(for item: String) -> Int? {
         switch item {
         case "全部":
-            cachedAlertingUnreadTotal > 0 ? cachedAlertingUnreadTotal : nil
+            alertingUnreadTotal > 0 ? alertingUnreadTotal : nil
         case "未读":
-            cachedAlertingUnreadTotal > 0 ? cachedAlertingUnreadTotal : nil
+            alertingUnreadTotal > 0 ? alertingUnreadTotal : nil
         case "@我":
             cachedUnreadMentionCount > 0 ? cachedUnreadMentionCount : nil
         default:
@@ -1287,13 +1209,13 @@ VStack(alignment: .leading, spacing: 18) {
         return 0
     }
 
-    // WDT_CONVERSATION_LIST_SORT_20261021: confirmed message time takes precedence only in the list.
+    // Keep the list order on the conversation summary as history loads.
     private func conversationSortScore(_ conversation: Conversation, messageTimestamp: TimeInterval?) -> Double {
-        if let messageTimestamp {
-            return conversationListNormalizedTimestamp(messageTimestamp, now: listClockTick)
-        }
         if conversation.sortTimestamp > 0 {
             return conversationListNormalizedTimestamp(conversation.sortTimestamp, now: listClockTick)
+        }
+        if let messageTimestamp {
+            return conversationListNormalizedTimestamp(messageTimestamp, now: listClockTick)
         }
         if let displayTimestamp = conversationListDisplayTimestamp(conversation.time, now: listClockTick) {
             return displayTimestamp
@@ -1306,6 +1228,9 @@ VStack(alignment: .leading, spacing: 18) {
             let lhsScore = lhs.sortScore
             let rhsScore = rhs.sortScore
             if lhsScore != rhsScore { return lhsScore > rhsScore }
+            if lhs.conversation.lastMsgSeq != rhs.conversation.lastMsgSeq {
+                return lhs.conversation.lastMsgSeq > rhs.conversation.lastMsgSeq
+            }
             return lhs.rowModel.id < rhs.rowModel.id
         }
     }
@@ -1467,7 +1392,7 @@ VStack(alignment: .leading, spacing: 18) {
                 }
             }()
             // JHT_MOD_END CONVERSATION_LIST_SCROLL_PERF_END_ROW_PRESENTATION_BUILD - 修改结束：会话列表行展示数据提前缓存，减少滑动时逐行查全局状态
-            // WDT_CONVERSATION_LIST_SORT_20261021: row time and ordering share one projection; stored data is untouched.
+            // A loaded message can refine the displayed time without moving the row.
             let messageTimestamp = conversationListMessageTimestamp(conversation)
             var summary = conversation
             summary.messages = []
@@ -1483,7 +1408,9 @@ VStack(alignment: .leading, spacing: 18) {
                     kind: conversation.kind,
                     displayTitle: displayTitle,
                     groupMemberCount: conversation.kind == .group && state.shouldShowGroupMemberCount
-                        ? groupCounts[state.remoteChannelID(for: conversation, lookup: userLookup)] ?? groupCounts[conversation.id]
+                        ? state.visibleGroupMemberCount(conversation.memberCount)
+                            ?? groupCounts[state.remoteChannelID(for: conversation, lookup: userLookup)]
+                            ?? groupCounts[conversation.id]
                         : nil,
                     lastMessage: state.visibleConversationLastMessage(conversation),
                     time: messageTimestamp == 0 ? "" : conversation.time,
@@ -1528,10 +1455,6 @@ VStack(alignment: .leading, spacing: 18) {
         #endif
         // JHT_MOD_END CONVERSATION_LIST_LAG_DIAG_RENDER_SECTIONS_RESULT - 修改结束
         return sections
-    }
-
-    private func conversationOrderIDs(_ sections: ConversationRenderSections) -> [String] {
-        sections.ordered.map(\.id)
     }
 
     private func conversationRenderSignature(_ sections: ConversationRenderSections) -> [ConversationRenderSignature] {
@@ -1590,24 +1513,7 @@ VStack(alignment: .leading, spacing: 18) {
     }
     // JHT_MOD_END CONVERSATION_LIST_SKIP_UNCHANGED_RENDER_20260912 - 修改结束
 
-    private func applyConversationOrderActivity(previousOrder: [String], nextOrder: [String], trackActivity: Bool) {
-        let decision = conversationListActivityDecision(
-            previousOrder: previousOrder,
-            nextOrder: nextOrder,
-            isNearTop: isNearConversationListTop,
-            trackingEnabled: trackActivity && filter != "@我" && query.isEmpty
-        )
-        switch decision {
-        case .none:
-            break
-        case .scrollToTop:
-            conversationListTopScrollRequest += 1
-        case .showHint:
-            showConversationActivityHint = true
-        }
-    }
-
-    private func rebuildConversationSectionsCache(trackActivity: Bool = false) {
+    private func rebuildConversationSectionsCache() {
         // JHT_MOD_BEGIN CONVERSATION_LIST_LAG_DIAG_REBUILD_CACHE - 修改开始：检测会话列表缓存重建总耗时和是否真实变更
         #if DEBUG
         let rebuildStartedAt = Date()
@@ -1627,12 +1533,12 @@ VStack(alignment: .leading, spacing: 18) {
             return
         }
         // JHT_MOD_END CONVERSATION_LIST_SKIP_UNCHANGED_RENDER_20260912 - 修改结束
-        let previousOrder = conversationOrderIDs(cachedConversationSections)
+        let previousItemCount = cachedConversationSections.ordered.count
         // JHT_MOD_BEGIN CONVERSATION_LIST_SIGNATURE_CACHE_PERF_20260912 - 修改开始：直接复用旧签名，减少大列表比较前的主线程重复计算
         let previousSignature = cachedConversationRenderSignature
         // JHT_MOD_END CONVERSATION_LIST_SIGNATURE_CACHE_PERF_20260912 - 修改结束
         let nextSections = filter == "@我" ? .empty : renderConversationSections()
-        let nextOrder = conversationOrderIDs(nextSections)
+        let nextItemCount = nextSections.ordered.count
         let nextSignature = conversationRenderSignature(nextSections)
         guard previousSignature != nextSignature else {
             // JHT_MOD_BEGIN CONVERSATION_LIST_SKIP_UNCHANGED_RENDER_20260912 - 修改开始：记录已验证过的输入签名，后续相同输入不再重复完整重建
@@ -1647,7 +1553,7 @@ VStack(alignment: .leading, spacing: 18) {
                 event: "rebuild_sections_no_change",
                 startedAt: rebuildStartedAt,
                 thresholdMS: 20,
-                details: "items=\(nextOrder.count) total_messages=\(ConversationListLagDiagnostics.totalMessages(in: state.conversations)) filter=\(filter) has_query=\(!trimmedSearchQuery.isEmpty)"
+                details: "items=\(nextItemCount) total_messages=\(ConversationListLagDiagnostics.totalMessages(in: state.conversations)) filter=\(filter) has_query=\(!trimmedSearchQuery.isEmpty)"
             )
             #endif
             // JHT_MOD_END CONVERSATION_LIST_LAG_DIAG_REBUILD_NO_CHANGE - 修改结束
@@ -1657,6 +1563,7 @@ VStack(alignment: .leading, spacing: 18) {
         transaction.disablesAnimations = true
         withTransaction(transaction) {
             cachedConversationSections = nextSections
+            conversationRowsRevision &+= 1
         }
         // JHT_MOD_BEGIN CONVERSATION_LIST_SKIP_UNCHANGED_RENDER_20260912 - 修改开始：缓存最新有效输入签名
         cachedConversationRenderInputSignature = nextInputSignature
@@ -1664,14 +1571,13 @@ VStack(alignment: .leading, spacing: 18) {
         // JHT_MOD_BEGIN CONVERSATION_LIST_SIGNATURE_CACHE_PERF_20260912 - 修改开始：同步缓存当前展示签名，避免下一轮重复生成旧签名
         cachedConversationRenderSignature = nextSignature
         // JHT_MOD_END CONVERSATION_LIST_SIGNATURE_CACHE_PERF_20260912 - 修改结束
-        applyConversationOrderActivity(previousOrder: previousOrder, nextOrder: nextOrder, trackActivity: trackActivity)
         // JHT_MOD_BEGIN CONVERSATION_LIST_LAG_DIAG_REBUILD_CHANGED - 修改开始：签名变更时输出慢重建信息
         #if DEBUG
             ConversationListLagDiagnostics.logIfSlow(
                 event: "rebuild_sections_changed",
                 startedAt: rebuildStartedAt,
                 thresholdMS: 20,
-                details: "previous_items=\(previousOrder.count) next_items=\(nextOrder.count) total_messages=\(ConversationListLagDiagnostics.totalMessages(in: state.conversations)) track_activity=\(trackActivity) filter=\(filter) has_query=\(!trimmedSearchQuery.isEmpty)"
+                details: "previous_items=\(previousItemCount) next_items=\(nextItemCount) total_messages=\(ConversationListLagDiagnostics.totalMessages(in: state.conversations)) filter=\(filter) has_query=\(!trimmedSearchQuery.isEmpty)"
             )
         #endif
         // JHT_MOD_END CONVERSATION_LIST_LAG_DIAG_REBUILD_CHANGED - 修改结束
@@ -1684,22 +1590,17 @@ VStack(alignment: .leading, spacing: 18) {
         cachedUnreadMentionCount = renderUnreadMentionCount()
     }
 
-    private func rebuildAlertingUnreadCache() {
-        cachedAlertingUnreadTotal = renderAlertingUnreadTotal()
-    }
-
     private func rebuildAnnouncementCache() {
         cachedAnnouncementItems = renderAnnouncementItems()
     }
 
-    private func rebuildConversationRenderCaches(trackActivity: Bool = false) {
+    private func rebuildConversationRenderCaches() {
         guard !isConversationListInteracting else {
             conversationRenderCacheDirtyWhileInteracting = true
             return
         }
-        rebuildConversationSectionsCache(trackActivity: trackActivity)
+        rebuildConversationSectionsCache()
         rebuildMentionCache(includeRecords: filter == "@我")
-        rebuildAlertingUnreadCache()
     }
 
     private func scheduleConversationStoreChangeHandling() {
@@ -1725,6 +1626,10 @@ VStack(alignment: .leading, spacing: 18) {
     }
 
     private func handleConversationStoreChange() {
+        if isConversationListInteracting {
+            conversationRenderCacheDirtyWhileInteracting = true
+            return
+        }
         // JHT_MOD_BEGIN CONVERSATION_LIST_LAG_DIAG_STORE_CHANGE - 修改开始：检测会话数据发布后列表侧处理耗时
         #if DEBUG
         let changeStartedAt = Date()
@@ -1738,11 +1643,10 @@ VStack(alignment: .leading, spacing: 18) {
         }
         #endif
         // JHT_MOD_END CONVERSATION_LIST_LAG_DIAG_STORE_CHANGE - 修改结束
-        rebuildAlertingUnreadCache()
         if filter == "未读" || filter == "@我" {
             conversationCacheRebuildTask?.cancel()
             conversationCacheRebuildTask = nil
-            rebuildConversationRenderCaches(trackActivity: true)
+            rebuildConversationRenderCaches()
         } else {
             scheduleConversationRenderCacheRebuild()
         }
@@ -1783,15 +1687,15 @@ VStack(alignment: .leading, spacing: 18) {
             withTransaction(transaction) {
                 listClockTick = Date()
             }
-            rebuildConversationRenderCaches(trackActivity: true)
+            rebuildConversationRenderCaches()
         }
     }
 
-    private func rebuildVisibleConversationOrderCache(trackActivity: Bool = false) {
+    private func rebuildVisibleConversationOrderCache() {
         if filter == "@我" {
             rebuildMentionCache(includeRecords: true)
         } else {
-            rebuildConversationSectionsCache(trackActivity: trackActivity)
+            rebuildConversationSectionsCache()
         }
     }
 
@@ -1804,7 +1708,7 @@ VStack(alignment: .leading, spacing: 18) {
         conversationCacheRebuildTask = nil
         #if DEBUG
         if shouldLog {
-            print("[JHT Perf] conversation_list_lag event=defer_rebuild_route_active reason=\(reason) source_count=\(state.conversations.count) cached_count=\(cachedConversationSections.matching.count)")
+            DebugConsoleDiagnostics.trace("[JHT Perf] conversation_list_lag event=defer_rebuild_route_active reason=\(reason) source_count=\(state.conversations.count) cached_count=\(cachedConversationSections.matching.count)")
         }
         #endif
     }
@@ -4435,6 +4339,7 @@ private struct ConversationListHeaderRevision: Equatable {
 
 private struct RecycledConversationTable: UIViewControllerRepresentable {
     let items: [ConversationRenderItem]
+    let rowsRevision: Int
     let displaysRows: Bool
     let searchRevision: String
     let rowContext: String
@@ -4445,9 +4350,7 @@ private struct RecycledConversationTable: UIViewControllerRepresentable {
     let headerRevision: ConversationListHeaderRevision
     let filterRevision: String
     let dynamicFooter: Bool
-    let scrollRequest: Int
     let interactionChanged: (Bool) -> Void
-    let nearTop: (Bool) -> Void
     let row: (ConversationRenderItem) -> AnyView
 
     func makeUIViewController(context: Context) -> RecycledConversationController {
@@ -4469,8 +4372,6 @@ private final class RecycledConversationController: UIViewController, UITableVie
     private var input: RecycledConversationTable?
     private var pending: RecycledConversationTable?
     private var itemsByID: [String: ConversationRenderItem] = [:]
-    private var lastScrollRequest = 0
-    private var isNearTop: Bool?
     private var headerNeedsMeasurement = true
     private var measuredHeaderWidth: CGFloat = 0
     private var searchNeedsMeasurement = true
@@ -4513,7 +4414,7 @@ private final class RecycledConversationController: UIViewController, UITableVie
             case .footer: content = input.footer
             case .conversation(let key):
                 guard let item = self.itemsByID[key] else { return cell }
-                content = input.row(item)
+                content = AnyView(input.row(item).id(item.id))
             }
             cell.configure(content, parent: self)
             return cell
@@ -4524,11 +4425,9 @@ private final class RecycledConversationController: UIViewController, UITableVie
         loadViewIfNeeded()
         // Never reorder or resize rows under an active finger/deceleration.
         if table.isDragging || table.isDecelerating { pending = next; return }
+        pending = nil
         let previous = input
         input = next
-        let visibleItems = next.displaysRows ? next.items : []
-        let previousItems = itemsByID
-        itemsByID = Dictionary(uniqueKeysWithValues: visibleItems.map { ($0.id, $0) })
         if previous == nil || previous?.searchRevision != next.searchRevision {
             searchHost.rootView = next.search
             searchNeedsMeasurement = true
@@ -4540,30 +4439,44 @@ private final class RecycledConversationController: UIViewController, UITableVie
             headerNeedsMeasurement = true
             updateHeaderSize()
         }
+        let contextChanged = previous?.rowContext != next.rowContext
+        let rowsChanged = previous?.rowsRevision != next.rowsRevision
+            || previous?.displaysRows != next.displaysRows || contextChanged
+        if !rowsChanged {
+            let footerChanged = next.dynamicFooter || previous?.dynamicFooter == true
+            guard filterChanged || footerChanged else { return }
+            var snapshot = source.snapshot()
+            if filterChanged {
+                // Reconfiguration can leave newly inserted SwiftUI badge text invisible
+                // in the existing hosting cell even though its layout already changed.
+                snapshot.reloadItems([.filter])
+            }
+            if footerChanged { snapshot.reconfigureItems([.footer]) }
+            source.apply(snapshot, animatingDifferences: false)
+            return
+        }
+        let visibleItems = next.displaysRows ? next.items : []
+        let previousItems = itemsByID
+        itemsByID = Dictionary(uniqueKeysWithValues: visibleItems.map { ($0.id, $0) })
         let ids: [Item] = [.filter] + visibleItems.map { .conversation($0.id) } + [.footer]
         let oldIDs = source.snapshot().itemIdentifiers
         let existing = Set(oldIDs)
-        let contextChanged = previous?.rowContext != next.rowContext
         var changed: [Item] = visibleItems.compactMap { item in
             guard existing.contains(.conversation(item.id)) else { return nil }
             let old = previousItems[item.id]
             return contextChanged || old?.rowModel != item.rowModel || old?.unreadMention != item.unreadMention
                 ? .conversation(item.id) : nil
         }
-        if filterChanged && existing.contains(.filter) { changed.append(.filter) }
+        let reloadFilter = filterChanged && existing.contains(.filter)
         if (next.dynamicFooter || previous?.dynamicFooter == true) && existing.contains(.footer) { changed.append(.footer) }
-        if ids != oldIDs || !changed.isEmpty {
+        if ids != oldIDs || reloadFilter || !changed.isEmpty {
             var snapshot = NSDiffableDataSourceSnapshot<Int, Item>()
             snapshot.appendSections([0]); snapshot.appendItems(ids)
             let nextIDSet = Set(ids)
             snapshot.reconfigureItems(changed.filter { nextIDSet.contains($0) })
+            if reloadFilter { snapshot.reloadItems([.filter]) }
             source.apply(snapshot, animatingDifferences: false)
         }
-        if next.scrollRequest > lastScrollRequest {
-            // A long animated traversal competes with incoming diffable snapshots and estimated row heights.
-            table.setContentOffset(CGPoint(x: 0, y: -table.adjustedContentInset.top), animated: false)
-        }
-        lastScrollRequest = next.scrollRequest
     }
 
     override func viewDidLayoutSubviews() {
@@ -4607,14 +4520,6 @@ private final class RecycledConversationController: UIViewController, UITableVie
         if height.isFinite && height > 0 { measuredSearchHeight = height }
         return measuredSearchHeight
     }
-    func scrollViewDidScroll(_ scrollView: UIScrollView) {
-        let near = scrollView.contentOffset.y + scrollView.adjustedContentInset.top < 96
-        guard near != isNearTop else { return }
-        isNearTop = near
-        // UIKit layout may call the delegate while SwiftUI is applying an update.
-        let callback = input?.nearTop
-        DispatchQueue.main.async { callback?(near) }
-    }
     private func notifyInteraction(_ interacting: Bool) {
         let callback = input?.interactionChanged
         DispatchQueue.main.async { callback?(interacting) }
@@ -4640,18 +4545,20 @@ private final class RecycledConversationCell: UITableViewCell {
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     func configure(_ content: AnyView, parent: UIViewController) {
-        if #available(iOS 16.0, *) {
+        // Fixed-height rows can reuse the same host without asking UIKit to
+        // rebuild a hosting configuration or measure its intrinsic height.
+        let isConversationRow = reuseIdentifier == "conversation"
+        if #available(iOS 16.0, *), !isConversationRow {
             contentConfiguration = UIHostingConfiguration { content }.margins(.all, 0)
             return
         }
         if let host {
             if host.parent == nil { parent.addChild(host); host.didMove(toParent: parent) }
             host.rootView = content
-            host.view.invalidateIntrinsicContentSize()
+            if !isConversationRow { host.view.invalidateIntrinsicContentSize() }
             return
         }
         let host = UIHostingController(rootView: content)
-        if #available(iOS 16.0, *) { host.sizingOptions = .intrinsicContentSize }
         self.host = host
         parent.addChild(host)
         host.view.backgroundColor = .clear

@@ -77,10 +77,10 @@ private actor ConversationListLagTraceWriter {
             handle.closeFile()
             if !didAnnounceFile {
                 didAnnounceFile = true
-                print("[JHT Perf] conversation_list_lag_log_file path=\(fileURL.path)")
+                DebugConsoleDiagnostics.trace("[JHT Perf] conversation_list_lag_log_file path=\(fileURL.path)")
             }
         } catch {
-            print("[JHT Perf] conversation_list_lag_log_file_failed error=\(error.localizedDescription)")
+            DebugConsoleDiagnostics.trace("[JHT Perf] conversation_list_lag_log_file_failed error=\(error.localizedDescription)")
         }
     }
 
@@ -119,7 +119,7 @@ private enum ConversationStoreLagDiagnostics {
         let elapsed = elapsedMS(since: startedAt)
         guard elapsed >= 12 else { return }
         let line = "[JHT Perf] conversation_store_compare_lag elapsed_ms=\(elapsed) current_count=\(current.count) next_count=\(next.count) current_messages=\(totalMessages(in: current)) next_messages=\(totalMessages(in: next)) changed=\(changed)"
-        print(line)
+        DebugConsoleDiagnostics.trace(line)
         ConversationListLagTraceRecorder.record(line)
     }
 }
@@ -237,7 +237,17 @@ struct ConversationUserLookup: Sendable {
 
 @MainActor
 final class ConversationStore: ObservableObject {
-    @Published var conversations: [Conversation] = []
+    @Published var conversations: [Conversation] = [] {
+        didSet {
+            lastConversationLookupIndex = nil
+            let total = ConversationUnreadBadgeProjection.total(conversations)
+            if alertingUnreadTotal != total {
+                alertingUnreadTotal = total
+            }
+        }
+    }
+    private var lastConversationLookupIndex: Int?
+    @Published private(set) var alertingUnreadTotal = 0
     @Published private var historyLoadingIDs: Set<String> = []
     @Published private var historyMessages: [String: String] = [:]
     @Published private var directDisabledMessages: [String: String] = [:]
@@ -336,7 +346,7 @@ final class ConversationStore: ObservableObject {
         let elapsed = ConversationStoreLagDiagnostics.elapsedMS(since: startedAt)
         if elapsed >= 8 || !published {
             let line = "[JHT Perf] conversation_store_publish_gate reason=\(reason) published=\(published) elapsed_ms=\(elapsed) previous_count=\(previousCount) next_count=\(next.count)"
-            print(line)
+            DebugConsoleDiagnostics.trace(line)
             ConversationListLagTraceRecorder.record(line)
         }
         #endif
@@ -989,7 +999,12 @@ final class ConversationStore: ObservableObject {
     }
 
     func conversation(id: String) -> Conversation? {
-        conversations.first { $0.id == id }
+        if let index = lastConversationLookupIndex, conversations[index].id == id {
+            return conversations[index]
+        }
+        guard let index = conversations.firstIndex(where: { $0.id == id }) else { return nil }
+        lastConversationLookupIndex = index
+        return conversations[index]
     }
 
     @discardableResult
@@ -1059,7 +1074,8 @@ final class ConversationStore: ObservableObject {
         to conversation: Conversation?,
         keepPendingLocalMessages: Bool = true
     ) -> Conversation? {
-        guard var updated = conversation else { return nil }
+        guard let conversation else { return nil }
+        var updated = conversation
         guard updated.kind == .group else { return updated }
         let resolvedBoundary = boundary ?? HistoryVisibilityBoundary(fromSeq: 1, limited: false, confirmed: true)
         let previousBoundarySeq = (updated.historyBoundaryConfirmed || updated.historyVisibleFromSeq > 1 || updated.historyLimited)
@@ -1078,7 +1094,14 @@ final class ConversationStore: ObservableObject {
                 keepPendingLocalMessages: keepPendingLocalMessages
             )
         }
-        refreshHistoryBoundedSummary(&updated, boundary: resolvedBoundary)
+        // WDT_CONVERSATION_LIST_STABILITY_20261103_BEGIN: unchanged group metadata must not replace a newer summary with a partial local history.
+        let refreshSummary = !conversation.historyBoundaryConfirmed
+            || conversation.historyVisibleFromSeq != updated.historyVisibleFromSeq
+            || conversation.historyLimited != updated.historyLimited
+            || conversation.historyBoundaryConfirmed != updated.historyBoundaryConfirmed
+            || conversation.messages != updated.messages
+        refreshHistoryBoundedSummary(&updated, boundary: resolvedBoundary, refreshSummary: refreshSummary)
+        // WDT_CONVERSATION_LIST_STABILITY_20261103_END
         return updated
     }
 
@@ -1099,17 +1122,21 @@ final class ConversationStore: ObservableObject {
         return publishConversationsIfChanged(next)
     }
 
-    private func refreshHistoryBoundedSummary(_ conversation: inout Conversation, boundary: HistoryVisibilityBoundary) {
-        if let latest = latestConfirmedMessage(in: conversation.messages.filter { !$0.isPinnedContextOnly })
-            ?? latestConfirmedMessage(in: conversation.messages) {
-            conversation.lastMessage = messageListPreview(latest)
-            conversation.time = latest.time
-            conversation.sortTimestamp = effectiveCreatedAt(for: latest)?.timeIntervalSince1970 ?? conversation.sortTimestamp
-        } else if boundary.isRestrictive || conversation.historyBoundaryConfirmed {
-            conversation.lastMessage = ""
-            conversation.time = ""
-            conversation.sortTimestamp = 0
+    private func refreshHistoryBoundedSummary(_ conversation: inout Conversation, boundary: HistoryVisibilityBoundary, refreshSummary: Bool) {
+        // WDT_CONVERSATION_LIST_STABILITY_20261103_BEGIN: unread/visibility cleanup below still runs on every application.
+        if refreshSummary {
+            if let latest = latestConfirmedMessage(in: conversation.messages.filter { !$0.isPinnedContextOnly })
+                ?? latestConfirmedMessage(in: conversation.messages) {
+                conversation.lastMessage = messageListPreview(latest)
+                conversation.time = latest.time
+                conversation.sortTimestamp = effectiveCreatedAt(for: latest)?.timeIntervalSince1970 ?? conversation.sortTimestamp
+            } else if boundary.isRestrictive || conversation.historyBoundaryConfirmed {
+                conversation.lastMessage = ""
+                conversation.time = ""
+                conversation.sortTimestamp = 0
+            }
         }
+        // WDT_CONVERSATION_LIST_STABILITY_20261103_END
         if boundary.isRestrictive {
             if conversation.firstUnreadSeq > 0 && conversation.firstUnreadSeq < boundary.fromSeq {
                 conversation.unread = 0
@@ -1589,6 +1616,7 @@ final class ConversationStore: ObservableObject {
         members: [IMUser],
         muted: Bool,
         memberCount: Int?,
+        preservesMemberCountWhenMissing: Bool = false,
         avatarURL: String,
         avatarVersion: String,
         avatarUpdatedAt: String,
@@ -1612,11 +1640,13 @@ final class ConversationStore: ObservableObject {
             if conversation.lastMessage.isEmpty {
                 conversation.lastMessage = notice
             }
-            conversation.memberCount = resolvedGroupMemberCount(
-                incoming: memberCount,
-                existing: conversation.memberCount,
-                participants: members
-            )
+            if memberCount != nil || !preservesMemberCountWhenMissing {
+                conversation.memberCount = resolvedGroupMemberCount(
+                    incoming: memberCount,
+                    existing: conversation.memberCount,
+                    participants: members
+                )
+            }
             if !members.isEmpty {
                 conversation.participants = members
             }
@@ -2098,33 +2128,43 @@ final class ConversationStore: ObservableObject {
               !normalizedConversationID.isEmpty,
               let cIndex = conversations.firstIndex(where: { $0.id == normalizedConversationID }),
               let mIndex = conversations[cIndex].messages.firstIndex(where: { $0.id == message.id }) else { return nil }
-        conversations[cIndex].messages[mIndex].attachmentName = message.attachmentName
-        conversations[cIndex].messages[mIndex].attachmentMeta = message.attachmentMeta
-        conversations[cIndex].messages[mIndex].attachmentFileID = message.attachmentFileID
-        conversations[cIndex].messages[mIndex].attachmentSizeBytes = message.attachmentSizeBytes
-        conversations[cIndex].messages[mIndex].attachmentPreviewURL = message.attachmentPreviewURL
-        conversations[cIndex].messages[mIndex].attachmentDownloadURL = message.attachmentDownloadURL
-        conversations[cIndex].messages[mIndex].attachmentPreviewAvailable = message.attachmentPreviewAvailable
-        conversations[cIndex].messages[mIndex].attachmentDownloadAvailable = message.attachmentDownloadAvailable
-        conversations[cIndex].messages[mIndex].attachmentTransferProgress = message.attachmentTransferProgress
-        conversations[cIndex].messages[mIndex].attachmentMimeType = message.attachmentMimeType
-        conversations[cIndex].messages[mIndex].attachmentCacheKey = message.attachmentCacheKey
-        conversations[cIndex].messages[mIndex].attachmentVersion = message.attachmentVersion
-        conversations[cIndex].messages[mIndex].attachmentChecksum = message.attachmentChecksum
-        conversations[cIndex].messages[mIndex].attachmentMediaCategory = message.attachmentMediaCategory
-        conversations[cIndex].messages[mIndex].attachmentExtension = message.attachmentExtension
-        conversations[cIndex].messages[mIndex].attachmentThumbnailURL = message.attachmentThumbnailURL
-        conversations[cIndex].messages[mIndex].attachmentPosterURL = message.attachmentPosterURL
-        conversations[cIndex].messages[mIndex].attachmentCoverURL = message.attachmentCoverURL
-        conversations[cIndex].messages[mIndex].attachmentPreviewKind = message.attachmentPreviewKind
-        conversations[cIndex].messages[mIndex].attachmentContentDisposition = message.attachmentContentDisposition
-        conversations[cIndex].messages[mIndex].attachmentWidth = message.attachmentWidth
-        conversations[cIndex].messages[mIndex].attachmentHeight = message.attachmentHeight
-        conversations[cIndex].messages[mIndex].attachmentDurationSeconds = message.attachmentDurationSeconds
-        conversations[cIndex].messages[mIndex].attachmentUploadStatus = message.attachmentUploadStatus
-        conversations[cIndex].messages[mIndex].attachmentUploadFailure = message.attachmentUploadFailure
-        updateConversationLatestFromMessages(at: cIndex)
-        return conversations[cIndex].messages[mIndex]
+        var conversation = conversations[cIndex]
+        let previous = conversation.messages[mIndex]
+        var updated = previous
+        updated.attachmentName = message.attachmentName
+        updated.attachmentMeta = message.attachmentMeta
+        updated.attachmentFileID = message.attachmentFileID
+        updated.attachmentSizeBytes = message.attachmentSizeBytes
+        updated.attachmentPreviewURL = message.attachmentPreviewURL
+        updated.attachmentDownloadURL = message.attachmentDownloadURL
+        updated.attachmentPreviewAvailable = message.attachmentPreviewAvailable
+        updated.attachmentDownloadAvailable = message.attachmentDownloadAvailable
+        updated.attachmentTransferProgress = message.attachmentTransferProgress
+        updated.attachmentMimeType = message.attachmentMimeType
+        updated.attachmentCacheKey = message.attachmentCacheKey
+        updated.attachmentVersion = message.attachmentVersion
+        updated.attachmentChecksum = message.attachmentChecksum
+        updated.attachmentMediaCategory = message.attachmentMediaCategory
+        updated.attachmentExtension = message.attachmentExtension
+        updated.attachmentThumbnailURL = message.attachmentThumbnailURL
+        updated.attachmentPosterURL = message.attachmentPosterURL
+        updated.attachmentCoverURL = message.attachmentCoverURL
+        updated.attachmentPreviewKind = message.attachmentPreviewKind
+        updated.attachmentContentDisposition = message.attachmentContentDisposition
+        updated.attachmentWidth = message.attachmentWidth
+        updated.attachmentHeight = message.attachmentHeight
+        updated.attachmentDurationSeconds = message.attachmentDurationSeconds
+        updated.attachmentUploadStatus = message.attachmentUploadStatus
+        updated.attachmentUploadFailure = message.attachmentUploadFailure
+        guard updated != previous else { return nil }
+        conversation.messages[mIndex] = updated
+        if let latest = latestConfirmedMessage(in: conversation.messages) {
+            conversation.lastMessage = messageListPreview(latest)
+            conversation.time = latest.time
+            conversation.sortTimestamp = max(conversation.sortTimestamp, effectiveCreatedAt(for: latest)?.timeIntervalSince1970 ?? 0)
+        }
+        conversations[cIndex] = conversation
+        return updated
     }
 
     /// 历史窗口扩展(如跳转置顶/搜索目标前的水合)后,把已落入加载窗口的
@@ -3508,15 +3548,20 @@ final class ConversationStore: ObservableObject {
 
     func clearUnread(conversationID: String, includeSystemConversations: Bool) {
         for index in conversations.indices where conversations[index].id == conversationID || (includeSystemConversations && conversations[index].kind == .system) {
-            conversations[index].lastReadSeq = max(conversations[index].lastReadSeq, latestReadableSequence(in: conversations[index]))
-            conversations[index].unread = 0
-            conversations[index].hasUnreadReaction = false
-            conversations[index].unreadReactionCount = 0
-            conversations[index].firstUnreadSeq = 0
-            conversations[index].firstUnreadMessageID = ""
-            conversations[index].unreadAnchorSeq = 0
-            conversations[index].unreadAnchorState = "none"
+            let readSeq = latestReadableSequence(in: conversations[index])
+            Self.clearUnreadFields(in: &conversations[index], through: readSeq)
         }
+    }
+
+    private static func clearUnreadFields(in conversation: inout Conversation, through readSeq: Int64) {
+        conversation.lastReadSeq = max(conversation.lastReadSeq, readSeq)
+        conversation.unread = 0
+        conversation.hasUnreadReaction = false
+        conversation.unreadReactionCount = 0
+        conversation.firstUnreadSeq = 0
+        conversation.firstUnreadMessageID = ""
+        conversation.unreadAnchorSeq = 0
+        conversation.unreadAnchorState = "none"
     }
 
     func clearUnread(conversationID: String, isSystemConversationID: (String) -> Bool) {
@@ -3530,23 +3575,35 @@ final class ConversationStore: ObservableObject {
     func advanceRead(conversationID: String, through confirmedSeq: Int64) {
         guard confirmedSeq > 0,
               let index = conversations.firstIndex(where: { $0.id == conversationID }) else { return }
-        let latestSeq = latestReadableSequence(in: conversations[index])
-        let boundedSeq = min(confirmedSeq, latestSeq)
-        let previousReadSeq = conversations[index].lastReadSeq
-        // WDT_CHAT_UNREAD_BADGE_20261021_BEGIN: an idempotent tail ACK may still need to reconcile a stale badge.
-        guard boundedSeq > 0, boundedSeq >= previousReadSeq else { return }
+        var conversation = conversations[index]
+        if advanceRead(in: &conversation, through: confirmedSeq) {
+            conversations[index] = conversation
+        }
+    }
+
+    @discardableResult
+    func advanceRead(in conversation: inout Conversation, through confirmedSeq: Int64, restoringConfirmedRead: Bool = false) -> Bool {
         // The readable prefix may stop at a coverage gap before the known tail.
         let knownTailSeq = max(
-            conversations[index].lastMsgSeq,
+            conversation.lastMsgSeq,
             // JHT_MOD_BEGIN APPSTATE_CHANNEL_SEQ_SCAN_PERF_20260913 - 修改开始：避免已读推进时生成序号临时数组
-            ConversationSequenceInspector.maximumChannelSeq(in: conversations[index].messages) ?? 0
+            ConversationSequenceInspector.maximumChannelSeq(in: conversation.messages) ?? 0
             // JHT_MOD_END APPSTATE_CHANNEL_SEQ_SCAN_PERF_20260913 - 修改结束
         )
+        let readableSeq = latestReadableSequence(in: conversation)
+        // A persisted server ACK can cover the cached tail even when its messages aren't loaded.
+        let latestSeq = restoringConfirmedRead && confirmedSeq >= knownTailSeq
+            ? max(readableSeq, knownTailSeq)
+            : readableSeq
+        let boundedSeq = min(confirmedSeq, latestSeq)
+        let previousReadSeq = conversation.lastReadSeq
+        // WDT_CHAT_UNREAD_BADGE_20261021_BEGIN: an idempotent tail ACK may still need to reconcile a stale badge.
+        guard boundedSeq > 0, boundedSeq >= previousReadSeq else { return false }
         guard boundedSeq < max(latestSeq, knownTailSeq) else {
-            let current = conversations[index]
+            let current = conversation
             // A repeated message ACK is not proof that newly arrived reactions were read.
             guard boundedSeq > previousReadSeq
-                || (!current.hasUnreadReaction && current.unreadReactionCount == 0) else { return }
+                || (!current.hasUnreadReaction && current.unreadReactionCount == 0) else { return false }
             guard boundedSeq > previousReadSeq
                 || current.unread != 0
                 || current.hasUnreadReaction
@@ -3554,58 +3611,61 @@ final class ConversationStore: ObservableObject {
                 || current.firstUnreadSeq != 0
                 || !current.firstUnreadMessageID.isEmpty
                 || current.unreadAnchorSeq != 0
-                || current.unreadAnchorState != "none" else { return }
-            clearUnread(conversationID: conversationID, includeSystemConversations: false)
-            return
+                || current.unreadAnchorState != "none" else { return false }
+            Self.clearUnreadFields(in: &conversation, through: latestSeq)
+            return true
         }
-        guard boundedSeq > previousReadSeq else { return }
-        conversations[index].lastReadSeq = boundedSeq
+        guard boundedSeq > previousReadSeq else { return false }
+        conversation.lastReadSeq = boundedSeq
         // WDT_CHAT_UNREAD_BADGE_20261021_END
 
-        let previousUnread = conversations[index].unread
-        let acknowledgedIncomingCount = conversations[index].messages.filter { message in
+        let previousUnread = conversation.unread
+        let acknowledgedIncomingCount = conversation.messages.filter { message in
             !message.isOutgoing
                 && message.channelSeq > previousReadSeq
                 && message.channelSeq <= boundedSeq
         }.count
-        let remainingIncoming = conversations[index].messages
+        let remainingIncoming = conversation.messages
             .filter { !$0.isOutgoing && $0.channelSeq > boundedSeq }
             .sorted { $0.channelSeq < $1.channelSeq }
-        let unresolvedReactionMinimum = conversations[index].hasUnreadReaction
-            || conversations[index].unreadReactionCount > 0
-            ? max(1, conversations[index].unreadReactionCount)
+        let unresolvedReactionMinimum = conversation.hasUnreadReaction
+            || conversation.unreadReactionCount > 0
+            ? max(1, conversation.unreadReactionCount)
             : 0
-        conversations[index].unread = max(
+        conversation.unread = max(
             unresolvedReactionMinimum,
             max(remainingIncoming.count, max(0, previousUnread - acknowledgedIncomingCount))
         )
         if let firstUnread = remainingIncoming.first {
-            if conversations[index].firstUnreadSeq <= boundedSeq
-                || conversations[index].firstUnreadSeq >= firstUnread.channelSeq {
-                conversations[index].firstUnreadSeq = firstUnread.channelSeq
-                conversations[index].firstUnreadMessageID = firstUnread.id
+            if conversation.firstUnreadSeq <= boundedSeq
+                || conversation.firstUnreadSeq >= firstUnread.channelSeq {
+                conversation.firstUnreadSeq = firstUnread.channelSeq
+                conversation.firstUnreadMessageID = firstUnread.id
             }
-            if conversations[index].unreadAnchorSeq <= boundedSeq {
-                conversations[index].unreadAnchorSeq = conversations[index].firstUnreadSeq
+            if conversation.unreadAnchorSeq <= boundedSeq {
+                conversation.unreadAnchorSeq = conversation.firstUnreadSeq
             }
-        } else if conversations[index].firstUnreadSeq <= boundedSeq {
-            conversations[index].firstUnreadSeq = 0
-            conversations[index].firstUnreadMessageID = ""
-            if conversations[index].unreadAnchorSeq <= boundedSeq {
-                conversations[index].unreadAnchorSeq = 0
+        } else if conversation.firstUnreadSeq <= boundedSeq {
+            conversation.firstUnreadSeq = 0
+            conversation.firstUnreadMessageID = ""
+            if conversation.unreadAnchorSeq <= boundedSeq {
+                conversation.unreadAnchorSeq = 0
             }
         }
-        if conversations[index].unread == 0 {
-            conversations[index].unreadAnchorState = "none"
+        if conversation.unread == 0 {
+            conversation.unreadAnchorState = "none"
         }
+        return true
     }
 
     func replaceSystemConversation(_ buildConversation: (Conversation?) -> Conversation?) {
         let previousSystem = conversations.first(where: { $0.kind == .system && $0.id == "system_notification" })
             ?? conversations.first(where: { $0.kind == .system })
-        conversations.removeAll { $0.kind == .system }
-        guard let conversation = buildConversation(previousSystem) else { return }
-        conversations.insert(conversation, at: 0)
+        var next = conversations.filter { $0.kind != .system }
+        if let conversation = buildConversation(previousSystem) {
+            next.insert(conversation, at: 0)
+        }
+        publishConversationsIfChanged(next)
     }
 
     func removeDirectConversations(

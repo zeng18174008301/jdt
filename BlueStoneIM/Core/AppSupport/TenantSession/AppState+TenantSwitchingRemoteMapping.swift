@@ -1063,7 +1063,7 @@ extension AppState {
         readStamp: ProfileContactReadStamp?
     ) {
         let applyStart = CFAbsoluteTimeGetCurrent()
-        print("[JHT Perf] contacts_apply_start input=\(relations.count) existing=\(contacts.count) blacklist=\(blacklist.count)")
+        DebugConsoleDiagnostics.trace("[JHT Perf] contacts_apply_start input=\(relations.count) existing=\(contacts.count) blacklist=\(blacklist.count)")
         let existing = contacts.reduce(into: [String: IMUser]()) { result, user in
             let key = user.id.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !key.isEmpty, result[key] == nil else { return }
@@ -1237,19 +1237,19 @@ extension AppState {
             }
         }
         if droppedDuplicateCount > 0 {
-            print("[JHT Perf] contacts_sync_dedupe dropped=\(droppedDuplicateCount) input=\(relations.count)")
+            DebugConsoleDiagnostics.trace("[JHT Perf] contacts_sync_dedupe dropped=\(droppedDuplicateCount) input=\(relations.count)")
         }
         let mapMs = Int((CFAbsoluteTimeGetCurrent() - applyStart) * 1000)
-        print("[JHT Perf] contacts_apply_rows_ready count=\(nextContacts.count) map_ms=\(mapMs)")
+        DebugConsoleDiagnostics.trace("[JHT Perf] contacts_apply_rows_ready count=\(nextContacts.count) map_ms=\(mapMs)")
         contacts = nextContacts
         contactRemarks = nextRemarks
         contactCardOriginalNamesByScopedUserKey = nextContactCardOriginalNames
         canonicalFriendUIDsByIdentity = nextCanonicalFriendUIDsByIdentity
         canonicalFriendUIDIdentityScope = scope
         contactStore.markFriendRelationsLoaded()
-        print("[JHT Perf] contacts_apply_store_updated count=\(contacts.count)")
+        DebugConsoleDiagnostics.trace("[JHT Perf] contacts_apply_store_updated count=\(contacts.count)")
         let totalMs = Int((CFAbsoluteTimeGetCurrent() - applyStart) * 1000)
-        print("[JHT Perf] contacts_apply_done count=\(contacts.count) total_ms=\(totalMs)")
+        DebugConsoleDiagnostics.trace("[JHT Perf] contacts_apply_done count=\(contacts.count) total_ms=\(totalMs)")
         scheduleContactsPostApplyReconciliation(reason: "contacts_sync")
         commitAuthoritativeProfileContactProjection(scope: scope, reason: "friends_read")
     }
@@ -1287,7 +1287,7 @@ extension AppState {
             self.logContactsPostApplyReconciliationPhase("reapply_avatar_realtime_projections", startedAt: phaseStart, reason: reason)
             // JHT_MOD_END CONTACTS_POST_APPLY_RECONCILE_ASYNC_SLICE_PERF_20260912 - 修改结束
             let totalMs = Int((CFAbsoluteTimeGetCurrent() - start) * 1000)
-            print("[JHT Perf] contacts_post_apply_reconcile_done reason=\(reason) contacts=\(self.contacts.count) conversations=\(self.conversations.count) total_ms=\(totalMs)")
+            DebugConsoleDiagnostics.trace("[JHT Perf] contacts_post_apply_reconcile_done reason=\(reason) contacts=\(self.contacts.count) conversations=\(self.conversations.count) total_ms=\(totalMs)")
             if self.contactsPostApplyReconciliationGeneration == generation {
                 self.contactsPostApplyReconciliationTask = nil
             }
@@ -1311,7 +1311,7 @@ extension AppState {
     private func logContactsPostApplyReconciliationPhase(_ phase: String, startedAt: CFAbsoluteTime, reason: String) {
         #if DEBUG
         let elapsedMs = Int((CFAbsoluteTimeGetCurrent() - startedAt) * 1000)
-        print("[JHT Perf] contacts_post_apply_reconcile_phase phase=\(phase) reason=\(reason) elapsed_ms=\(elapsedMs)")
+        DebugConsoleDiagnostics.trace("[JHT Perf] contacts_post_apply_reconcile_phase phase=\(phase) reason=\(reason) elapsed_ms=\(elapsedMs)")
         #endif
     }
     // JHT_MOD_END CONTACTS_POST_APPLY_RECONCILE_ASYNC_SLICE_PERF_20260912 - 修改结束
@@ -1382,7 +1382,7 @@ extension AppState {
         }
         blacklist = nextBlacklist
         if droppedDuplicateCount > 0 {
-            print("[JHT Perf] blacklist_sync_dedupe dropped=\(droppedDuplicateCount) input=\(relations.count)")
+            DebugConsoleDiagnostics.trace("[JHT Perf] blacklist_sync_dedupe dropped=\(droppedDuplicateCount) input=\(relations.count)")
         }
         let scope = remoteDataScopeKey(for: apiContext)
         commitAuthoritativeProfileContactProjection(scope: scope, reason: "blacklist_read")

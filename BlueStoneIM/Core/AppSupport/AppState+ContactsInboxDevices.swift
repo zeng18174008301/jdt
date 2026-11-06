@@ -1372,7 +1372,7 @@ extension AppState {
                     return self.rtcRefreshLoopIntervalNanoseconds()
                 }
                 await MainActor.run { [weak self] in
-                    self?.voiceDebug("refresh_loop_tick interval_ms=\(interval / 1_000_000)")
+                    self?.voiceDebug(routine: true, "refresh_loop_tick interval_ms=\(interval / 1_000_000)")
                 }
                 try? await Task.sleep(nanoseconds: interval)
                 guard !Task.isCancelled else { break }
@@ -1611,7 +1611,7 @@ extension AppState {
         if rtcSignalingRefreshPendingScope == scope {
             rtcSignalingRefreshPendingScope = nil
         }
-        voiceDebug("refresh_signaling_start context=\(Self.rtcDebugContextSummary(context))")
+        voiceDebug(routine: true, "refresh_signaling_start context=\(Self.rtcDebugContextSummary(context))")
         // JHT_MOD_BEGIN IOS_RTC_REQUEST_BACKOFF_20260910
         if let delay = discoveryBackoffDelayNanoseconds(for: .events) {
             voiceDebug("events_refresh_skip gate=backoff delay_ms=\(delay / 1_000_000)")
@@ -1644,7 +1644,7 @@ extension AppState {
             recordRTCDiscoveryRefreshResult(result.calls, endpoint: .calls)
         }
         // JHT_MOD_END IOS_RTC_REQUEST_BACKOFF_20260910
-        voiceDebug("refresh_signaling_done context=\(Self.rtcDebugContextSummary(context))")
+        voiceDebug(routine: true, "refresh_signaling_done context=\(Self.rtcDebugContextSummary(context))")
         return result
     }
 

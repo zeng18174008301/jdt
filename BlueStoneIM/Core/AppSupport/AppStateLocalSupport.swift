@@ -12,6 +12,21 @@ import UniformTypeIdentifiers
 import os
 import CryptoKit
 
+enum DebugConsoleDiagnostics {
+    nonisolated static let verbose: Bool = {
+#if DEBUG
+        ProcessInfo.processInfo.arguments.contains("-WDTVerboseDiagnostics")
+#else
+        false
+#endif
+    }()
+
+    nonisolated static func trace(_ message: @autoclosure () -> String) {
+        guard verbose else { return }
+        print(message())
+    }
+}
+
 struct RealtimeMessageIngestBuffer {
     struct GroupedMessages {
         let scopeKey: String
@@ -294,6 +309,14 @@ enum AppStateTimeFormatter {
 // JHT_MOD_BEGIN APPSTATE_REMOTE_CONVERSATION_TIME_DECOUPLE_PERF_20260913 - 修改开始：远端会话时间/排序纯计算从 AppState 拆出
 enum RemoteConversationTimelineMapper {
     static func activityDate(remote: RemoteConversation, previous: Conversation?) -> Date? {
+        let hasMessageTime = !(remote.lastMessageAt ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        if let previous, previous.sortTimestamp > 0,
+           latestSeq(remote: remote) <= previous.lastMsgSeq,
+           previous.lastMsgSeq > 0 || (remote.lastMessage == nil && !hasMessageTime) {
+            // Metadata refreshes can advance last_activity_at/updated_at
+            // without adding a message. Keep the existing message order.
+            return Date(timeIntervalSince1970: previous.sortTimestamp)
+        }
         let remoteCandidates = sortTimeCandidates(remote)
         for candidate in remoteCandidates where !AppStateTimeFormatter.isTimeOnlyRemoteValue(candidate) {
             if let date = AppStateTimeFormatter.parseRemoteDate(candidate) {
@@ -365,8 +388,8 @@ enum RemoteConversationTimelineMapper {
     private static func sortTimeCandidates(_ remote: RemoteConversation) -> [String?] {
         [
             remote.lastMessageAt,
-            remote.lastActivityAt,
             remote.lastMessage?.createdAt,
+            remote.lastActivityAt,
             remote.updatedAt
         ]
     }
@@ -425,11 +448,6 @@ enum RemoteConversationCanonicalizer {
 // JHT_MOD_END APPSTATE_REMOTE_CONVERSATION_CANONICALIZER_PERF_20260913 - 修改结束
 
 // JHT_MOD_BEGIN APPSTATE_CHANNEL_IDENTITY_MAPPER_SPLIT_20260913 - 修改开始：频道/会话 ID 纯映射从 AppState 拆出，保留原有规则
-struct ConversationChannelGroupIdentity: Sendable {
-    let id: String
-    let name: String
-}
-
 enum ConversationChannelIdentityMapper {
     static func user(_ user: IMUser, matchesIdentifier identifier: String) -> Bool {
         let normalizedID = identifier.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -460,7 +478,6 @@ enum ConversationChannelIdentityMapper {
         for conversation: Conversation,
         currentUser: IMUser,
         apiIMUID: String?,
-        groups: [ConversationChannelGroupIdentity],
         lookup: ConversationUserLookup? = nil,
         fallbackCanonicalParticipantID: ((String) -> String)? = nil
     ) -> String {
@@ -496,7 +513,8 @@ enum ConversationChannelIdentityMapper {
             }
             return [currentID, canonicalPeer].sorted().joined(separator: ":")
         case .group:
-            return groups.first(where: { $0.id == conversation.id || $0.name == conversation.title })?.id ?? conversation.id
+            // Group titles are mutable and multiple channels can share a title.
+            return conversation.id
         case .system:
             return "system_notification"
         }
@@ -2797,8 +2815,7 @@ final class AttachmentDownloadProgressDelegate: NSObject, URLSessionDownloadDele
     private var task: URLSessionDownloadTask?
     private var didFinish = false
     // JHT_MOD_BEGIN CHAT_HISTORY_SYNC_UI_PERF_BEGIN_ATTACHMENT_DOWNLOAD_CALLBACK_THROTTLE_STATE - 修改开始：下载回调进度节流状态，减少图片下载时主线程进度任务堆积
-    private var lastProgressEmissionFraction: Double = 0
-    private var lastProgressEmissionAt: CFAbsoluteTime = 0
+    private var lastByteProgressEmissionAt: TimeInterval?
     // JHT_MOD_END CHAT_HISTORY_SYNC_UI_PERF_END_ATTACHMENT_DOWNLOAD_CALLBACK_THROTTLE_STATE - 修改结束：下载回调进度节流状态，减少图片下载时主线程进度任务堆积
 
     init(
@@ -2835,9 +2852,7 @@ final class AttachmentDownloadProgressDelegate: NSObject, URLSessionDownloadDele
                 self.session = session
                 self.task = task
                 lock.unlock()
-                // JHT_MOD_BEGIN CHAT_HISTORY_SYNC_UI_PERF_BEGIN_ATTACHMENT_DOWNLOAD_CALLBACK_THROTTLE_START - 修改开始：初始下载进度走统一节流入口
-                emitProgress(0)
-                // JHT_MOD_END CHAT_HISTORY_SYNC_UI_PERF_END_ATTACHMENT_DOWNLOAD_CALLBACK_THROTTLE_START - 修改结束：初始下载进度走统一节流入口
+                progress(0)
                 task.resume()
             }
         } onCancel: {
@@ -2863,7 +2878,7 @@ final class AttachmentDownloadProgressDelegate: NSObject, URLSessionDownloadDele
         let total = totalBytesExpectedToWrite > 0 ? totalBytesExpectedToWrite : expectedSizeBytes
         let snapshot = AttachmentDownloadSnapshot(receivedBytes: totalBytesWritten, totalBytes: total)
         let fraction = total.flatMap { $0 > 0 ? Double(totalBytesWritten) / Double($0) : nil }
-        guard nextProgressEmission(fraction ?? 0) != nil else { return }
+        guard shouldEmitByteProgress() else { return }
         byteProgress(snapshot)
         if let fraction { progress(max(0, min(fraction, 1))) }
     }
@@ -2890,9 +2905,7 @@ final class AttachmentDownloadProgressDelegate: NSObject, URLSessionDownloadDele
             guard AttachmentDownloadCachePolicy.canReuseCachedDownload(at: destination, expectedSizeBytes: expectedSizeBytes) else {
                 throw CocoaError(.fileReadCorruptFile)
             }
-            // JHT_MOD_BEGIN CHAT_HISTORY_SYNC_UI_PERF_BEGIN_ATTACHMENT_DOWNLOAD_CALLBACK_THROTTLE_FINISH - 修改开始：完成进度仍即时发出
-            emitProgress(1)
-            // JHT_MOD_END CHAT_HISTORY_SYNC_UI_PERF_END_ATTACHMENT_DOWNLOAD_CALLBACK_THROTTLE_FINISH - 修改结束：完成进度仍即时发出
+            progress(1)
             finish(.success(destination))
         } catch {
             finish(.failure(error))
@@ -2906,31 +2919,16 @@ final class AttachmentDownloadProgressDelegate: NSObject, URLSessionDownloadDele
         session.finishTasksAndInvalidate()
     }
 
-    // JHT_MOD_BEGIN CHAT_HISTORY_SYNC_UI_PERF_BEGIN_ATTACHMENT_DOWNLOAD_CALLBACK_THROTTLE_HELPER - 修改开始：下载进度回调节流，保留开始/完成并合并高频小幅变化
-    private func emitProgress(_ fraction: Double) {
-        guard let fraction = nextProgressEmission(fraction) else { return }
-        progress(fraction)
-    }
-
-    private func nextProgressEmission(
-        _ fraction: Double,
-        minimumDelta: Double = 0.025,
-        minimumInterval: CFTimeInterval = 0.12
-    ) -> Double? {
-        let boundedFraction = max(0, min(fraction, 1))
-        let now = CFAbsoluteTimeGetCurrent()
+    private func shouldEmitByteProgress() -> Bool {
+        let now = ProcessInfo.processInfo.systemUptime
         lock.lock()
         defer { lock.unlock() }
-        let shouldEmit = lastProgressEmissionAt == 0
-            || boundedFraction >= 0.995
-            || abs(boundedFraction - lastProgressEmissionFraction) >= minimumDelta
-            || now - lastProgressEmissionAt >= minimumInterval
-        guard shouldEmit else { return nil }
-        lastProgressEmissionFraction = boundedFraction
-        lastProgressEmissionAt = now
-        return boundedFraction
+        // Byte updates reach the main actor. A fast transfer must still honor
+        // the interval, even when each callback advances several percent.
+        if let lastByteProgressEmissionAt, now - lastByteProgressEmissionAt < 0.12 { return false }
+        lastByteProgressEmissionAt = now
+        return true
     }
-    // JHT_MOD_END CHAT_HISTORY_SYNC_UI_PERF_END_ATTACHMENT_DOWNLOAD_CALLBACK_THROTTLE_HELPER - 修改结束：下载进度回调节流，保留开始/完成并合并高频小幅变化
 
     private func finish(_ result: Result<URL, Error>) {
         lock.lock()

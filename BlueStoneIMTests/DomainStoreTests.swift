@@ -120,6 +120,89 @@ final class DomainStoreTests: XCTestCase {
         XCTAssertEqual(store.conversations.count, 1001)
     }
 
+    // WDT_CONVERSATION_LIST_STABILITY_20261103_BEGIN
+    func testRepeatedGroupDirectoryRefreshPreservesSnapshotSummaryAndOrder() throws {
+        let store = ConversationStore()
+        let boundary = ConversationStore.HistoryVisibilityBoundary(fromSeq: 1, limited: false, confirmed: true)
+        var older = makeMessage(id: "cached-old", seq: 7, time: "10:00", kind: .video)
+        older.createdAt = Date(timeIntervalSince1970: 100)
+        var snapshot = makeConversation(id: "group", kind: .group, unread: 3, lastMsgSeq: 8, lastReadSeq: 5)
+        snapshot.historyBoundaryConfirmed = true
+        snapshot.lastMessage = "latest.mp4"
+        snapshot.time = "11:00"
+        snapshot.sortTimestamp = 300
+        var other = makeConversation(id: "other", unread: 0, lastMsgSeq: 1, lastReadSeq: 1)
+        other.sortTimestamp = 200
+        var pinned = makeConversation(id: "pinned", unread: 0, lastMsgSeq: 1, lastReadSeq: 1)
+        pinned.isPinned = true
+        pinned.sortTimestamp = 50
+        let remote = try decodeRemoteConversation("""
+        {"channel_id":"group","channel_type":"group","last_msg_seq":8,"unread_count":3}
+        """)
+        for cachedMessages in [[ChatMessage](), [older]] {
+            snapshot.messages = cachedMessages
+            store.conversations = [pinned, snapshot, other]
+            for _ in 0..<3 {
+                _ = store.mergeRemoteConversationList(
+                    entries: [.init(channelID: snapshot.id, remote: remote, conversation: snapshot)],
+                    replacing: false,
+                    channelIDForConversation: { $0.id }
+                )
+                XCTAssertFalse(store.applyHistoryVisibilityBoundary(
+                    channelID: snapshot.id, boundary: boundary, channelIDForConversation: { $0.id }
+                ))
+                let refreshed = try XCTUnwrap(store.conversations.first(where: { $0.id == snapshot.id }))
+                XCTAssertEqual(refreshed, snapshot)
+                XCTAssertEqual(store.conversations.sorted(by: store.conversationListPrecedes).map(\.id),
+                               [pinned.id, snapshot.id, other.id])
+                XCTAssertNil(conversationListMessageTimestamp(refreshed))
+            }
+        }
+    }
+
+    func testUnchangedGroupBoundaryStillFiltersIneligibleMessagesAndUnread() throws {
+        let store = ConversationStore()
+        var conversation = makeConversation(id: "group", kind: .group, unread: 3, lastMsgSeq: 8, lastReadSeq: 0)
+        conversation.historyVisibleFromSeq = 8
+        conversation.historyLimited = true
+        conversation.historyBoundaryConfirmed = true
+        conversation.lastMessage = "hidden"
+        conversation.sortTimestamp = 300
+        var visible = makeMessage(id: "visible", seq: 8)
+        visible.createdAt = Date(timeIntervalSince1970: 100)
+        conversation.messages = [makeMessage(id: "hidden", seq: 7), visible]
+        let bounded = try XCTUnwrap(store.applyingHistoryVisibilityBoundary(
+            .init(fromSeq: 8, limited: true, confirmed: true), to: conversation
+        ))
+        XCTAssertEqual(bounded.messages.map(\.id), [visible.id])
+        XCTAssertEqual(bounded.lastMessage, visible.text)
+        XCTAssertEqual(bounded.sortTimestamp, 100)
+        XCTAssertEqual(bounded.unread, 0)
+        XCTAssertEqual(bounded.firstUnreadSeq, 0)
+    }
+    func testUnchangedGroupBoundaryPreservesSummaryWithoutSkippingUnreadCleanup() throws {
+        let store = ConversationStore()
+        var conversation = makeConversation(id: "group", kind: .group, unread: 3, lastMsgSeq: 10, lastReadSeq: 0)
+        conversation.historyVisibleFromSeq = 8
+        conversation.historyLimited = true
+        conversation.historyBoundaryConfirmed = true
+        conversation.lastMessage = "latest.mp4"
+        conversation.time = "11:00"
+        conversation.sortTimestamp = 300
+        conversation.messages = [makeMessage(id: "visible", seq: 8)]
+        let bounded = try XCTUnwrap(store.applyingHistoryVisibilityBoundary(
+            .init(fromSeq: 8, limited: true, confirmed: true), to: conversation
+        ))
+        XCTAssertEqual(bounded.messages, conversation.messages)
+        XCTAssertEqual(bounded.lastMessage, conversation.lastMessage)
+        XCTAssertEqual(bounded.time, conversation.time)
+        XCTAssertEqual(bounded.sortTimestamp, conversation.sortTimestamp)
+        XCTAssertEqual(bounded.lastMsgSeq, 10)
+        XCTAssertEqual(bounded.unread, 0)
+        XCTAssertEqual(bounded.firstUnreadSeq, 0)
+    }
+    // WDT_CONVERSATION_LIST_STABILITY_20261103_END
+
     func testGroupHistoryFallbackDoesNotNormalizeUnrelatedDirectPeers() {
         let store = ConversationStore()
         store.conversations = (0..<1000).map { makeConversation(id: "direct-only-\($0)", kind: .direct, unread: 0, lastMsgSeq: 1, lastReadSeq: 1) }
@@ -694,6 +777,64 @@ final class DomainStoreTests: XCTestCase {
             ),
             16
         )
+    }
+
+    func testConversationStorePublishesUnreadTotalFromTheCurrentSnapshot() {
+        let store = ConversationStore()
+        var totals: [Int] = []
+        let observation = store.$alertingUnreadTotal.sink { totals.append($0) }
+        defer { observation.cancel() }
+
+        let unread = makeConversation(id: "unread", unread: 125, lastMsgSeq: 125, lastReadSeq: 0)
+        var muted = makeConversation(id: "muted", unread: 25, lastMsgSeq: 25, lastReadSeq: 0)
+        muted.isMuted = true
+        store.conversations = [unread, muted]
+        store.conversations[0].title = "Updated title"
+        store.conversations[0].unread = 0
+
+        XCTAssertEqual(totals, [0, 125, 0])
+        XCTAssertEqual(store.alertingUnreadTotal, 0)
+    }
+
+    func testAttachmentMetadataPublishesOneCompleteConversationUpdate() {
+        let store = ConversationStore()
+        var conversation = makeConversation(id: "chat", unread: 0, lastMsgSeq: 1, lastReadSeq: 1)
+        let message = makeMessage(id: "image", seq: 1)
+        conversation.messages = [message]
+        store.conversations = [conversation]
+        var received: [ChatMessage] = []
+        let observer = store.$conversations.dropFirst().sink { received.append($0[0].messages[0]) }
+        defer { observer.cancel() }
+        var updated = message
+        updated.attachmentName = "image.jpg"
+        updated.attachmentWidth = 640
+        updated.attachmentHeight = 480
+        updated.attachmentVersion = "2"
+
+        _ = store.updateMessageAttachment(updated, conversationID: conversation.id)
+        _ = store.updateMessageAttachment(updated, conversationID: conversation.id)
+
+        XCTAssertEqual(received, [updated])
+    }
+
+    func testConversationPageKeepsUnreadForDistinctGroupsWithTheSameName() throws {
+        let state = AppState(voiceMediaClient: NoopVoiceMediaClient(), apiContextOverride: makeAuthenticatedAPIContext())
+        state.groups = ["group-a", "group-b"].map {
+            GroupInfo(id: $0, name: "同名群", notice: "", owner: "", members: [], admins: [], muted: false, allMuted: false)
+        }
+        var first = makeConversation(id: "group-a", kind: .group, unread: 70, lastMsgSeq: 70, lastReadSeq: 0)
+        var second = makeConversation(id: "group-b", kind: .group, unread: 45, lastMsgSeq: 45, lastReadSeq: 0)
+        first.title = "同名群"
+        second.title = first.title
+        state.conversationStore.hydrateCachedConversations([first, second])
+        let page = try JSONDecoder().decode([RemoteConversation].self, from: Data("""
+        [{"channel_id":"group-a","channel_type":"group","last_msg_seq":70,"unread_count":70}]
+        """.utf8))
+
+        state.applyRemoteConversations(page, replacing: false)
+
+        XCTAssertEqual(Set(state.conversations.map(\.id)), ["group-a", "group-b"])
+        XCTAssertEqual(state.conversationStore.alertingUnreadTotal, 115)
     }
 
     func testAcceptedLoginTenantEntryCannotPresentAWorkBenchBlockingSplash() {
@@ -3774,6 +3915,15 @@ final class DomainStoreTests: XCTestCase {
         XCTAssertTrue(transport.requestPaths().isEmpty)
     }
 
+    func testConversationMetadataRefreshPreservesKnownMessageOrder() throws {
+        var previous = makeConversation(id: "group-a", kind: .group, unread: 0, lastMsgSeq: 42, lastReadSeq: 42)
+        previous.sortTimestamp = 1_700_000_000
+        let unchanged = try decodeRemoteConversation(#"{"channel_id":"group-a","channel_type":"group","last_msg_seq":42,"updated_at":"2026-11-05T08:00:00Z"}"#)
+        let advanced = try decodeRemoteConversation(#"{"channel_id":"group-a","channel_type":"group","last_msg_seq":43,"last_message_at":"2026-11-05T08:00:00Z"}"#)
+        XCTAssertEqual(RemoteConversationTimelineMapper.sortTimestamp(remote: unchanged, previous: previous), previous.sortTimestamp)
+        XCTAssertGreaterThan(RemoteConversationTimelineMapper.sortTimestamp(remote: advanced, previous: previous), previous.sortTimestamp)
+    }
+
     func testConversationListNormalizesFutureTimeOnlySortTimestamp() throws {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!
@@ -3784,43 +3934,6 @@ final class DomainStoreTests: XCTestCase {
         let timestamp = conversationListNormalizedTimestamp(staleToday.timeIntervalSince1970, now: now, calendar: calendar)
 
         XCTAssertEqual(timestamp, expected.timeIntervalSince1970, accuracy: 0.5)
-    }
-
-    func testConversationListActivityDecisionScrollsOrHintsOnlyForRealOrderChanges() {
-        // 近顶时列表顶部锚定,重排结果天然可见;程序化回顶会打断真机拖拽手势,
-        // 因此近顶的排序变化不再触发任何动作。
-        XCTAssertEqual(
-            conversationListActivityDecision(
-                previousOrder: ["old", "new"],
-                nextOrder: ["new", "old"],
-                isNearTop: true
-            ),
-            .none
-        )
-        XCTAssertEqual(
-            conversationListActivityDecision(
-                previousOrder: ["old", "new"],
-                nextOrder: ["new", "old"],
-                isNearTop: false
-            ),
-            .showHint
-        )
-        XCTAssertEqual(
-            conversationListActivityDecision(
-                previousOrder: [],
-                nextOrder: ["new"],
-                isNearTop: false
-            ),
-            .none
-        )
-        XCTAssertEqual(
-            conversationListActivityDecision(
-                previousOrder: ["new", "old"],
-                nextOrder: ["new", "old"],
-                isNearTop: false
-            ),
-            .none
-        )
     }
 
     func testConversationUnreadStateKeepsReactionUnreadAfterLocalReadThrough() {
@@ -8007,6 +8120,45 @@ final class DomainStoreTests: XCTestCase {
         XCTAssertEqual(store.conversations[0], conversation)
     }
     // WDT_CHAT_UNREAD_BADGE_20261021_END
+
+    func testCachedConversationsApplyConfirmedReadsBeforePublishingUnreadBadges() {
+        let state = AppState(voiceMediaClient: NoopVoiceMediaClient(), apiContextOverride: makeAuthenticatedAPIContext())
+        var stale = makeConversation(id: "cached-group", kind: .group, unread: 2, lastMsgSeq: 2, lastReadSeq: 0)
+        stale.hasUnreadReaction = false
+        stale.unreadReactionCount = 0
+        stale.messageCoverageRequiresRecovery = true
+        var newer = makeConversation(id: "newer-group", kind: .group, unread: 3, lastMsgSeq: 3, lastReadSeq: 0)
+        newer.hasUnreadReaction = false
+        newer.unreadReactionCount = 0
+        newer.messages = (1...3).map { makeMessage(id: "m\($0)", seq: Int64($0)) }
+        let projected = state.cachedConversationsApplyingConfirmedReads(
+            [stale, newer],
+            confirmedReads: [stale.id: 2, newer.id: 2]
+        )
+
+        XCTAssertEqual(projected.map(\.lastReadSeq), [2, 2])
+        XCTAssertEqual(projected.map(\.unread), [0, 1])
+        XCTAssertEqual(projected[1].firstUnreadSeq, 3)
+    }
+
+    func testCachedConversationDoesNotRestoreOldUnreadCountWithoutSeparateAck() {
+        let state = AppState(voiceMediaClient: NoopVoiceMediaClient(), apiContextOverride: makeAuthenticatedAPIContext())
+        var read = makeConversation(id: "read", kind: .group, unread: 150, lastMsgSeq: 300, lastReadSeq: 300)
+        read.hasUnreadReaction = false
+        read.unreadReactionCount = 0
+        var newer = makeConversation(id: "newer", kind: .group, unread: 150, lastMsgSeq: 302, lastReadSeq: 300)
+        newer.hasUnreadReaction = false
+        newer.unreadReactionCount = 0
+        var reaction = read
+        reaction.hasUnreadReaction = true
+        reaction.unreadReactionCount = 1
+
+        let projected = state.cachedConversationsApplyingConfirmedReads([read, newer, reaction], confirmedReads: [:])
+
+        XCTAssertEqual(projected.map(\.unread), [0, 2, 1])
+        XCTAssertEqual(projected[0].unreadAnchorState, "none")
+        XCTAssertTrue(projected[2].hasUnreadReaction)
+    }
 
     func testConversationStoreAdvanceReadPreservesTailAcrossCoverageGapAndConvergesAfterRecovery() {
         let store = ConversationStore()
@@ -16037,6 +16189,21 @@ final class DomainStoreTests: XCTestCase {
         XCTAssertEqual(store.conversations.map(\.id), ["c1"])
     }
 
+    func testSystemInboxRefreshPublishesOnlyTheReplacementUnreadTotal() {
+        let store = ConversationStore()
+        var system = makeConversation(id: "system_notification", kind: .system, unread: 3, lastMsgSeq: 4, lastReadSeq: 1)
+        store.conversations = [system]
+        var totals: [Int] = []
+        let observation = store.$alertingUnreadTotal.sink { totals.append($0) }
+        defer { observation.cancel() }
+
+        store.replaceSystemConversation { $0 }
+        system.unread = 2
+        store.replaceSystemConversation { _ in system }
+
+        XCTAssertEqual(totals, [3, 2])
+    }
+
     func testAppStateMarkSystemConversationReadClearsUnreadWhenReadAckFails() async throws {
         let transport = SystemInboxReadHTTPTransport()
         let api = IMAPIClient(
@@ -18530,6 +18697,11 @@ final class DomainStoreTests: XCTestCase {
         XCTAssertEqual(updated[1].text, "原消息已删除")
         XCTAssertEqual(chatTimelineMessagesForRendering(updated).map(\.id), ["m1", "m2", "m3"])
         XCTAssertEqual(chatTimelineMessagesForRendering(updated, showsProcessingNotices: false).map(\.id), ["m1", "m3"])
+
+        let projectionCache = ChatTranscriptProjectionCache()
+        XCTAssertEqual(projectionCache.projection(for: cachedMessages, showsProcessingNotices: false).timeline.map(\.id), ["m1", "m2", "m3"])
+        XCTAssertEqual(projectionCache.projection(for: updated, showsProcessingNotices: false).timeline.map(\.id), ["m1", "m3"])
+        XCTAssertEqual(projectionCache.projection(for: updated, showsProcessingNotices: true).timeline.map(\.id), ["m1", "m2", "m3"])
     }
 
     func testChatDeletionCacheInvalidatesRemovalAndSameCountReplacement() {

@@ -8708,7 +8708,22 @@ struct RemoteUserDevice: Decodable {
         case appID = "app_id"
         case status
         case banned
+        case isBlocked = "is_blocked"
         case lastSeenAt = "last_seen_at"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        deviceID = try container.decode(String.self, forKey: .deviceID)
+        deviceType = try container.decode(String.self, forKey: .deviceType)
+        appID = try container.decode(String.self, forKey: .appID)
+        status = try container.decode(String.self, forKey: .status)
+        let normalizedStatus = status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        banned = try container.decodeIfPresent(Bool.self, forKey: .banned)
+            ?? container.decodeIfPresent(Bool.self, forKey: .isBlocked)
+            ?? (normalizedStatus == "banned" || normalizedStatus == "blocked")
+        lastSeenAt = try container.decodeIfPresent(String.self, forKey: .lastSeenAt)
     }
 }
 
@@ -11705,6 +11720,7 @@ struct RemoteConversation: Decodable, Sendable {
 // JHT_MOD_END APPSTATE_REMOTE_MODEL_SENDABLE_PERF_20260913 - 修改结束
     let channelID: String
     let channelType: String
+    let memberCount: Int?
     let unreadCount: Int
     let unreadReactionCount: Int
     let hasReactionUnread: Bool
@@ -11738,6 +11754,11 @@ struct RemoteConversation: Decodable, Sendable {
     enum CodingKeys: String, CodingKey {
         case channelID = "channel_id"
         case channelType = "channel_type"
+        case memberCount = "member_count"
+        case memberCountCamel = "memberCount"
+        case membersCount = "members_count"
+        case membersCountCamel = "membersCount"
+        case total
         case unreadCount = "unread_count"
         case unreadReactionCount = "unread_reaction_count"
         case hasReactionUnread = "has_reaction_unread"
@@ -11797,6 +11818,11 @@ struct RemoteConversation: Decodable, Sendable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         channelID = try container.decodeIfPresent(String.self, forKey: .channelID) ?? ""
         channelType = try container.decodeIfPresent(String.self, forKey: .channelType) ?? "direct"
+        memberCount = container.decodeLossyIntIfPresent(forKey: .memberCount)
+            ?? container.decodeLossyIntIfPresent(forKey: .memberCountCamel)
+            ?? container.decodeLossyIntIfPresent(forKey: .membersCount)
+            ?? container.decodeLossyIntIfPresent(forKey: .membersCountCamel)
+            ?? container.decodeLossyIntIfPresent(forKey: .total)
         unreadCount = max(0, try container.decodeIfPresent(Int.self, forKey: .unreadCount) ?? 0)
         unreadReactionCount = max(0, try container.decodeIfPresent(Int.self, forKey: .unreadReactionCount) ?? 0)
         hasReactionUnread = Self.decodeHasReactionUnread(from: container, fallback: unreadReactionCount > 0)

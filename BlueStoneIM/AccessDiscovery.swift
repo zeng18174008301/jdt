@@ -535,6 +535,9 @@ final class IMRuntimeRouteStore: @unchecked Sendable {
     private static let processLock = NSLock()
     private let defaults: UserDefaults
     private let prefix = "wxt.runtime.routes.v2."
+    // Accessed under processLock. Still read the persisted bytes so updates from
+    // another store (including revocation and rollback) remain visible.
+    private var lastDecodedRecord: (key: String, data: Data, value: IMRuntimeRouteAtomicRecord)?
     init(defaults: UserDefaults = .standard) { self.defaults = defaults }
 
     func record(appID: String, tenantID: String?) -> IMRuntimeRouteAtomicRecord {
@@ -555,10 +558,17 @@ final class IMRuntimeRouteStore: @unchecked Sendable {
 	}
 
     private func recordUnlocked(appID: String, tenantID: String?) -> IMRuntimeRouteAtomicRecord {
-        guard let data = defaults.data(forKey: key(appID: appID, tenantID: tenantID)),
-              let value = try? JSONDecoder().decode(IMRuntimeRouteAtomicRecord.self, from: data) else {
+        let storageKey = key(appID: appID, tenantID: tenantID)
+        guard let data = defaults.data(forKey: storageKey) else {
             return .init(current: nil, previous: nil, recoveryByService: [:])
         }
+        if let cached = lastDecodedRecord, cached.key == storageKey, cached.data == data {
+            return cached.value
+        }
+        guard let value = try? JSONDecoder().decode(IMRuntimeRouteAtomicRecord.self, from: data) else {
+            return .init(current: nil, previous: nil, recoveryByService: [:])
+        }
+        lastDecodedRecord = (storageKey, data, value)
         return value
     }
 
@@ -2687,6 +2697,7 @@ final class AccessDiscoveryManager: AccessDiscoveryManaging, @unchecked Sendable
     private var activeStartedAt: TimeInterval?
     private var directFailbackUntilByKey: [String: TimeInterval] = [:]
     private var terminallyUnavailableKeys: Set<String> = []
+    private var trustConfigurationBlockedKeys: Set<String> = []
 
     init(
         store: AccessDiscoveryStore = AccessDiscoveryStore(),
@@ -2717,6 +2728,9 @@ final class AccessDiscoveryManager: AccessDiscoveryManaging, @unchecked Sendable
            let persisted = loadPersistedSnapshot(for: key, context: context),
            persisted.expiresAt > now {
             return .cache(configVersion: persisted.response.configVersion)
+        }
+        if lock.withLock({ trustConfigurationBlockedKeys.contains(key) }) {
+            return loadPersistedOutcome(for: key, context: context)
         }
 
         let trustedPrevious = usableSnapshot(for: key, context: context) ??
@@ -2771,6 +2785,13 @@ final class AccessDiscoveryManager: AccessDiscoveryManaging, @unchecked Sendable
                 return .network(configVersion: response.configVersion)
             } catch {
                 if Task.isCancelled { return .unavailable }
+                if (error as? AccessDiscoveryTrustError) == .configurationBlocked {
+                    let firstFailure = lock.withLock { trustConfigurationBlockedKeys.insert(key).inserted }
+                    if firstFailure {
+                        print("[JHT Access] access_discovery_trust_configuration_blocked")
+                    }
+                    break
+                }
                 if Self.isTerminalDiscoveryError(error), !trustConfiguration.required {
                     markTerminallyUnavailable(key: key)
                     return .unavailable

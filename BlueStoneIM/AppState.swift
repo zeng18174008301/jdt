@@ -1235,6 +1235,7 @@ final class AppState: ObservableObject {
     // WDT_RECEIPT_DETAIL_SCOPE_20261023_BEGIN
     @Published var readReceiptDetailAuthorities: [String: ReadReceiptDetailAuthority] = [:]
     var readReceiptDetailAuthorityGeneration: UInt64 = 0
+    var resolvedMediaCacheScope: (scope: LocalMessageScope, context: IOSMediaCacheScopeContext)?
     var localMessageSessionGeneration: UInt64 = 1 {
         didSet {
             if oldValue != localMessageSessionGeneration { invalidateReadReceiptDetailAuthorities() }
@@ -1283,7 +1284,7 @@ final class AppState: ObservableObject {
     let mainShellContactsSnapshotDelayNs: UInt64 = 1_300_000_000
     let mainShellHistoryPrefetchDelayNs: UInt64 = 3_000_000_000
     let mainShellGroupBundleDelayNs: UInt64 = 4_500_000_000
-    let realtimeRecoveryRecentSnapshotCooldownSeconds: TimeInterval = 3
+    let realtimeRecoveryRecentSnapshotCooldownSeconds: TimeInterval = 30
     var lastRemoteSnapshotPrimarySyncedAt: Date?
     let mainShellBootstrapTrace = MainShellBootstrapTraceState()
 
@@ -2220,7 +2221,7 @@ final class AppState: ObservableObject {
             self.accessDiscovery.markActiveRealtimeEndpointConnected()
             self.scheduleRealtimeEndpointStableConfirmation()
             self.recordAccessDiagnosticsRealtimeConnected()
-            print("[JHT Realtime] app_connect_ack fallback=\(self.redactedRealtimeURLSummary(self.api.webSocketURL(context: self.apiContext)))")
+            DebugConsoleDiagnostics.trace("[JHT Realtime] app_connect_ack fallback=\(self.redactedRealtimeURLSummary(self.api.webSocketURL(context: self.apiContext)))")
             self.clearRealtimeReconnectNotice()
             self.resubscribeRealtimeChannels()
             if let ticket = self.localMessageTicket {

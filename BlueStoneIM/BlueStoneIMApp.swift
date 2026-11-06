@@ -2120,7 +2120,6 @@ private struct SessionRestoreView: View {
 struct MainShellView: View {
     @EnvironmentObject private var state: AppState
     // JHT_MOD_BEGIN MAIN_TAB_SWITCH_PERF_20260912 - 修改开始：Tab badge 改为缓存投影，避免 AppState 高频刷新时反复全量统计
-    @State private var cachedUnreadTotal = 0
     @State private var cachedPendingContactTaskCount = 0
     @State private var cachedUnreadAnnouncementCount = 0
     // JHT_MOD_END MAIN_TAB_SWITCH_PERF_20260912 - 修改结束
@@ -2129,18 +2128,17 @@ struct MainShellView: View {
         MainTabContainerView(
             selection: state.mainTabSelection,
             contactsTitle: state.isDepartmentFeatureEnabled ? "伙伴" : MainTab.contacts.title,
-            unreadTotal: cachedUnreadTotal,
+            unreadTotal: state.conversationStore.alertingUnreadTotal,
             pendingContactTaskCount: cachedPendingContactTaskCount,
             unreadAnnouncementCount: cachedUnreadAnnouncementCount
         )
         .onAppear {
             state.noteMainShellAppeared()
             refreshMainTabBadgeCaches()
-            IOSNotificationRuntime.shared.updateApplicationBadge(cachedUnreadTotal)
         }
         // JHT_MOD_BEGIN MAIN_TAB_SWITCH_PERF_20260912 - 修改开始：只在对应数据源变化时刷新 badge 投影
-        .onReceive(state.conversationStore.$conversations) { _ in
-            refreshConversationUnreadBadgeCache()
+        .onReceive(state.conversationStore.$alertingUnreadTotal) { total in
+            IOSNotificationRuntime.shared.updateApplicationBadge(total)
         }
         .onReceive(state.contactStore.$friendRequests) { _ in
             refreshPendingContactTaskBadgeCache()
@@ -2148,23 +2146,13 @@ struct MainShellView: View {
         .onReceive(state.contactStore.$inboxItems) { _ in
             refreshUnreadAnnouncementBadgeCache()
         }
-        .onChangeCompat(of: cachedUnreadTotal) { _, count in
-            IOSNotificationRuntime.shared.updateApplicationBadge(count)
-        }
         // JHT_MOD_END MAIN_TAB_SWITCH_PERF_20260912 - 修改结束
     }
 
     // JHT_MOD_BEGIN MAIN_TAB_SWITCH_PERF_20260912 - 修改开始：集中维护 Tab badge 缓存，降低切换时主线程计算
     private func refreshMainTabBadgeCaches() {
-        refreshConversationUnreadBadgeCache()
         refreshPendingContactTaskBadgeCache()
         refreshUnreadAnnouncementBadgeCache()
-    }
-
-    private func refreshConversationUnreadBadgeCache() {
-        let nextValue = ConversationUnreadBadgeProjection.total(state.conversations)
-        guard cachedUnreadTotal != nextValue else { return }
-        cachedUnreadTotal = nextValue
     }
 
     private func refreshPendingContactTaskBadgeCache() {

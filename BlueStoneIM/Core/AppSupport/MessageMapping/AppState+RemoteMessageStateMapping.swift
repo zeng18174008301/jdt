@@ -222,9 +222,8 @@ extension AppState {
         let error: Error?
     }
 
-    private func historyPrefetchLogID(for remote: RemoteConversation) -> String {
-        let channelID = normalizedRemoteChannelID(remote.channelID, channelType: remote.channelType)
-        if conversationKind(from: remote.channelType, channelID: channelID) != .direct {
+    private func historyPrefetchLogID(channelID: String, channelType: String) -> String {
+        if conversationKind(from: channelType, channelID: channelID) != .direct {
             return channelID
         }
         let sum = channelID.unicodeScalars.reduce(0) { ($0 &* 31) &+ Int($1.value) }
@@ -235,11 +234,14 @@ extension AppState {
         let generation = refreshSession.generation
         guard isCurrentRemoteRefresh(refreshSession, scope: scope),
               context.hasIMSession else { return }
-        let canonicalRemotes = canonicalRemoteConversations(remoteConversations)
-        let localByChannelID = conversationStore.conversationsByChannelID(channelIDForConversation: { remoteChannelID(for: $0) })
+        let lookup = makeConversationUserLookup()
+        let canonicalRemotes = canonicalRemoteConversations(remoteConversations, lookup: lookup)
+        let localByChannelID = conversationStore.conversationsByChannelID(
+            channelIDForConversation: { remoteChannelID(for: $0, lookup: lookup) }
+        )
         let activeID = activeRealtimeConversationID ?? ""
         let candidates = canonicalRemotes.map { remote -> ConversationStore.HistoryPrefetchCandidate in
-            let channelID = normalizedRemoteChannelID(remote.channelID, channelType: remote.channelType)
+            let channelID = normalizedRemoteChannelID(remote.channelID, channelType: remote.channelType, lookup: lookup)
             let local = localByChannelID[channelID]
             let isActive = !activeID.isEmpty && (activeID == channelID || activeID == local?.id)
             return ConversationStore.HistoryPrefetchCandidate(
@@ -249,7 +251,7 @@ extension AppState {
                 isActive: isActive,
                 latestSeq: remoteConversationLatestSeq(remote),
                 sortTimestamp: remoteConversationSortTimestamp(remote, previous: local),
-                logID: historyPrefetchLogID(for: remote)
+                logID: historyPrefetchLogID(channelID: channelID, channelType: remote.channelType)
             )
         }
         let targets = conversationStore.historyPrefetchTargets(candidates: candidates, limit: 6)

@@ -348,7 +348,7 @@ final class AvatarImageCache {
         let generation = cacheGeneration
         let loadGate = Self.remoteLoadGate
         let task = Task.detached(priority: .utility) { () -> UIImage? in
-            await loadGate.acquire()
+            guard await loadGate.acquire() else { return nil }
             let result: UIImage? = await {
                 for attempt in 0..<retryPolicy.maximumAttempts {
                     guard !Task.isCancelled else { return nil }

@@ -628,7 +628,7 @@ final class AccessDiscoveryTests: XCTestCase {
     @MainActor
     func testIMAPIClientPostsDiscoveryContractBody() async throws {
         let transport = AccessDiscoveryHTTPTransport(result: HTTPTransportResult(
-            data: Data(#"{"ok":true,"data":{"contract_version":1,"config_version":"cfg-api","server_time":1782710000,"ttl_seconds":60,"refresh_jitter_seconds":10,"source":"platform","stale":false,"degraded":false,"endpoints":[{"id":"ga","usage":"im_realtime","protocol":"wss","url":"wss://ga.example.test/im/ws","host":"ga.example.test","port":443,"priority":10,"weight":100,"network":"accelerated","status":"ready"}],"discovery_fallbacks":[]}}"#.utf8),
+            data: Data(#"{"contract_version":1,"config_version":"cfg-api","server_time":1782710000,"ttl_seconds":60,"refresh_jitter_seconds":10,"source":"platform","stale":false,"degraded":false,"endpoints":[{"id":"ga","usage":"im_realtime","protocol":"wss","url":"wss://ga.example.test/im/ws","host":"ga.example.test","port":443,"priority":10,"weight":100,"network":"accelerated","status":"ready"}],"discovery_fallbacks":[]}"#.utf8),
             isHTTPResponse: true,
             statusCode: 200
         ))
@@ -654,6 +654,29 @@ final class AccessDiscoveryTests: XCTestCase {
         XCTAssertEqual(body["platform"] as? String, "ios")
         XCTAssertEqual(body["tenant_id"] as? String, "tenant-1")
         XCTAssertNil(body["device_id"])
+    }
+
+    @MainActor
+    func testSignedDiscoveryWithoutTrustConfigurationReportsConfigurationBlocked() async throws {
+        let transport = AccessDiscoveryHTTPTransport(result: HTTPTransportResult(
+            data: Data(#"{"payload_b64":"e30=","key_id":"fixture","signature_alg":"Ed25519","signature":"fixture","key_state":{"payload_b64":"e30=","root_key_id":"fixture","signature_alg":"Ed25519","signature":"fixture"}}"#.utf8),
+            isHTTPResponse: true,
+            statusCode: 200
+        ))
+        let client = IMAPIClient(
+            platformBase: URL(string: "https://platform.example.test")!,
+            tenantBase: URL(string: "https://tenant.example.test")!,
+            imBase: URL(string: "https://im.example.test")!,
+            httpTransport: transport,
+            runtimeRouteStore: isolatedRuntimeRouteStore()
+        )
+
+        do {
+            _ = try await client.accessDiscoveryEndpoints(context: makeContext())
+            XCTFail("Signed configuration requires a configured trust policy")
+        } catch let error as AccessDiscoveryTrustError {
+            XCTAssertEqual(error, .configurationBlocked)
+        }
     }
 
     @MainActor

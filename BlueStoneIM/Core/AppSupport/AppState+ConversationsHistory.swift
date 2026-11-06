@@ -16,7 +16,7 @@ import CryptoKit
 
 extension AppState {
     func conversation(id: String) -> Conversation {
-        if let conversation = conversations.first(where: { $0.id == id }) {
+        if let conversation = conversationStore.conversation(id: id) {
             return conversation
         }
         if conversationKind(from: "", channelID: id) == .system,
@@ -749,7 +749,7 @@ extension AppState {
                         )
                     }
                     let elapsedMs = Int((CFAbsoluteTimeGetCurrent() - startedAt) * 1000)
-                    print("[JHT Perf] chat_history_ready_ms=\(elapsedMs) remote_messages=0 cached_messages=\(cachedMessageCount) forced=\(force) loading=\(showLoadingIndicator)")
+                    DebugConsoleDiagnostics.trace("[JHT Perf] chat_history_ready_ms=\(elapsedMs) remote_messages=0 cached_messages=\(cachedMessageCount) forced=\(force) loading=\(showLoadingIndicator)")
                     if showLoadingIndicator || conversation.messages.isEmpty {
                         conversationStore.setHistoryMessage(
                             conversationID: conversationID,
@@ -770,12 +770,12 @@ extension AppState {
                 )
                 conversationStore.setHistoryMessage(conversationID: conversationID, message: nil)
                 let elapsedMs = Int((CFAbsoluteTimeGetCurrent() - startedAt) * 1000)
-                print("[JHT Perf] chat_history_ready_ms=\(elapsedMs) remote_messages=\(messages.count) cached_messages=\(cachedMessageCount) forced=\(force) loading=\(showLoadingIndicator)")
+                DebugConsoleDiagnostics.trace("[JHT Perf] chat_history_ready_ms=\(elapsedMs) remote_messages=\(messages.count) cached_messages=\(cachedMessageCount) forced=\(force) loading=\(showLoadingIndicator)")
                 await syncConversationSidecars(channelID: channelID, channelType: channelType, session: sidecarSession)
             } catch {
                 guard selectionToken.map({ conversationSelectionEpochFence.accepts($0) }) ?? true else { return }
                 let elapsedMs = Int((CFAbsoluteTimeGetCurrent() - startedAt) * 1000)
-                print("[JHT Perf] chat_history_failed_ms=\(elapsedMs) cached_messages=\(cachedMessageCount) forced=\(force) loading=\(showLoadingIndicator)")
+                DebugConsoleDiagnostics.trace("[JHT Perf] chat_history_failed_ms=\(elapsedMs) cached_messages=\(cachedMessageCount) forced=\(force) loading=\(showLoadingIndicator)")
                 if isNotFriendsError(error) {
                     recordSyncFailureDiagnostic(error, endpoint: .history, httpFailure: diagnostic?.failure)
                     handleNotFriends(for: conversation, showToast: false)

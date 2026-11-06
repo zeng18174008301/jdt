@@ -136,7 +136,7 @@ actor SQLiteMessageRepository {
             let rows = try Row.fetchAll(
                 db,
                 sql: """
-                SELECT conversation_key, payload
+                SELECT conversation_key, payload, last_msg_seq, last_read_seq
                 FROM conversation
                 ORDER BY pinned DESC, sort_at DESC, conversation_key
                 LIMIT ?
@@ -163,6 +163,10 @@ actor SQLiteMessageRepository {
                     return try? decoder.decode(CachedMessage.self, from: messagePayload)
                 }.reversed()
                 var model = metadata.model
+                let storedLastMsgSeq: Int64 = row["last_msg_seq"]
+                let storedLastReadSeq: Int64 = row["last_read_seq"]
+                model.lastMsgSeq = max(model.lastMsgSeq, storedLastMsgSeq)
+                model.lastReadSeq = max(model.lastReadSeq, storedLastReadSeq)
                 model.messages = Array(messages).map(\.model)
                 return CachedConversation(conversation: model, messageLimit: boundedMessageLimit)
             }

@@ -4454,10 +4454,12 @@ extension AppState {
     }
 #endif
 
-    func voiceDebug(_ message: @autoclosure () -> String) {
+    func voiceDebug(routine: Bool = false, _ message: @autoclosure () -> String) {
         let value = message()
 #if DEBUG
-        NSLog("[JHT RTC][AppState] %@", value)
+        if !routine || DebugConsoleDiagnostics.verbose {
+            NSLog("[JHT RTC][AppState] %@", value)
+        }
 #endif
         Task {
             await RTCCallDiagnosticLogStore.shared.append(
@@ -6759,7 +6761,7 @@ extension AppState {
         do {
             // WDT_RTC_LOCKSCREEN_INTERFACE_LOGS_20260924_BEGIN: log RTC request attempts around lock/unlock without changing request payload.
             voiceDebug(
-                "request_interface path=/api/rtc/calls backgrounded=\(isApplicationBackgroundedForRTC) allow_background=\(allowBackgroundExecution) context=\(Self.rtcDebugContextSummary(context))"
+                routine: true, "request_interface path=/api/rtc/calls backgrounded=\(isApplicationBackgroundedForRTC) allow_background=\(allowBackgroundExecution) context=\(Self.rtcDebugContextSummary(context))"
             )
             // WDT_RTC_LOCKSCREEN_INTERFACE_LOGS_20260924_END
             let calls = try await api.listRTCCalls(context: context)
@@ -6769,7 +6771,7 @@ extension AppState {
                 voiceDebug("calls_refresh_discard scope_changed count=\(calls.count)")
                 return .cancelled
             }
-            voiceDebug("calls_refresh_ok http=2xx count=\(calls.count) statuses=\(Self.rtcStatusCountsSummary(calls.map(\.status))) context=\(Self.rtcDebugContextSummary(context))")
+            voiceDebug(routine: true, "calls_refresh_ok http=2xx count=\(calls.count) statuses=\(Self.rtcStatusCountsSummary(calls.map(\.status))) context=\(Self.rtcDebugContextSummary(context))")
             reconcileRTCCalls(calls, observedLifecycleSnapshot: observedLifecycleSnapshot)
             return .success
         } catch {
@@ -6789,7 +6791,7 @@ extension AppState {
         observedLifecycleSnapshot: CallLifecycleSnapshot? = nil
     ) {
         let identities = currentUserIdentitySet()
-        voiceDebug("calls_reconcile_start count=\(remoteCalls.count) identities=\(Self.rtcIdentitySummary(identities)) active=\(Self.shortDebugID(activeVoiceCall?.callID ?? "")) incoming=\(Self.shortDebugID(incomingVoiceCall?.callID ?? ""))")
+        voiceDebug(routine: true, "calls_reconcile_start count=\(remoteCalls.count) identities=\(Self.rtcIdentitySummary(identities)) active=\(Self.shortDebugID(activeVoiceCall?.callID ?? "")) incoming=\(Self.shortDebugID(incomingVoiceCall?.callID ?? ""))")
         remoteCalls.forEach { call in
             let reason = incomingRingingSkipReason(for: call, identities: identities) ?? "incoming_match"
             voiceDebug("calls_reconcile_item call=\(Self.shortDebugID(call.id)) status=\(call.status.lowercased()) caller=\(Self.shortDebugID(call.callerUID)) callee=\(Self.shortDebugID(call.calleeUID)) room=\(Self.shortDebugID(call.roomID)) reason=\(reason)")
@@ -6972,11 +6974,11 @@ extension AppState {
             }
         }
         guard activeVoiceCall == nil, incomingVoiceCall == nil else {
-            voiceDebug("calls_reconcile_no_incoming reason=busy active=\(Self.shortDebugID(activeVoiceCall?.callID ?? "")) incoming=\(Self.shortDebugID(incomingVoiceCall?.callID ?? ""))")
+            voiceDebug(routine: true, "calls_reconcile_no_incoming reason=busy active=\(Self.shortDebugID(activeVoiceCall?.callID ?? "")) incoming=\(Self.shortDebugID(incomingVoiceCall?.callID ?? ""))")
             return
         }
         guard let ringing = incomingRinging else {
-            voiceDebug("calls_reconcile_no_incoming reason=no_matching_ringing")
+            voiceDebug(routine: true, "calls_reconcile_no_incoming reason=no_matching_ringing")
             return
         }
         voiceDebug("calls_reconcile_incoming_match call=\(Self.shortDebugID(ringing.id)) caller=\(Self.shortDebugID(ringing.callerUID)) room=\(Self.shortDebugID(ringing.roomID))")
@@ -7220,7 +7222,7 @@ extension AppState {
         do {
             // WDT_RTC_LOCKSCREEN_INTERFACE_LOGS_20260924_BEGIN: log RTC request attempts around lock/unlock without changing request payload.
             voiceDebug(
-                "request_interface path=/api/rtc/calls/events backgrounded=\(isApplicationBackgroundedForRTC) allow_background=\(allowBackgroundExecution) context=\(Self.rtcDebugContextSummary(context))"
+                routine: true, "request_interface path=/api/rtc/calls/events backgrounded=\(isApplicationBackgroundedForRTC) allow_background=\(allowBackgroundExecution) context=\(Self.rtcDebugContextSummary(context))"
             )
             // WDT_RTC_LOCKSCREEN_INTERFACE_LOGS_20260924_END
             let events = try await api.listRTCCallEvents(context: context)
@@ -7230,7 +7232,7 @@ extension AppState {
                 voiceDebug("events_refresh_discard scope_changed count=\(events.count)")
                 return .cancelled
             }
-            voiceDebug("events_refresh_ok http=2xx count=\(events.count) types=\(Self.rtcStatusCountsSummary(events.map(\.type))) context=\(Self.rtcDebugContextSummary(context))")
+            voiceDebug(routine: true, "events_refresh_ok http=2xx count=\(events.count) types=\(Self.rtcStatusCountsSummary(events.map(\.type))) context=\(Self.rtcDebugContextSummary(context))")
             var processedNotificationIDs: [String] = []
             for event in events {
                 // JHT_MOD_BEGIN IOS_RTC_REQUEST_LIFECYCLE_20260911

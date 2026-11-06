@@ -1132,19 +1132,19 @@ extension AppState {
         VoiceMessagePayload.decodedDurationMS(player.duration)
     }
 
-    func prepareMessageAttachmentLocalFile(_ message: ChatMessage, conversationID: String, preferPreview: Bool = false) async throws -> URL {
+    func prepareMessageAttachmentLocalFile(_ message: ChatMessage, conversationID: String, preferPreview: Bool = false, forChatThumbnail: Bool = false) async throws -> URL {
         // WDT_CHAT_MEDIA_CACHE_REUSE_20261102: a cell may still hold the snapshot from before file-detail refresh.
         let message = currentAttachmentCacheMessage(message, conversationID: conversationID)
         let scope = contentCacheScopeKey
         let attachmentID = attachmentProgressKey(for: message, preferPreview: preferPreview)
-        let localURL = try await withSharedAttachmentDownload(attachmentID: attachmentID) { token in
+        let localURL = try await withSharedAttachmentDownload(attachmentID: attachmentID, showsProgress: !forChatThumbnail) { token in
             try await self.downloadMessageAttachmentLocalFile(message, conversationID: conversationID,
-                preferPreview: preferPreview, attachmentID: attachmentID, token: token)
+                preferPreview: preferPreview, attachmentID: attachmentID, token: token, forChatThumbnail: forChatThumbnail)
         }
         try Task.checkCancellation()
         guard contentCacheScopeKey == scope else { throw CancellationError() }
         // WDT_APP_CONTRACT_20261021_10: cache hits and joined file-page tasks also update chat presentation.
-        if cachedLocalAttachmentURL(for: message, preferPreview: preferPreview) == nil {
+        if !forChatThumbnail, cachedLocalAttachmentURL(for: message, preferPreview: preferPreview) == nil {
             let category = attachmentMediaCategory(for: message)
             let resources = await AttachmentPreviewResourceBuilder.downloadedPreviewResourcesOffMain(
                 messageID: message.id, localURL: localURL, mediaCategory: category)
@@ -1160,9 +1160,10 @@ extension AppState {
     }
 
     // WDT_APP_CONTRACT_20261021_10: one registry for chat, files, previews and shares before any await.
-    func withSharedAttachmentDownload(attachmentID: String,
+    func withSharedAttachmentDownload(attachmentID: String, showsProgress: Bool = true,
         operation: @escaping @MainActor (UUID) async throws -> URL) async throws -> URL {
         if let task = fileStore.attachmentDownloadTask(attachmentID: attachmentID) {
+            if showsProgress { fileStore.beginAttachmentDownloadProgress(attachmentID: attachmentID) }
             return try await task.value
         }
         let token = UUID()
@@ -1180,7 +1181,8 @@ extension AppState {
             } catch {
                 if Task.isCancelled { throw CancellationError() }
                 if !(error is CancellationError), !Task.isCancelled,
-                   self.fileStore.isCurrentAttachmentDownload(attachmentID: attachmentID, token: token) {
+                   self.fileStore.isCurrentAttachmentDownload(attachmentID: attachmentID, token: token),
+                   self.fileStore.attachmentDownloadSnapshot(attachmentID: attachmentID) != nil {
                     self.fileStore.markAttachmentDownloadFailed(attachmentID: attachmentID)
                 }
                 throw error
@@ -1188,7 +1190,7 @@ extension AppState {
         }
         fileStore.replaceAttachmentDownloadTask(attachmentID: attachmentID, with: task, token: token)
         fileStore.clearAttachmentDownloadFailed(attachmentID: attachmentID)
-        fileStore.setAttachmentDownloadSnapshot(AttachmentDownloadSnapshot(), attachmentID: attachmentID, token: token)
+        if showsProgress { fileStore.beginAttachmentDownloadProgress(attachmentID: attachmentID) }
         return try await task.value
     }
 
@@ -1298,7 +1300,7 @@ extension AppState {
     }
 
     private func downloadMessageAttachmentLocalFile(_ message: ChatMessage, conversationID: String,
-        preferPreview: Bool, attachmentID: String, token: UUID) async throws -> URL {
+        preferPreview: Bool, attachmentID: String, token: UUID, forChatThumbnail: Bool) async throws -> URL {
         try Task.checkCancellation()
         let context = apiContext
         guard context.hasIMSession else {
@@ -1317,7 +1319,8 @@ extension AppState {
             return localURL
         }
 
-        let targetMessage = try await refreshedAttachmentMessage(message, in: conversationID, context: context, scope: scope)
+        let targetMessage = try await refreshedAttachmentMessage(message, in: conversationID, context: context, scope: scope,
+            forChatThumbnail: forChatThumbnail)
         try Task.checkCancellation()
         let resolvedKey = attachmentProgressKey(for: targetMessage, preferPreview: preferPreview)
         if let joined = fileStore.coalesceAttachmentDownload(from: attachmentID, to: resolvedKey, token: token) {
@@ -1368,7 +1371,8 @@ extension AppState {
                     in: conversationID,
                     context: context,
                     scope: scope,
-                    requireSignedDownload: true
+                    requireSignedDownload: true,
+                    forChatThumbnail: forChatThumbnail
                 )
                 guard let refreshedURL = self.attachmentRemoteURL(
                     for: refreshedMessage,
@@ -1383,7 +1387,7 @@ extension AppState {
                 let sessionFactory = self.attachmentDownloadSessionFactory
                 let byteProgress: @Sendable (AttachmentDownloadSnapshot) -> Void = { [weak self] snapshot in
                     Task { @MainActor [weak self] in
-                        self?.fileStore.setAttachmentDownloadSnapshot(snapshot, attachmentID: attachmentID, token: token)
+                        self?.fileStore.updateVisibleAttachmentDownloadProgress(snapshot, attachmentID: attachmentID, token: token)
                     }
                 }
                 return try await AttachmentDownloadExecutor.temporaryFile(
@@ -1402,7 +1406,7 @@ extension AppState {
         try Task.checkCancellation()
         var snapshot = fileStore.attachmentDownloadSnapshot(attachmentID: attachmentID) ?? AttachmentDownloadSnapshot()
         snapshot.isCommitting = true
-        fileStore.setAttachmentDownloadSnapshot(snapshot, attachmentID: attachmentID, token: token)
+        fileStore.updateVisibleAttachmentDownloadProgress(snapshot, attachmentID: attachmentID, token: token)
         let localURL = try await self.commitUnifiedAttachment(
             temporaryURL,
             message: targetMessage,
@@ -1414,6 +1418,7 @@ extension AppState {
         guard isCurrentRemoteScope(scope) else {
             throw CancellationError()
         }
+        if forChatThumbnail { return localURL }
         // JHT_MOD_BEGIN ATTACHMENT_PREVIEW_BACKGROUND_PERF_20260912 - 修改开始：下载完成后的图片尺寸/视频缩略图生成移出 MainActor
         let resources = await AttachmentPreviewResourceBuilder.downloadedPreviewResourcesOffMain(
             messageID: targetMessage.id,
@@ -1781,7 +1786,7 @@ extension AppState {
         }
     }
 
-    private func refreshedAttachmentMessage(_ message: ChatMessage, in conversationID: String, context: IMAPIContext, scope: String, additionalValidation: ((RemoteUserFileDetail) -> Bool)? = nil, requireSignedDownload: Bool = false) async throws -> ChatMessage {
+    private func refreshedAttachmentMessage(_ message: ChatMessage, in conversationID: String, context: IMAPIContext, scope: String, additionalValidation: ((RemoteUserFileDetail) -> Bool)? = nil, requireSignedDownload: Bool = false, forChatThumbnail: Bool = false) async throws -> ChatMessage {
         var targetMessage = message
         let fileID = tenantFileID(for: message).trimmingCharacters(in: .whitespacesAndNewlines)
         if !fileID.isEmpty {
@@ -1819,12 +1824,19 @@ extension AppState {
             targetMessage.attachmentCoverURL = detail.file.coverURL
             targetMessage.attachmentPreviewKind = detail.file.previewKind
             targetMessage.attachmentContentDisposition = detail.contentDisposition
-            targetMessage.attachmentWidth = detail.file.width
-            targetMessage.attachmentHeight = detail.file.height
+            if !forChatThumbnail {
+                targetMessage.attachmentWidth = detail.file.width
+                targetMessage.attachmentHeight = detail.file.height
+            }
             targetMessage.attachmentDurationSeconds = detail.file.durationSeconds
             targetMessage.attachmentUploadStatus = detail.file.status
-            updateMessageAttachment(targetMessage, in: conversationID)
-            await persistConversationSnapshotImmediately(conversationID: conversationID, scope: scope, source: .localMutation)
+            if conversationStore.updateMessageAttachment(targetMessage, conversationID: conversationID) != nil {
+                if forChatThumbnail {
+                    scheduleConversationSnapshotCacheWrite(conversationID: conversationID, scope: scope)
+                } else {
+                    await persistConversationSnapshotImmediately(conversationID: conversationID, scope: scope, source: .localMutation)
+                }
+            }
             guard !Task.isCancelled, isCurrentRemoteScope(scope) else { throw CancellationError() }
         }
         return targetMessage
@@ -1989,14 +2001,27 @@ extension AppState {
     }
 
     var mediaCacheScopeContext: IOSMediaCacheScopeContext? {
-        guard apiContext.hasIMSession,
-              let scope = try? LocalMessageScope(context: apiContext),
-              let paths = try? MessageDatabasePaths(scope: scope) else { return nil }
-        return IOSMediaCacheScopeContext(
+        let session = apiContext
+        guard session.hasIMSession,
+              let scope = try? LocalMessageScope(context: session) else {
+            resolvedMediaCacheScope = nil
+            return nil
+        }
+        let generation = localMessageSessionGeneration
+        // Thumbnail bodies read this repeatedly during scroll. Resolve the
+        // filesystem paths and scope digest once per authenticated scope.
+        if let cached = resolvedMediaCacheScope,
+           cached.scope == scope, cached.context.sessionGeneration == generation {
+            return cached.context
+        }
+        guard let paths = try? MessageDatabasePaths(scope: scope) else { return nil }
+        let context = IOSMediaCacheScopeContext(
             scopeHash: scope.scopeHash,
-            sessionGeneration: localMessageSessionGeneration,
+            sessionGeneration: generation,
             rootDirectory: paths.mediaScopeDirectory
         )
+        resolvedMediaCacheScope = (scope, context)
+        return context
     }
 
     nonisolated static func mediaOfflinePolicy(

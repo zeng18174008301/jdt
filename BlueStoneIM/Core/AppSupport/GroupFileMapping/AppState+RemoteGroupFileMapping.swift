@@ -797,7 +797,7 @@ extension AppState {
             groupID: groupID,
             groupName: groups[index].name,
             participants: groups[index].members,
-            memberCount: shouldShowGroupMemberCount ? groups[index].effectiveMemberCount : nil
+            memberCount: shouldShowGroupMemberCount ? groups[index].memberCount : nil
         )
         if !shouldShowGroupMemberCount {
             scrubHiddenGroupMemberTotals(scope: remoteDataScopeKey(for: apiContext))
@@ -888,7 +888,8 @@ extension AppState {
             notice: group.notice,
             members: group.members,
             muted: group.muted,
-            memberCount: shouldShowGroupMemberCount ? group.effectiveMemberCount : nil,
+            memberCount: shouldShowGroupMemberCount ? group.memberCount : nil,
+            preservesMemberCountWhenMissing: shouldShowGroupMemberCount,
             avatarURL: group.avatarURL,
             avatarVersion: group.avatarVersion,
             avatarUpdatedAt: group.avatarUpdatedAt,
@@ -944,8 +945,11 @@ extension AppState {
         let ownerDisplayName = owner.map { groupMemberUser(from: $0).name }
             .flatMap { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0 }
         // WDT_APP_CONTRACT_20261021_05: only server aggregates describe a total, never preview sizes.
-        let memberCount = detail?.memberCount ?? summary?.memberCount
+        let reportedMemberCount = detail?.memberCount ?? summary?.memberCount
             ?? summary?.counts.memberCount ?? remote.memberCount
+        let memberCount = acceptsRevisionedProfile || incomingGroupRevision == 0
+            ? reportedMemberCount ?? existing?.memberCount
+            : existing?.memberCount
         let historyVisibleFromSeq = max(1, detail?.historyVisibleFromSeq ?? summary?.historyVisibleFromSeq ?? remote.historyVisibleFromSeq)
         let historyLimited = detail?.historyLimited ?? summary?.historyLimited ?? remote.historyLimited
         let resolvedRole = detail?.myRole ?? summary?.myRole ?? remote.myRole
@@ -2041,21 +2045,13 @@ extension AppState {
         kind: ConversationKind,
         channelID: String,
         previous: Conversation?,
-        participants: [IMUser]
+        participants: [IMUser],
+        reportedCount: Int? = nil
     ) -> Int? {
         guard kind == .group else { return participants.count }
         guard shouldShowGroupMemberCount else { return nil }
-        if let group = groups.first(where: { $0.id == channelID || $0.id == previous?.id }),
-           group.effectiveMemberCount > 0 {
-            return group.effectiveMemberCount
-        }
-        if let previousCount = previous?.memberCount, previousCount > 0 {
-            return previousCount
-        }
-        if let previousParticipantCount = previous?.participants.count, previousParticipantCount > 0 {
-            return previousParticipantCount
-        }
-        return participants.count
+        let directoryCount = groups.first(where: { $0.id == channelID || $0.id == previous?.id })?.memberCount
+        return reportedCount.flatMap { $0 >= 0 ? $0 : nil } ?? directoryCount ?? previous?.memberCount
     }
 
     func applyRemoteConversations(_ remoteConversations: [RemoteConversation], replacing: Bool) {
@@ -2108,7 +2104,8 @@ extension AppState {
                 kind: kind,
                 channelID: channelID,
                 previous: previous,
-                participants: participants
+                participants: participants,
+                reportedCount: remote.memberCount
             )
             let matchedGroup = kind == .group ? groups.first(where: { $0.id == channelID }) : nil
             let remoteGroupAvatarPath = kind == .group && remote.avatarProvided
@@ -2135,17 +2132,26 @@ extension AppState {
             let readWatermarkScope = currentReadWatermarkScope(channelID: channelID, channelType: normalizedChannelType, lookup: lookup)
             let exactReadSeq = conversationStore.effectiveReadSeq(readStateKey: readStateKey, scope: readWatermarkScope)
             let legacyReadSeq = readWatermarkScope == nil ? locallyReadSeq(for: remote) : 0
-            let lastReadSeq = max(previous?.lastReadSeq ?? 0, remote.lastReadSeq, legacyReadSeq, exactReadSeq)
+            let localReadSeq = max(previous?.lastReadSeq ?? 0, legacyReadSeq, exactReadSeq)
+            let lastReadSeq = max(localReadSeq, remote.lastReadSeq)
             let latestSeq = remoteConversationLatestSeq(remote)
-            let staleUnreadProjection = exactReadSeq > remote.lastReadSeq
+            let previousTail = previous?.lastMsgSeq ?? 0
+            let knownTail = max(latestSeq, previousTail)
+            let staleUnreadProjection = localReadSeq > remote.lastReadSeq
+            let usesPreviousUnread = previous != nil
+                && (latestSeq < previousTail || (staleUnreadProjection && latestSeq == previousTail))
             let locallyReadThrough: Bool
-            if latestSeq > 0 {
-                locallyReadThrough = lastReadSeq >= latestSeq
+            if knownTail > 0 {
+                locallyReadThrough = lastReadSeq >= knownTail
             } else {
                 locallyReadThrough = readWatermarkScope == nil && isConversationLocallyReadThrough(remote)
             }
             let rawUnreadState = resolvedConversationUnreadState(
-                remoteUnreadCount: staleUnreadProjection ? previous?.unread ?? 0 : remote.unreadCount,
+                remoteUnreadCount: boundedConversationMessageUnreadCount(
+                    usesPreviousUnread ? previous?.unread ?? 0 : remote.unreadCount,
+                    lastMsgSeq: knownTail,
+                    lastReadSeq: lastReadSeq
+                ),
                 remoteUnreadReactionCount: staleUnreadProjection ? previous?.unreadReactionCount ?? 0 : remote.unreadReactionCount,
                 remoteHasReactionUnread: staleUnreadProjection ? previous?.hasUnreadReaction == true : remote.hasReactionUnread,
                 locallyReadThrough: locallyReadThrough

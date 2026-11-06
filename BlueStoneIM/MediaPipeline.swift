@@ -1936,18 +1936,8 @@ actor IOSServerVideoPosterReceiptStore {
     }
 }
 
-enum IOSVideoPosterPresentation {
+enum IOSVideoPosterPresentation: Equatable {
     case ready(URL), pending, missing, failed, limited, unavailable
-    var label: String {
-        switch self {
-        case .ready: return ""
-        case .pending: return "封面正在生成，请稍后刷新"
-        case .missing: return "暂无视频封面"
-        case .failed: return "封面暂时加载失败"
-        case .limited: return "请稍后刷新封面"
-        case .unavailable: return "视频封面已不可用"
-        }
-    }
 }
 
 actor IOSServerVideoPosterBudget {

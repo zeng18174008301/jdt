@@ -2565,7 +2565,6 @@ extension AppState {
     func refreshTenantProfileInBackground(context: IMAPIContext, scope: String, refreshSession: RemoteSnapshotRefreshSession) async {
         let generation = refreshSession.generation
         guard isCurrentRemoteRefresh(refreshSession, scope: scope) else { return }
-        markGroupMemberCountPolicyUnresolved(scope: scope)
         guard let devicePolicyAuthority = beginTenantDevicePolicyRequest(context: context) else { return }
         let profileAuthorityRequest = beginCurrentProfileRead(context: context)
         let api = self.api
@@ -2614,6 +2613,9 @@ extension AppState {
                 profileAuthorityRequest: profileAuthorityRequest
             ) else { return }
         } catch {
+            guard !(error is CancellationError), !Task.isCancelled,
+                  isCurrentRemoteRefresh(refreshSession, scope: scope),
+                  isCurrentTenantDevicePolicyRequest(devicePolicyAuthority) else { return }
             recordSyncFailureDiagnostic(error, endpoint: .tenantContext, httpFailure: contextDiagnostic.failure)
             markGroupMemberCountPolicyUnresolved(scope: scope)
             markTenantDevicePolicyUnavailable(authority: devicePolicyAuthority)
@@ -5946,6 +5948,7 @@ extension AppState {
                 groupMemberCountContractVersion: stored.contractVersion
             )
         }
+        var confirmedReads: [String: Int64] = [:]
         do {
             let loaded = try await messagePersistence.activateAndLoad(
                 context: context,
@@ -5958,6 +5961,14 @@ extension AppState {
                 return false
             }
             localMessageTicket = loaded.ticket
+            let readStates = (try? await messagePersistence.ackStates(ticket: loaded.ticket, type: "read")) ?? []
+            guard generation == localMessageSessionGeneration,
+                  isCurrentRemoteScope(scope), localMessageTicket == loaded.ticket else {
+                return false
+            }
+            for state in readStates where state.confirmedSeq > 0 {
+                confirmedReads[state.channelID] = max(confirmedReads[state.channelID] ?? 0, state.confirmedSeq)
+            }
             applyCachedProfileContactProjection(
                 loaded.profileContactProjection,
                 scope: scope,
@@ -5977,7 +5988,10 @@ extension AppState {
                     safeCachedConversations,
                     scope: scope
                 )
-                _ = conversationStore.hydrateCachedConversations(visibleCachedConversations)
+                let readReconciledConversations = cachedConversationsApplyingConfirmedReads(
+                    visibleCachedConversations, confirmedReads: confirmedReads
+                )
+                _ = conversationStore.hydrateCachedConversations(readReconciledConversations)
                 refreshDirectConversationDisplayNames()
                 pruneNonFriendDirectConversations()
                 syncAttachmentFilesFromConversations(visibleCachedConversations)
@@ -5985,7 +5999,6 @@ extension AppState {
                 isInitialDataLoading = false
                 syncFailureMessage = nil
                 await recoverDurableOutbox(ticket: loaded.ticket, scope: scope)
-                await reconcileDurableReadAckProjection(ticket: loaded.ticket, scope: scope)
                 scheduleDurableReadAckRecovery(ticket: loaded.ticket, runImmediately: true)
                 if loaded.pendingOutbox.isEmpty {
                     scheduleDurableOutboxRecovery(ticket: loaded.ticket)
@@ -6010,9 +6023,9 @@ extension AppState {
             return false
         }
         // WDT_LOGIN_WORKSPACE_MAINACTOR_PERF_20260924_END
-        let visibleCachedConversations = visibleConversationsAfterLocalHiding(
-            safeCachedConversations,
-            scope: scope
+        let visibleCachedConversations = cachedConversationsApplyingConfirmedReads(
+            visibleConversationsAfterLocalHiding(safeCachedConversations, scope: scope),
+            confirmedReads: confirmedReads
         )
         let cachedConversationCount = conversationStore.hydrateCachedConversations(visibleCachedConversations)
         syncAttachmentFilesFromConversations(visibleCachedConversations)

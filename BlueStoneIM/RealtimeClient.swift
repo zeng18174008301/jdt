@@ -61,9 +61,14 @@ protocol RealtimeTransporting: AnyObject, Sendable {
     func start(request: RealtimeConnectionRequest)
     func disconnect(shouldReconnect: Bool)
     func subscribe(channelID: String, channelType: String, tenantID: String, imUID: String, deviceID: String)
+    func subscribe(channelID: String, channelType: String, tenantID: String, imUID: String, deviceID: String, priority: Bool)
 }
 
 extension RealtimeTransporting {
+    func subscribe(channelID: String, channelType: String, tenantID: String, imUID: String, deviceID: String, priority: Bool) {
+        subscribe(channelID: channelID, channelType: channelType, tenantID: tenantID, imUID: imUID, deviceID: deviceID)
+    }
+
     func start(request: RealtimeConnectionRequest) {
         start(url: request.url, token: request.token)
     }
@@ -516,9 +521,17 @@ final class RealtimeClient: RealtimeTransporting {
     private var acknowledgementDeadlineTask: Task<Void, Never>?
     private var reconnectTask: Task<Void, Never>?
     private var reconnectAttempt = 0
+    private var lastSocketFailureLog: (signature: String, uptime: TimeInterval)?
+    private var suppressedSocketFailureLogs = 0
+    private var connectedSinceUptime: TimeInterval?
+    private var subscriptionFramesSent = 0
     private var awaitingPong = false
     private var missedPongCount = 0
     private var lastNetworkPathStatus: RealtimeNetworkPathStatus?
+    private let subscriptionSendInterval: UInt64 = 50_000_000
+    private var subscriptionSendTask: Task<Void, Never>?
+    private var pendingSubscriptions: ArraySlice<(key: String, payload: [String: String])> = []
+    private var pendingSubscriptionKeys: Set<String> = []
     private var subscribedChannels: Set<String> = []
     private var activeTransportKind: RealtimeActiveTransportKind?
     private var activeRequest: RealtimeConnectionRequest?
@@ -629,22 +642,63 @@ final class RealtimeClient: RealtimeTransporting {
     }
 
     func subscribe(channelID: String, channelType: String, tenantID: String, imUID: String, deviceID: String) {
+        subscribe(channelID: channelID, channelType: channelType, tenantID: tenantID, imUID: imUID, deviceID: deviceID, priority: false)
+    }
+
+    func subscribe(channelID: String, channelType: String, tenantID: String, imUID: String, deviceID: String, priority: Bool) {
         guard connectionState == .connected else { return }
         let trimmedChannelID = channelID.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedChannelType = channelType.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedChannelID.isEmpty, !trimmedChannelType.isEmpty else { return }
         let key = "\(trimmedChannelType)|\(trimmedChannelID)"
         guard !subscribedChannels.contains(key) else { return }
-        sendPacket(
-            type: "subscribe_channel",
-            payload: [
-                "tenant_id": tenantID,
-                "im_uid": imUID,
-                "device_id": deviceID,
-                "channel_id": trimmedChannelID,
-                "channel_type": trimmedChannelType
-            ]
-        )
+        if !pendingSubscriptionKeys.insert(key).inserted {
+            guard priority, let index = pendingSubscriptions.firstIndex(where: { $0.key == key }) else { return }
+            let subscription = pendingSubscriptions.remove(at: index)
+            pendingSubscriptions.insert(subscription, at: pendingSubscriptions.startIndex)
+            return
+        }
+        let payload = [
+            "tenant_id": tenantID,
+            "im_uid": imUID,
+            "device_id": deviceID,
+            "channel_id": trimmedChannelID,
+            "channel_type": trimmedChannelType
+        ]
+        if priority {
+            pendingSubscriptions.insert((key, payload), at: pendingSubscriptions.startIndex)
+        } else {
+            pendingSubscriptions.append((key, payload))
+        }
+        guard subscriptionSendTask == nil else { return }
+        sendNextSubscription()
+        subscriptionSendTask = Task { @MainActor [weak self] in
+            while let interval = self?.subscriptionSendInterval {
+                do {
+                    try await Task.sleep(nanoseconds: interval)
+                } catch {
+                    return
+                }
+                guard let self else { return }
+                if !self.sendNextSubscription() {
+                    self.subscriptionSendTask = nil
+                    return
+                }
+            }
+        }
+    }
+
+    @discardableResult
+    private func sendNextSubscription() -> Bool {
+        while let subscription = pendingSubscriptions.popFirst() {
+            pendingSubscriptionKeys.remove(subscription.key)
+            guard !subscribedChannels.contains(subscription.key) else { continue }
+            subscriptionFramesSent += 1
+            sendPacket(type: "subscribe_channel", payload: subscription.payload)
+            return true
+        }
+        pendingSubscriptions = []
+        return false
     }
 
     private func startFromProvider() {
@@ -733,7 +787,7 @@ final class RealtimeClient: RealtimeTransporting {
             return
         }
 
-        print("[JHT Realtime] start_ws url=\(Self.redactedEndpointSummary(request.url)) ip_hint=\(request.webSocketDialMetadata != nil)")
+        DebugConsoleDiagnostics.trace("[JHT Realtime] start_ws url=\(Self.redactedEndpointSummary(request.url)) ip_hint=\(request.webSocketDialMetadata != nil)")
         let newSocket = transport.webSocketTask(with: request)
         socket = newSocket
         newSocket.resume()
@@ -790,7 +844,7 @@ final class RealtimeClient: RealtimeTransporting {
             )
             return
         }
-        print("[JHT Realtime] start_quic host=\(request.host) path=\(request.path)")
+        DebugConsoleDiagnostics.trace("[JHT Realtime] start_quic host=\(request.host) path=\(request.path)")
         let connectOperation: @Sendable () async throws -> RealtimeQUICConnectioning
         if let attemptProvider = quicTransport as? RealtimeQUICConnectAttemptProviding {
             let attempt = attemptProvider.makeConnectAttempt(request)
@@ -867,7 +921,7 @@ final class RealtimeClient: RealtimeTransporting {
                 }
                 try await connection.sendLine(data)
                 await MainActor.run {
-                    print("[JHT Realtime] connect_frame_sent transport=quic")
+                    DebugConsoleDiagnostics.trace("[JHT Realtime] connect_frame_sent transport=quic")
                 }
                 while !Task.isCancelled {
                     let data = try await connection.receiveLine()
@@ -939,6 +993,12 @@ final class RealtimeClient: RealtimeTransporting {
         socket?.cancel(with: .goingAway, reason: nil)
         socket = nil
         activeTransportKind = nil
+        connectedSinceUptime = nil
+        subscriptionFramesSent = 0
+        subscriptionSendTask?.cancel()
+        subscriptionSendTask = nil
+        pendingSubscriptions = []
+        pendingSubscriptionKeys.removeAll()
         activeConnectRequestID = nil
         generationDeadlineNanoseconds = nil
         subscribedChannels.removeAll()
@@ -1012,13 +1072,54 @@ final class RealtimeClient: RealtimeTransporting {
         }
 
         let retryAfterFloor = retryAfterFloor(error: error, transportValue: retryAfter)
-        print("[JHT Realtime] socket_failure transport=\(Self.transportName(kind)) error=\(Self.redactedErrorSummary(error))")
+        logSocketFailure(error, kind: kind)
 		onRouteFailure?(error)
         connectionGeneration &+= 1
         stopActiveLeg()
         guard canReconnect?() == true else { return }
         onDisconnected?()
         scheduleReconnect(retryAfterFloor: retryAfterFloor)
+    }
+
+    private func logSocketFailure(_ error: Error, kind: RealtimeActiveTransportKind) {
+        let failure = error as NSError
+        let signature = "transport=\(Self.transportName(kind)) domain=\(failure.domain) code=\(failure.code)"
+        let uptime = ProcessInfo.processInfo.systemUptime
+        if !DebugConsoleDiagnostics.verbose,
+           let previous = lastSocketFailureLog,
+           previous.signature == signature,
+           uptime - previous.uptime < 60 {
+            suppressedSocketFailureLogs += 1
+            return
+        }
+
+        let connectedMS = connectedSinceUptime.map { String(Int((uptime - $0) * 1_000)) } ?? "none"
+        let urlSessionSocket = socket as? URLSessionWebSocketTask
+        let closeCode = urlSessionSocket?.closeCode
+        let close = closeCode.flatMap { $0 == .invalid ? nil : String($0.rawValue) } ?? "none"
+        let reason = urlSessionSocket?.closeReason.flatMap { String(data: $0, encoding: .utf8) }
+        let reasonCategory = Self.webSocketCloseReasonCategory(reason)
+        print("[JHT Realtime] socket_failure \(signature) phase=\(connectionState.rawValue) connected_ms=\(connectedMS) close_code=\(close) close_category=\(reasonCategory) subscribe_sent=\(subscriptionFramesSent) subscribe_acked=\(subscribedChannels.count) repeated_logs_suppressed=\(suppressedSocketFailureLogs)")
+        lastSocketFailureLog = (signature, uptime)
+        suppressedSocketFailureLogs = 0
+    }
+
+    private static func webSocketCloseReasonCategory(_ reason: String?) -> String {
+        guard let reason, !reason.isEmpty else { return "none" }
+        let normalized = reason.lowercased()
+            .replacingOccurrences(of: "_", with: " ")
+            .replacingOccurrences(of: "-", with: " ")
+        if ["rate limit", "too many", "flood", "throttl"].contains(where: { normalized.contains($0) }) {
+            return "rate_limit"
+        }
+        if ["duplicate", "replaced", "superseded", "kicked"].contains(where: { normalized.contains($0) }) {
+            return "connection_replaced"
+        }
+        if ["unauthorized", "forbidden", "token", "session"].contains(where: { normalized.contains($0) }) {
+            return "authorization_or_session"
+        }
+        if normalized.contains("subscri") { return "subscription" }
+        return "unclassified"
     }
 
     private func scheduleReconnect(retryAfterFloor: TimeInterval? = nil) {
@@ -1194,7 +1295,7 @@ final class RealtimeClient: RealtimeTransporting {
             }
         }
         diagnosticRequests.record(requestID, operation: .connect)
-        print("[JHT Realtime] connect_frame_sent transport=websocket")
+        DebugConsoleDiagnostics.trace("[JHT Realtime] connect_frame_sent transport=websocket")
         return true
     }
 
@@ -1375,9 +1476,10 @@ final class RealtimeClient: RealtimeTransporting {
             }
             observation?.event.result = .acknowledged
             observation?.event.handling = .acknowledged
-            print("[JHT Realtime] connect_ack transport=\(Self.transportName(activeTransportKind))")
+            DebugConsoleDiagnostics.trace("[JHT Realtime] connect_ack transport=\(Self.transportName(activeTransportKind))")
             acknowledgementDeadlineTask?.cancel()
             acknowledgementDeadlineTask = nil
+            connectedSinceUptime = ProcessInfo.processInfo.systemUptime
             transition(to: .connected)
             reconnectAttempt = 0
             resetHeartbeatState()

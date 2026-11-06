@@ -308,6 +308,7 @@ extension AppState {
                     type: item.type,
                     confirmedSeq: confirmedSeq
                 )
+                guard isCurrentRemoteScope(scope), localMessageTicket == ticket else { return false }
                 conversationStore.advanceRead(
                     conversationID: conversation.id,
                     through: confirmedSeq
@@ -321,6 +322,10 @@ extension AppState {
                     channelType: apiChannelType(for: conversation.kind),
                     throughSeq: effectiveReadSeq
                 )
+                await persistConversationSnapshotImmediately(
+                    conversationID: conversation.id, scope: scope, source: .localMutation
+                )
+                guard isCurrentRemoteScope(scope), localMessageTicket == ticket else { return false }
             }
             guard confirmedSeq >= item.desiredSeq else {
                 try? await messagePersistence.releaseAckForRetry(
@@ -341,28 +346,35 @@ extension AppState {
         }
     }
 
-    func reconcileDurableReadAckProjection(
-        ticket: LocalMessageSessionTicket,
-        scope: String
-    ) async {
-        guard isCurrentRemoteScope(scope),
-              localMessageTicket?.scopeHash == ticket.scopeHash else { return }
-        guard let states = try? await messagePersistence.ackStates(
-            ticket: ticket,
-            type: "read"
-        ) else { return }
-        for state in states where state.confirmedSeq > 0 {
-            guard let conversation = conversationForDurableReadAck(channelID: state.channelID) else {
-                continue
+    func cachedConversationsApplyingConfirmedReads(
+        _ cachedConversations: [Conversation],
+        confirmedReads: [String: Int64]
+    ) -> [Conversation] {
+        let lookup = confirmedReads.isEmpty ? nil : makeConversationUserLookup()
+        return cachedConversations.map { cached in
+            guard cached.kind != .system else { return cached }
+            var conversation = cached
+            let confirmedSeq = lookup.flatMap {
+                confirmedReads[remoteChannelID(for: cached, lookup: $0)]
+            } ?? 0
+            if confirmedSeq > 0 {
+                _ = rememberConversationReadLocally(cached, through: confirmedSeq)
+                conversationStore.advanceRead(in: &conversation, through: confirmedSeq, restoringConfirmedRead: true)
             }
-            conversationStore.advanceRead(
-                conversationID: conversation.id,
-                through: state.confirmedSeq
+            let readSeq = max(conversation.lastReadSeq, confirmedSeq)
+            let tailSeq = max(conversation.lastMsgSeq, ConversationSequenceInspector.maximumChannelSeq(in: conversation.messages) ?? 0)
+            let messageUnread = boundedConversationMessageUnreadCount(
+                conversation.unread, lastMsgSeq: tailSeq, lastReadSeq: readSeq
             )
-            _ = rememberConversationReadLocally(
-                conversation,
-                through: state.confirmedSeq
-            )
+            let reactionUnread = max(conversation.unreadReactionCount, conversation.hasUnreadReaction ? 1 : 0)
+            conversation.unread = max(messageUnread, reactionUnread)
+            if tailSeq > 0, readSeq >= tailSeq {
+                conversation.firstUnreadSeq = 0
+                conversation.firstUnreadMessageID = ""
+                conversation.unreadAnchorSeq = 0
+                conversation.unreadAnchorState = "none"
+            }
+            return conversation
         }
     }
 

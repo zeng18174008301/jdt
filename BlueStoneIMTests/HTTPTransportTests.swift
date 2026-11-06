@@ -3018,18 +3018,19 @@ final class HTTPTransportTests: XCTestCase {
     func testRegisterDeviceVoIPTokenUsesContractBody() async throws {
         let transport = FakeHTTPTransport(results: [
             HTTPTransportResult(
-                data: Data(#"{"ok":true,"data":{"id":"device-1","device_id":"ios-codex-admin2","device_type":"ios","app_id":"jht-ios-main","status":"active","banned":false}}"#.utf8),
+                data: Data(#"{"ok":true,"data":{"id":"device-1","device_id":"ios-codex-admin2","device_type":"ios","app_id":"jht-ios-main","status":"normal","banned_at":"0001-01-01T00:00:00Z"}}"#.utf8),
                 isHTTPResponse: true,
                 statusCode: 200
             )
         ])
         let client = makeClient(transport: transport)
 
-        _ = try await client.registerDevice(
+        let device = try await client.registerDevice(
             context: makeContext(),
             registration: .voip(token: "voip-token-redacted", bundleID: "com.jianhuitongqiyetest.app", environment: "sandbox")
         )
 
+        XCTAssertFalse(device.banned)
         let request = try XCTUnwrap(transport.requests().first)
         XCTAssertEqual(request.url?.absoluteString, "https://tenant.example.test/api/tenant/devices")
         XCTAssertEqual(request.httpMethod, "POST")

@@ -694,7 +694,7 @@ extension AppState {
     }
 
     func group(forConversationID conversationID: String) -> GroupInfo? {
-        guard let conversation = conversations.first(where: { $0.id == conversationID }) else { return nil }
+        guard let conversation = conversationStore.conversation(id: conversationID) else { return nil }
         return group(for: conversation)
     }
 
