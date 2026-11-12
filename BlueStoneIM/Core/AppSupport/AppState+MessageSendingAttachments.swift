@@ -1570,14 +1570,80 @@ extension AppState {
                 updateAttachmentProgress(nil, messageID: messageID, in: conversationID)
                 // JHT_MOD_END PUBLIC_MEDIA_GA_COMPAT_REAL_UPLOAD_PROGRESS_RESTORED - 修改结束
             } else {
+                let videoAPI = pending.kind == .file
+                    && inferredAttachmentMediaCategory(kind: pending.kind, name: pending.name, mimeType: pending.mimeType) == "video"
+                    ? api as? IMAPIClient : nil
+                let videoSource: StagedVideoUploadSource?
+                if videoAPI != nil, let durableTicket {
+                    videoSource = try await messagePersistence.stagedVideoUploadSource(
+                        ticket: durableTicket, clientMessageID: messageID, expectedSizeBytes: pending.sizeBytes
+                    )
+                    guard ownsOperation() else { return }
+                } else {
+                    videoSource = nil
+                }
                 var finalizedFileID = checkpoint?.fileID ?? ""
+                var preparedFile: RemoteAvatarFile?
+
+                func putAttachment(_ upload: RemoteSignedUpload) async throws {
+                    guard ownsOperation() else { throw CancellationError() }
+                    currentPhase = .put
+                    updateAttachmentUploadPhase(.put, messageID: messageID, in: conversationID)
+                    updateAttachmentProgress(0, messageID: messageID, in: conversationID)
+                    let progress: @Sendable (Double) -> Void = { [weak self] uploadFraction in
+                        let clampedFraction = max(0, min(uploadFraction, 1))
+                        Task { @MainActor [weak self] in
+                            guard let self, self.isCurrentAttachmentUpload(messageID: messageID, operationID: operationID, context: context, generation: generation) else { return }
+                            self.updateAttachmentProgress(clampedFraction, messageID: messageID, in: conversationID)
+                        }
+                    }
+                    if let videoAPI, let videoSource {
+                        try await uploadDiagnostic.captureUploadStep {
+                            try await videoAPI.uploadVideoAttachmentBinary(
+                                context: context, upload: upload, fileURL: videoSource.url, mimeType: pending.mimeType,
+                                sizeBytes: pending.sizeBytes, progress: progress
+                            )
+                        }
+                    } else if let fileURL = pending.fileURL {
+                        try await uploadDiagnostic.captureUploadStep {
+                            try await api.uploadFileBinary(
+                                upload: upload,
+                                fileURL: fileURL,
+                                mimeType: pending.mimeType,
+                                sizeBytes: pending.sizeBytes,
+                                progress: progress
+                            )
+                        }
+                    } else if let data = pending.data {
+                        try await uploadDiagnostic.captureUploadStep {
+                            try await api.uploadFileBinary(
+                                upload: upload,
+                                data: data,
+                                mimeType: pending.mimeType,
+                                progress: progress
+                            )
+                        }
+                    } else {
+                        throw CocoaError(.fileReadNoSuchFile)
+                    }
+                    guard ownsOperation() else { throw CancellationError() }
+                    // JHT_MOD_BEGIN CHAT_BACK_STUCK_DIAG_BEGIN_UPLOAD_BINARY_DONE - 修改开始：记录附件二进制上传阶段耗时
+                    chatBackSendDiagnostic(
+                        "app_attachment_upload_binary_done",
+                        conversationID: conversationID,
+                        messageID: messageID,
+                        extra: "elapsed_ms=\(Self.chatBackDiagnosticElapsedMS(since: uploadDiagnosticStartedAt))"
+                    )
+                    // JHT_MOD_END CHAT_BACK_STUCK_DIAG_END_UPLOAD_BINARY_DONE - 修改结束：记录附件二进制上传阶段耗时
+                }
+
                 if checkpoint?.putCompleted != true {
                     currentPhase = .presign
                     try await updateUploadOutbox(
                         ticket: durableTicket,
                         messageID: messageID,
                         state: .sending,
-                        attachmentPhase: "presign"
+                        attachmentPhase: videoSource != nil && !finalizedFileID.isEmpty ? "video_presigned" : "presign"
                     )
                     updateAttachmentUploadPhase(.presign, messageID: messageID, in: conversationID)
                     // JHT_MOD_BEGIN PUBLIC_MEDIA_GA_COMPAT_REAL_UPLOAD_PROGRESS_PRESIGN - 修改开始：预签名阶段只更新阶段状态，不写假百分比
@@ -1603,6 +1669,15 @@ extension AppState {
                                 waveform: pending.voiceWaveform
                             )
                         }
+                    } else if let videoAPI, let videoSource {
+                        presign = try await uploadDiagnostic.captureUploadStep {
+                            try await videoAPI.presignVideoAttachmentUpload(
+                                context: context, conversation: conversation, channelID: channelID,
+                                clientMessageID: messageID, fileName: pending.name, mimeType: pending.mimeType,
+                                sizeBytes: Int(pending.sizeBytes), checksum: videoSource.checksum,
+                                transport: .auto, expectedFileID: finalizedFileID
+                            )
+                        }
                     } else {
                         presign = try await uploadDiagnostic.captureUploadStep {
                             try await api.presignFileUpload(
@@ -1618,17 +1693,30 @@ extension AppState {
                         }
                     }
                     guard ownsOperation() else { return }
+                    let chosenTransport = presign.upload?.transport.lowercased() ?? ""
+                    let routeLabel = ["accelerated", "standard"].contains(chosenTransport) ? chosenTransport : "unspecified"
                     // JHT_MOD_BEGIN CHAT_BACK_STUCK_DIAG_BEGIN_UPLOAD_PRESIGNED - 修改开始：记录附件预签名阶段耗时
                     chatBackSendDiagnostic(
                         "app_attachment_upload_presigned",
                         conversationID: conversationID,
                         messageID: messageID,
                         extra: "elapsed_ms=\(Self.chatBackDiagnosticElapsedMS(since: uploadDiagnosticStartedAt))"
+                            + (videoSource == nil ? "" : " transport=\(routeLabel)")
                     )
                     // JHT_MOD_END CHAT_BACK_STUCK_DIAG_END_UPLOAD_PRESIGNED - 修改结束：记录附件预签名阶段耗时
-                    finalizedFileID = presign.file.id
-                    guard !finalizedFileID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                    guard !presign.file.id.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                         throw IMAPIError.server("file_id_missing")
+                    }
+                    if videoSource != nil, !finalizedFileID.isEmpty, presign.file.id != finalizedFileID {
+                        throw IMAPIError.server("video_upload_identity_mismatch")
+                    }
+                    finalizedFileID = presign.file.id
+                    preparedFile = presign.file
+                    if videoSource != nil {
+                        try await updateUploadOutbox(
+                            ticket: durableTicket, messageID: messageID, state: .sending,
+                            fileID: finalizedFileID, attachmentPhase: "video_presigned"
+                        )
                     }
                     fileStore.recordAttachmentUploadPresign(messageID: messageID, fileID: finalizedFileID)
                     uploadedFileIDForProgressCleanup = finalizedFileID
@@ -1639,47 +1727,7 @@ extension AppState {
                     }
                     // JHT_MOD_BEGIN PUBLIC_MEDIA_GA_COMPAT_OPTIONAL_PUT - 修改开始：有 upload 描述才执行对象 PUT；已 uploaded 响应直接进入确认阶段
                     if let signedUpload = presign.upload {
-                        currentPhase = .put
-                        updateAttachmentUploadPhase(.put, messageID: messageID, in: conversationID)
-                        updateAttachmentProgress(0, messageID: messageID, in: conversationID)
-                        let progress: @Sendable (Double) -> Void = { [weak self] uploadFraction in
-                            let clampedFraction = max(0, min(uploadFraction, 1))
-                            Task { @MainActor [weak self] in
-                                guard let self, self.isCurrentAttachmentUpload(messageID: messageID, operationID: operationID, context: context, generation: generation) else { return }
-                                self.updateAttachmentProgress(clampedFraction, messageID: messageID, in: conversationID)
-                            }
-                        }
-                        if let fileURL = pending.fileURL {
-                            try await uploadDiagnostic.captureUploadStep {
-                                try await api.uploadFileBinary(
-                                    upload: signedUpload,
-                                    fileURL: fileURL,
-                                    mimeType: pending.mimeType,
-                                    sizeBytes: pending.sizeBytes,
-                                    progress: progress
-                                )
-                            }
-                        } else if let data = pending.data {
-                            try await uploadDiagnostic.captureUploadStep {
-                                try await api.uploadFileBinary(
-                                    upload: signedUpload,
-                                    data: data,
-                                    mimeType: pending.mimeType,
-                                    progress: progress
-                                )
-                            }
-                        } else {
-                            throw CocoaError(.fileReadNoSuchFile)
-                        }
-                        guard ownsOperation() else { return }
-                        // JHT_MOD_BEGIN CHAT_BACK_STUCK_DIAG_BEGIN_UPLOAD_BINARY_DONE - 修改开始：记录附件二进制上传阶段耗时
-                        chatBackSendDiagnostic(
-                            "app_attachment_upload_binary_done",
-                            conversationID: conversationID,
-                            messageID: messageID,
-                            extra: "elapsed_ms=\(Self.chatBackDiagnosticElapsedMS(since: uploadDiagnosticStartedAt))"
-                        )
-                        // JHT_MOD_END CHAT_BACK_STUCK_DIAG_END_UPLOAD_BINARY_DONE - 修改结束：记录附件二进制上传阶段耗时
+                        try await putAttachment(signedUpload)
                     } else if Self.remoteFileIsUploaded(presign.file) {
                         chatBackSendDiagnostic(
                             "app_attachment_upload_already_uploaded",
@@ -1691,13 +1739,16 @@ extension AppState {
                         throw IMAPIError.server("file_upload_descriptor_missing")
                     }
                     // JHT_MOD_END PUBLIC_MEDIA_GA_COMPAT_OPTIONAL_PUT - 修改结束
-                    fileStore.recordAttachmentUploadPUTCompleted(messageID: messageID, fileID: finalizedFileID)
+                    let accelerated = videoSource != nil && chosenTransport == "accelerated"
+                    fileStore.recordAttachmentUploadPUTCompleted(
+                        messageID: messageID, fileID: finalizedFileID, accelerated: accelerated
+                    )
                     try await updateUploadOutbox(
                         ticket: durableTicket,
                         messageID: messageID,
                         state: .sending,
                         fileID: finalizedFileID,
-                        attachmentPhase: "uploaded"
+                        attachmentPhase: accelerated ? "video_accelerated_uploaded" : "uploaded"
                     )
                     try Task.checkCancellation()
                     guard ownsOperation() else {
@@ -1721,6 +1772,66 @@ extension AppState {
                             channelID: channelID,
                             clientMessageID: messageID
                         )
+                    }
+                } else if let videoAPI, let videoSource {
+                    func confirmVideo() async throws -> RemoteAvatarFile {
+                        guard ownsOperation(),
+                              let checkpoint = fileStore.attachmentUploadCheckpoint(messageID: messageID) else {
+                            throw CancellationError()
+                        }
+                        currentPhase = .finalize
+                        updateAttachmentUploadPhase(.finalize, messageID: messageID, in: conversationID)
+                        updateAttachmentProgress(nil, messageID: messageID, in: conversationID)
+                        return try await uploadDiagnostic.captureUploadStep {
+                            try await videoAPI.confirmRoutedVideoAttachmentUpload(
+                                context: context, conversation: conversation, channelID: channelID, clientMessageID: messageID,
+                                fileID: finalizedFileID, sizeBytes: pending.sizeBytes, mimeType: pending.mimeType,
+                                checksum: videoSource.checksum, preparedFile: preparedFile,
+                                verificationSelected: checkpoint.videoVerificationSelected
+                            ) {
+                                try await updateUploadOutbox(
+                                    ticket: durableTicket, messageID: messageID, state: .sending,
+                                    fileID: finalizedFileID, attachmentPhase: checkpoint.videoVerificationPhase
+                                )
+                                fileStore.recordVideoUploadVerificationSelected(messageID: messageID)
+                            }
+                        }
+                    }
+                    do {
+                        uploadedFile = try await confirmVideo()
+                    } catch let missing as VideoAttachmentObjectMissing {
+                        guard ownsOperation(),
+                              let state = fileStore.attachmentUploadCheckpoint(messageID: messageID),
+                              state.accelerated, !state.standardFallbackUsed,
+                              missing.retryAfterSeconds < 600 else { throw missing }
+                        if missing.retryAfterSeconds > 0 {
+                            try await Task.sleep(nanoseconds: UInt64(missing.retryAfterSeconds) * 1_000_000_000)
+                        }
+                        // Reserve the only fallback durably before a signature or PUT can escape.
+                        try await updateUploadOutbox(
+                            ticket: durableTicket, messageID: messageID, state: .sending,
+                            fileID: finalizedFileID, attachmentPhase: state.videoVerificationSelected
+                                ? "video_fallback_verifying" : "video_standard_fallback"
+                        )
+                        fileStore.recordAttachmentUploadStandardFallback(messageID: messageID, fileID: finalizedFileID)
+                        currentPhase = .presign
+                        updateAttachmentUploadPhase(.presign, messageID: messageID, in: conversationID)
+                        let fallback = try await uploadDiagnostic.captureUploadStep {
+                            try await videoAPI.presignVideoAttachmentUpload(
+                                context: context, conversation: conversation, channelID: channelID,
+                                clientMessageID: messageID, fileName: pending.name, mimeType: pending.mimeType,
+                                sizeBytes: Int(pending.sizeBytes), checksum: videoSource.checksum,
+                                transport: .standard, expectedFileID: finalizedFileID
+                            )
+                        }
+                        guard ownsOperation() else { return }
+                        guard fallback.file.id == finalizedFileID, fallback.file.status == "prepared",
+                              let upload = fallback.upload, upload.transport.lowercased() == "standard" else {
+                            throw IMAPIError.server("video_upload_fallback_identity_mismatch")
+                        }
+                        preparedFile = fallback.file
+                        try await putAttachment(upload)
+                        uploadedFile = try await confirmVideo()
                     }
                 } else {
                     uploadedFile = try await uploadDiagnostic.captureUploadStep {
@@ -2021,21 +2132,7 @@ extension AppState {
     }
 
     func attachmentMimeType(from message: ChatMessage) -> String {
-        let explicit = message.attachmentMimeType.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        if !explicit.isEmpty {
-            return explicit
-        }
-        if let value = message.attachmentMeta?
-            .components(separatedBy: " · ")
-            .first?
-            .trimmingCharacters(in: .whitespacesAndNewlines),
-           !value.isEmpty,
-           value.contains("/") {
-            return value.lowercased()
-        }
-        if message.kind == .image { return "image/jpeg" }
-        if message.kind == .voice { return "audio/mp4" }
-        return "application/octet-stream"
+        message.resolvedAttachmentMimeType
     }
 
     func uploadedFileMetadata(
@@ -2325,30 +2422,6 @@ extension AppState {
         let allowed = CharacterSet.alphanumerics
         let sanitized = String(rawValue.lowercased().unicodeScalars.filter { allowed.contains($0) })
         return String(sanitized.prefix(8))
-    }
-
-    func inferredAttachmentMediaCategory(kind: MessageKind, name: String, mimeType: String) -> String {
-        let normalizedMime = mimeType.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let ext = (name as NSString).pathExtension.lowercased()
-        if kind == .voice {
-            return "voice"
-        }
-        if kind == .image || normalizedMime.hasPrefix("image/") || ["png", "jpg", "jpeg", "webp", "heic", "gif", "bmp", "tiff"].contains(ext) {
-            return "image"
-        }
-        if normalizedMime.hasPrefix("video/") || ["mp4", "mov", "m4v", "avi", "mkv", "webm", "3gp"].contains(ext) {
-            return "video"
-        }
-        if normalizedMime.contains("pdf") || ext == "pdf" {
-            return "pdf"
-        }
-        if normalizedMime.hasPrefix("audio/") || ["mp3", "m4a", "aac", "wav", "flac", "ogg"].contains(ext) {
-            return "audio"
-        }
-        if ["zip", "rar", "7z", "tar", "gz"].contains(ext) {
-            return "archive"
-        }
-        return "file"
     }
 
     func previewKind(forMediaCategory category: String) -> String {

@@ -10,6 +10,11 @@ struct StagedLocalMessageAttachment: Sendable {
     let createdNewFile: Bool
 }
 
+struct StagedVideoUploadSource: Sendable {
+    let url: URL
+    let checksum: String
+}
+
 enum AttachmentTransferRepository {
     static func stage(
         _ intent: LocalMessageAttachmentIntent,

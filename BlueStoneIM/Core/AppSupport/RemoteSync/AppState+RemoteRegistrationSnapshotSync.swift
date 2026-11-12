@@ -6160,8 +6160,15 @@ extension AppState {
         let fileID = (item.attachmentFileID ?? "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard !fileID.isEmpty else { return }
-        switch (item.attachmentPhase ?? "").lowercased() {
-        case "uploaded":
+        let phase = (item.attachmentPhase ?? "").lowercased()
+        switch phase {
+        case "video_presigned":
+            fileStore.recordAttachmentUploadPresign(messageID: item.clientMessageID, fileID: fileID)
+        case "video_accelerated_uploaded", "video_accelerated_verifying":
+            fileStore.recordAttachmentUploadPUTCompleted(messageID: item.clientMessageID, fileID: fileID, accelerated: true)
+        case "video_standard_fallback", "video_fallback_verifying":
+            fileStore.recordAttachmentUploadStandardFallback(messageID: item.clientMessageID, fileID: fileID)
+        case "uploaded", "video_verifying":
             fileStore.recordAttachmentUploadPUTCompleted(
                 messageID: item.clientMessageID,
                 fileID: fileID
@@ -6175,6 +6182,9 @@ extension AppState {
             }
         default:
             break
+        }
+        if ["video_verifying", "video_accelerated_verifying", "video_fallback_verifying"].contains(phase) {
+            fileStore.recordVideoUploadVerificationSelected(messageID: item.clientMessageID)
         }
     }
 

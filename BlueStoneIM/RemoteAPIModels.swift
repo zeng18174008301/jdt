@@ -2043,6 +2043,7 @@ struct RemoteAvatarFile: Decodable {
         case fileVersion = "file_version"
         case cacheVersion = "cache_version"
         case checksum
+        case checksumSHA256 = "checksum_sha256"
         case mediaCategory = "media_category"
         case fileExtension = "extension"
         case thumbnailURL = "thumbnail_url"
@@ -2096,7 +2097,8 @@ struct RemoteAvatarFile: Decodable {
             ?? c.decodeIfPresent(String.self, forKey: .fileVersion)
             ?? c.decodeIfPresent(String.self, forKey: .cacheVersion)
             ?? ""
-        checksum = try c.decodeIfPresent(String.self, forKey: .checksum) ?? ""
+        checksum = try c.decodeIfPresent(String.self, forKey: .checksum)
+            ?? c.decodeIfPresent(String.self, forKey: .checksumSHA256) ?? ""
         mediaCategory = try c.decodeIfPresent(String.self, forKey: .mediaCategory) ?? ""
         fileExtension = try c.decodeIfPresent(String.self, forKey: .fileExtension) ?? ""
         thumbnailURL = try c.decodeIfPresent(String.self, forKey: .thumbnailURL)
@@ -2216,11 +2218,13 @@ struct RemoteSignedUpload: Decodable {
     let url: String
     let method: String
     let headers: [String: String]
+    let transport: String
 
     enum CodingKeys: String, CodingKey {
         case url
         case method
         case headers
+        case transport
     }
 
     init(from decoder: Decoder) throws {
@@ -2228,6 +2232,7 @@ struct RemoteSignedUpload: Decodable {
         url = try c.decodeIfPresent(String.self, forKey: .url) ?? ""
         method = try c.decodeIfPresent(String.self, forKey: .method) ?? "PUT"
         headers = try c.decodeIfPresent([String: String].self, forKey: .headers) ?? [:]
+        transport = try c.decodeIfPresent(String.self, forKey: .transport) ?? ""
     }
 }
 

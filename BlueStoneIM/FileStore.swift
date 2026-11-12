@@ -388,9 +388,19 @@ final class FileStore: ObservableObject {
         )
     }
 
-    func recordAttachmentUploadPUTCompleted(messageID: String, fileID: String) {
+    func recordAttachmentUploadPUTCompleted(messageID: String, fileID: String, accelerated: Bool = false) {
         recordAttachmentUploadPresign(messageID: messageID, fileID: fileID)
         attachmentUploadCheckpoints[messageID]?.putCompleted = true
+        attachmentUploadCheckpoints[messageID]?.accelerated = accelerated
+    }
+
+    func recordAttachmentUploadStandardFallback(messageID: String, fileID: String) {
+        recordAttachmentUploadPUTCompleted(messageID: messageID, fileID: fileID)
+        attachmentUploadCheckpoints[messageID]?.standardFallbackUsed = true
+    }
+
+    func recordVideoUploadVerificationSelected(messageID: String) {
+        attachmentUploadCheckpoints[messageID]?.videoVerificationSelected = true
     }
 
     func recordAttachmentUploadFinalized(messageID: String, file: RemoteAvatarFile) {

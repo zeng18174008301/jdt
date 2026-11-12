@@ -420,6 +420,7 @@ final class AttachmentDownloadTests: XCTestCase {
         message.attachmentMimeType = "image/jpeg"
         message.attachmentThumbnailURL = ""
         message.attachmentPosterURL = ""
+        message.attachmentDownloadURL = ""
         message.attachmentPreviewURL = "https://cdn.example.test/original.jpg"
         XCTAssertEqual(state.resolvedAttachmentThumbnailURL(for: message)?.absoluteString, message.attachmentPreviewURL)
     }

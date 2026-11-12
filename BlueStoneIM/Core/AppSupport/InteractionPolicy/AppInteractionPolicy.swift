@@ -1,4 +1,5 @@
 import Foundation
+import UniformTypeIdentifiers
 
 // WDT_APP_CONTRACT_20261021_01_08: strict, optional values distinguish missing backend projections.
 struct TenantInteractionPolicy: Decodable, Equatable, Sendable {
@@ -147,15 +148,36 @@ extension AppState {
         }
     }
 
-    // WDT_APP_CONTRACT_20261021_08: do not rewrite stored summaries or match user text.
+    // WDT_APP_CONTRACT_20261021_08: processing notices are hidden only in the display projection.
     func visibleConversationLastMessage(_ conversation: Conversation) -> String {
-        guard !shouldShowMessageProcessingNotices,
-              let latest = conversation.messages.last(where: { !$0.isPinnedContextOnly }),
-              latest.channelSeq >= conversation.lastMsgSeq,
-              latest.isDeletedLocally || latest.status == .recalled else {
-            return conversation.lastMessage
+        let summary = conversation.lastMessage
+        let latest = conversation.messages.last(where: { !$0.isPinnedContextOnly })
+        if let latest, latest.channelSeq >= conversation.lastMsgSeq,
+           !shouldShowMessageProcessingNotices, latest.isDeletedLocally || latest.status == .recalled {
+            return ""
         }
-        return ""
+        if let latest, latest.channelSeq >= conversation.lastMsgSeq || (latest.channelSeq == 0 && latest.isOutgoing) {
+            guard let label = latest.conversationAttachmentPreview else { return summary }
+            // Older caches could store either the name or a bracketed type followed by the name.
+            let legacyPrefix = ["[图片] ", "[视频] ", "[语音] ", "[音频] ", "[文件] ", "[PDF] "]
+                .first(where: { summary.hasPrefix($0) })
+            let value = legacyPrefix.map { String(summary.dropFirst($0.count)) } ?? summary
+            if value == latest.attachmentName || value == latest.text {
+                return label
+            }
+        } else {
+            // Without the latest message, only recognize legacy app-generated media names.
+            let pathExtension = (summary as NSString).pathExtension
+            guard !pathExtension.isEmpty, let type = UTType(filenameExtension: pathExtension) else { return summary }
+            let stem = mediaAttachmentDisplayName(summary)
+            if type.conforms(to: .image), ["图片消息", "[图片] 图片消息"].contains(stem) {
+                return "图片"
+            }
+            if type.conforms(to: .movie), ["视频消息", "[视频] 视频消息"].contains(stem) {
+                return "视频"
+            }
+        }
+        return summary
     }
 
     func shouldDisplaySearchResult(_ item: RemoteTenantSearchResult) -> Bool {

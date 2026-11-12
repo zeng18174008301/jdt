@@ -556,18 +556,112 @@ final class IdentityPresentationTests: XCTestCase {
 
     func testContactDirectoryAndSharedRowsKeepUserNumberBelowNameWithoutReplacingDepartment() throws {
         let contacts = try sourceText(relativePath: "../BlueStoneIM/ContactsViews.swift")
-        for symbol in ["private struct ContactDirectoryRow", "struct ContactRow"] {
+        let directorySymbol = "private struct ContactDirectoryRow: View"
+        for symbol in [directorySymbol, "struct ContactRow: View"] {
             let row = try sourceSection(contacts, startingAt: symbol)
-            XCTAssertTrue(row.contains("contactAuthoritativeUserNumber(userID: user.userID)"), symbol)
+            let userNumberSource = symbol == directorySymbol
+                ? "row.userNumber"
+                : "contactAuthoritativeUserNumber(userID: user.userID)"
+            XCTAssertTrue(row.contains(userNumberSource), symbol)
             XCTAssertTrue(row.contains("font(.caption2.weight(.semibold))"), symbol)
             XCTAssertTrue(row.contains("foregroundStyle(IMColor.muted)"), symbol)
             XCTAssertTrue(row.contains("lineLimit(1)"), symbol)
             XCTAssertTrue(row.contains("truncationMode(.middle)"), symbol)
             XCTAssertTrue(row.contains("layoutPriority(1)"), symbol)
         }
-        let directory = try sourceSection(contacts, startingAt: "private struct ContactDirectoryRow")
-        XCTAssertTrue(directory.contains("state.departmentSummary(for: user)"))
-        XCTAssertTrue(contacts.contains("accessibilityContactUserNumber(user.userID)"))
+        let directory = try sourceSection(contacts, startingAt: directorySymbol)
+        XCTAssertTrue(directory.contains("row.departmentSummary"))
+        let projection = try sourceSection(contacts, startingAt: "private struct ContactDirectoryRowPresentation")
+        XCTAssertTrue(projection.contains("userNumber: contactAuthoritativeUserNumber(userID: user.userID)"))
+        XCTAssertTrue(projection.contains("state.departmentSummary(for: user)"))
+        XCTAssertTrue(projection.contains(#"userNumber.map { "用户编号 \($0)" }"#))
+    }
+
+    @MainActor
+    func testContactDirectoryReusesCellsAcrossLongListAndOpensSelectedProfile() throws {
+        let state = AppState(
+            apiContextOverride: remarkContractContext(tenantID: "tenant-contact-reuse", imUID: "viewer-contact-reuse")
+        )
+        state.tenantDepartmentEnabled = true
+        state.contacts = (0..<846).map { index in
+            makeRemarkContractUser(id: "contact-\(index)", userID: "WXT-\(index)",
+                                   name: String(format: "Contact %04d", index))
+        }
+        let hosted = hostForSimulatorUI(
+            NavigationStackCompat { ContactsView() }.environmentObject(state),
+            size: CGSize(width: 390, height: 760)
+        )
+        defer { hosted.window.isHidden = true }
+
+        func findTable(in view: UIView) -> UITableView? {
+            if let table = view as? UITableView, table.accessibilityIdentifier == "contact_directory_table" {
+                return table
+            }
+            return view.subviews.lazy.compactMap(findTable(in:)).first
+        }
+        func findNavigation(in controller: UIViewController) -> UINavigationController? {
+            if let navigation = controller as? UINavigationController { return navigation }
+            return controller.children.lazy.compactMap(findNavigation(in:)).first
+        }
+
+        let table = try XCTUnwrap(findTable(in: hosted.controller.view))
+        XCTAssertEqual(table.numberOfRows(inSection: 0), 847) // Contacts plus the C heading.
+        let delegate = try XCTUnwrap(table.delegate)
+        for row in [0, 1, 420, 846] {
+            let path = IndexPath(row: row, section: 0)
+            let actual = try XCTUnwrap(delegate.tableView?(table, heightForRowAt: path))
+            let estimated = try XCTUnwrap(delegate.tableView?(table, estimatedHeightForRowAt: path))
+            XCTAssertGreaterThan(actual, 0)
+            XCTAssertEqual(estimated, actual)
+        }
+        final class CellObservation {
+            weak var cell: UITableViewCell?
+            let userID: String
+
+            init(cell: UITableViewCell, userID: String) {
+                self.cell = cell
+                self.userID = userID
+            }
+        }
+        var observed: [ObjectIdentifier: CellObservation] = [:]
+        var distinctCells = 0
+        var reusedForDifferentUser = false
+        for row in stride(from: 5, through: 825, by: 5) {
+            let index = IndexPath(row: row, section: 0)
+            table.setContentOffset(CGPoint(x: 0, y: table.rectForRow(at: index).minY), animated: false)
+            RunLoop.main.run(until: Date().addingTimeInterval(0.004))
+            table.layoutIfNeeded()
+            for cell in table.visibleCells where cell.reuseIdentifier == "contact" {
+                let identifier = ObjectIdentifier(cell)
+                let userID = try XCTUnwrap(cell.accessibilityIdentifier)
+                if let previous = observed[identifier], previous.cell === cell {
+                    reusedForDifferentUser = reusedForDifferentUser || previous.userID != userID
+                } else {
+                    distinctCells += 1
+                }
+                observed[identifier] = CellObservation(cell: cell, userID: userID)
+            }
+        }
+        XCTAssertTrue(reusedForDifferentUser)
+        XCTAssertLessThan(distinctCells, 36)
+
+        let selected = IndexPath(row: 826, section: 0)
+        let cell = try XCTUnwrap(table.cellForRow(at: selected))
+        XCTAssertEqual(cell.accessibilityIdentifier, "contact_row_contact-825")
+        XCTAssertTrue(cell.accessibilityLabel?.contains("Contact 0825") == true)
+        func labels(in view: UIView) -> [UILabel] {
+            if let label = view as? UILabel { return [label] }
+            return view.subviews.flatMap(labels(in:))
+        }
+        let visibleLabels = labels(in: cell.contentView).filter { !$0.isHidden && !$0.frame.isEmpty }
+        XCTAssertTrue(visibleLabels.contains { $0.text == "Contact 0825" })
+        XCTAssertTrue(visibleLabels.contains { $0.text == "用户编号：WXT-825" })
+        XCTAssertTrue(visibleLabels.contains { $0.text == "公司" })
+        let navigation = try XCTUnwrap(findNavigation(in: hosted.controller))
+        let initialDepth = navigation.viewControllers.count
+        table.delegate?.tableView?(table, didSelectRowAt: selected)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.4))
+        XCTAssertEqual(navigation.viewControllers.count, initialDepth + 1)
     }
 
     @MainActor

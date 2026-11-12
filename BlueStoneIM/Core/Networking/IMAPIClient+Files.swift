@@ -2,6 +2,53 @@ import Foundation
 import CryptoKit
 import ImageIO
 
+struct VideoAttachmentObjectMissing: Error {
+    let retryAfterSeconds: Int
+}
+
+@MainActor
+final class VideoAttachmentHTTPObservation {
+    @TaskLocal static var current: VideoAttachmentHTTPObservation?
+    var status: Int?
+    var retryAfter = 0
+}
+
+private struct VideoAttachmentVerification: Decodable {
+    let fileID: String
+    let appID: String
+    let channelID: String
+    let channelType: String
+    let clientMessageID: String
+    let verified: Bool
+    let completionState: String
+    let checksum: String
+    let retryAfter: Int?
+    let verificationError: String?
+    let file: RemoteAvatarFile
+
+    enum CodingKeys: String, CodingKey {
+        case fileID = "file_id", appID = "app_id", channelID = "channel_id", channelType = "channel_type"
+        case clientMessageID = "client_msg_no", verified, completionState = "completion_state"
+        case checksum = "checksum_sha256", retryAfter = "retry_after_seconds"
+        case verificationError = "verification_error_code"
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        fileID = try c.decode(String.self, forKey: .fileID)
+        appID = try c.decode(String.self, forKey: .appID)
+        channelID = try c.decode(String.self, forKey: .channelID)
+        channelType = try c.decode(String.self, forKey: .channelType)
+        clientMessageID = try c.decode(String.self, forKey: .clientMessageID)
+        verified = try c.decode(Bool.self, forKey: .verified)
+        completionState = try c.decode(String.self, forKey: .completionState)
+        checksum = try c.decode(String.self, forKey: .checksum)
+        retryAfter = try c.decodeIfPresent(Int.self, forKey: .retryAfter)
+        verificationError = try c.decodeIfPresent(String.self, forKey: .verificationError)
+        file = try RemoteAvatarFile(from: decoder)
+    }
+}
+
 @MainActor
 extension IMAPIClient {
     // JHT_MOD_BEGIN PUBLIC_MEDIA_GA_COMPAT_REQUEST_HELPER - 修改开始：公共媒体文件接口使用匿名 REST 请求，保留本地 IM 上下文用于租户路由
@@ -10,7 +57,10 @@ extension IMAPIClient {
         path: String,
         method: String = "GET",
         body: [String: Any]? = nil,
-        cachePolicy: URLRequest.CachePolicy = .useProtocolCachePolicy
+        cachePolicy: URLRequest.CachePolicy = .useProtocolCachePolicy,
+        additionalHeaders: [String: String] = [:],
+        requiredHTTPStatus: Int? = nil,
+        propagateTaskCancellation: Bool = false
     ) async throws -> T {
         try requireIM(context)
         return try await request(
@@ -19,8 +69,11 @@ extension IMAPIClient {
             method: method,
             bearer: nil,
             body: body,
+            additionalHeaders: additionalHeaders,
             cachePolicy: cachePolicy,
-            bearerPurpose: .publicMedia
+            requiredHTTPStatus: requiredHTTPStatus,
+            bearerPurpose: .publicMedia,
+            propagateTaskCancellation: propagateTaskCancellation
         )
     }
     // JHT_MOD_END PUBLIC_MEDIA_GA_COMPAT_REQUEST_HELPER - 修改结束
@@ -105,12 +158,13 @@ extension IMAPIClient {
         mimeType: String,
         sizeBytes: Int64,
         failureMessage: String,
-        progress: (@Sendable (Double) -> Void)? = nil
+        progress: (@Sendable (Double) -> Void)? = nil,
+        signedVideoBase: URL? = nil
     ) async throws {
         // JHT_MOD_BEGIN ATTACHMENT_BINARY_UPLOAD_NON_MAIN_PERF_20260912 - 修改开始：上传文件大小校验离开 MainActor，避免大文件发送时阻塞 UI
         try await Self.validateBinaryUploadFile(fileURL: fileURL, expectedSizeBytes: sizeBytes)
         // JHT_MOD_END ATTACHMENT_BINARY_UPLOAD_NON_MAIN_PERF_20260912 - 修改结束
-        let uploadURLString = resolveAssetURL(upload.url, base: tenantBase(for: IMAPIContext.load()))
+        let uploadURLString = resolveAssetURL(upload.url, base: signedVideoBase ?? tenantBase(for: IMAPIContext.load()))
         guard let url = URL(string: uploadURLString), url.scheme != nil, !uploadURLString.isEmpty else {
             throw IMAPIError.badURL(upload.url)
         }
@@ -133,7 +187,8 @@ extension IMAPIClient {
                 httpTransport: httpTransport,
                 request: request,
                 fileURL: fileURL,
-                progress: progress
+                progress: progress,
+                rejectsRedirects: signedVideoBase != nil
             )
             // JHT_MOD_END ATTACHMENT_BINARY_UPLOAD_NON_MAIN_PERF_20260912 - 修改结束
         } catch {
@@ -151,6 +206,14 @@ extension IMAPIClient {
         }
         guard (200..<300).contains(statusCode) else {
             let failure = binaryUploadFailure(from: result)
+            if signedVideoBase != nil, statusCode == 409, failure.serverCode == "filealreadyexists",
+               upload.headers.contains(where: {
+                   $0.key.caseInsensitiveCompare("x-oss-forbid-overwrite") == .orderedSame
+                       && $0.value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "true"
+               }) {
+                // This only authorizes checking the existing object, not sending a message.
+                return
+            }
             let responseBody = failure.detail
             SyncFailureDiagnostic.httpObservation?.recordUploadFailure(failure)
             logUploadFailure(method: method, url: url, statusCode: statusCode, dataLength: logLength, responseBody: responseBody, error: nil)
@@ -182,9 +245,12 @@ extension IMAPIClient {
         httpTransport: HTTPTransport,
         request: URLRequest,
         fileURL: URL,
-        progress: (@Sendable (Double) -> Void)?
+        progress: (@Sendable (Double) -> Void)?,
+        rejectsRedirects: Bool
     ) async throws -> HTTPTransportResult {
-        let progressDelegate = progress.map { UploadProgressDelegate(progress: $0) }
+        let progressDelegate = (progress != nil || rejectsRedirects)
+            ? UploadProgressDelegate(progress: progress ?? { _ in }, rejectsRedirects: rejectsRedirects)
+            : nil
         return try await httpTransport.upload(for: request, fromFile: fileURL, delegate: progressDelegate)
     }
     // JHT_MOD_END ATTACHMENT_BINARY_UPLOAD_NON_MAIN_PERF_20260912 - 修改结束
@@ -430,6 +496,45 @@ extension IMAPIClient {
     }
 
     func presignFileUpload(context: IMAPIContext, conversation: Conversation, channelID: String, clientMessageID: String, purpose: String, fileName: String, mimeType: String, sizeBytes: Int) async throws -> RemoteAvatarUploadData {
+        try await presignFileUpload(
+            context: context, conversation: conversation, channelID: channelID, clientMessageID: clientMessageID,
+            purpose: purpose, fileName: fileName, mimeType: mimeType, sizeBytes: sizeBytes, routing: nil
+        )
+    }
+
+    enum VideoUploadTransport: String {
+        case auto, standard
+    }
+
+    func presignVideoAttachmentUpload(
+        context: IMAPIContext, conversation: Conversation, channelID: String, clientMessageID: String,
+        fileName: String, mimeType: String, sizeBytes: Int, checksum: String,
+        transport: VideoUploadTransport, expectedFileID: String
+    ) async throws -> RemoteAvatarUploadData {
+        guard !MediaFileIntegrityAuthority.normalizedSHA256(checksum).isEmpty,
+              transport != .standard || !expectedFileID.isEmpty else {
+            throw IMAPIError.server("video_upload_identity_unavailable")
+        }
+        let response = try await presignFileUpload(
+            context: context, conversation: conversation, channelID: channelID, clientMessageID: clientMessageID,
+            purpose: "message_attachment", fileName: fileName, mimeType: mimeType, sizeBytes: sizeBytes,
+            routing: (checksum, transport, expectedFileID)
+        )
+        guard !response.file.id.isEmpty, response.file.id == response.file.id.trimmingCharacters(in: .whitespacesAndNewlines),
+              expectedFileID.isEmpty || response.file.id == expectedFileID,
+              response.file.sizeBytes == 0 || response.file.sizeBytes == sizeBytes,
+              response.file.mimeType.isEmpty || response.file.mimeType.caseInsensitiveCompare(mimeType) == .orderedSame,
+              response.file.checksum.isEmpty || response.file.checksum.lowercased() == checksum else {
+            throw IMAPIError.server("video_upload_identity_mismatch")
+        }
+        return response
+    }
+
+    private func presignFileUpload(
+        context: IMAPIContext, conversation: Conversation, channelID: String, clientMessageID: String,
+        purpose: String, fileName: String, mimeType: String, sizeBytes: Int,
+        routing: (checksum: String, transport: VideoUploadTransport, expectedFileID: String)?
+    ) async throws -> RemoteAvatarUploadData {
         try requireIM(context)
         let normalizedChannelType = channelType(conversation.kind)
         let normalizedPurpose = purpose.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -461,11 +566,22 @@ extension IMAPIClient {
         if !metadata.isEmpty {
             body["metadata"] = metadata
         }
+        if let routing {
+            body["checksum"] = routing.checksum
+            body["upload_transport"] = routing.transport.rawValue
+            if !routing.expectedFileID.isEmpty {
+                body["expected_file_id"] = routing.expectedFileID
+            }
+            if conversation.kind == .group {
+                body["group_id"] = channelID
+            }
+        }
         return try await publicMediaRequest(
             context: context,
             path: "/api/tenant/files/presign-upload",
             method: "POST",
-            body: body
+            body: body,
+            propagateTaskCancellation: routing != nil
         )
     }
 
@@ -518,6 +634,16 @@ extension IMAPIClient {
         )
     }
 
+    func uploadVideoAttachmentBinary(
+        context: IMAPIContext, upload: RemoteSignedUpload, fileURL: URL, mimeType: String, sizeBytes: Int64,
+        progress: (@Sendable (Double) -> Void)?
+    ) async throws {
+        try await uploadBinary(
+            upload: upload, fileURL: fileURL, mimeType: mimeType, sizeBytes: sizeBytes, failureMessage: "视频上传失败",
+            progress: progress, signedVideoBase: tenantBase(for: context)
+        )
+    }
+
     func markFileUploaded(context: IMAPIContext, fileID: String) async throws -> RemoteAvatarFile {
         let data: RemoteUploadedFileResponse = try await publicMediaRequest(
             context: context,
@@ -536,11 +662,22 @@ extension IMAPIClient {
         clientMessageID: String
     ) async throws -> RemoteAvatarFile {
         try requireIM(context)
-        let normalizedChannelType = channelType(conversation.kind)
+        let data: RemoteUploadedFileResponse = try await publicMediaRequest(
+            context: context,
+            path: "/api/tenant/files/\(fileID.urlPathEncoded)/uploaded",
+            method: "POST",
+            body: messageAttachmentCompletionBody(conversation: conversation, channelID: channelID, clientMessageID: clientMessageID)
+        )
+        return data.file
+    }
+
+    private func messageAttachmentCompletionBody(
+        conversation: Conversation, channelID: String, clientMessageID: String
+    ) -> [String: Any] {
         var body: [String: Any] = [
             "purpose": "message_attachment",
             "channel_id": channelID,
-            "channel_type": normalizedChannelType,
+            "channel_type": channelType(conversation.kind),
             "client_msg_no": clientMessageID,
             "metadata": [
                 "purpose": "message_attachment",
@@ -550,13 +687,103 @@ extension IMAPIClient {
         if conversation.kind == .group {
             body["group_id"] = channelID
         }
-        let data: RemoteUploadedFileResponse = try await publicMediaRequest(
-            context: context,
-            path: "/api/tenant/files/\(fileID.urlPathEncoded)/uploaded",
-            method: "POST",
-            body: body
-        )
-        return data.file
+        return body
+    }
+
+    func confirmRoutedVideoAttachmentUpload(
+        context: IMAPIContext, conversation: Conversation, channelID: String, clientMessageID: String,
+        fileID: String, sizeBytes: Int64, mimeType: String, checksum: String, preparedFile: RemoteAvatarFile?,
+        verificationSelected: Bool = false,
+        onVerificationSelected: @MainActor () async throws -> Void = {}
+    ) async throws -> RemoteAvatarFile {
+        let path = "/api/tenant/files/\(fileID.urlPathEncoded)"
+        let invalidResponse = IMAPIError.server("video_upload_verification_invalid")
+        let deadline = ProcessInfo.processInfo.systemUptime + 600
+        var supportsVerification = verificationSelected
+        var nextPoll = 2
+        func wait(_ seconds: Int) async throws {
+            guard ProcessInfo.processInfo.systemUptime + Double(seconds) < deadline else {
+                throw IMAPIError.server("video_upload_verification_timeout")
+            }
+            if seconds > 0 { try await Task.sleep(nanoseconds: UInt64(seconds) * 1_000_000_000) }
+        }
+        while ProcessInfo.processInfo.systemUptime < deadline {
+            try Task.checkCancellation()
+            let status: VideoAttachmentVerification
+            let response = VideoAttachmentHTTPObservation()
+            do {
+                status = try await VideoAttachmentHTTPObservation.$current.withValue(response) {
+                    try await publicMediaRequest(
+                        context: context, path: path + "/upload-status", cachePolicy: .reloadIgnoringLocalCacheData,
+                        requiredHTTPStatus: 200, propagateTaskCancellation: true
+                    )
+                }
+            } catch IMAPIError.httpStatus(let code, _) where !supportsVerification && (code == 404 || code == 405) {
+                try await wait(response.retryAfter)
+                let legacyResponse = VideoAttachmentHTTPObservation()
+                let file: RemoteAvatarFile = try await VideoAttachmentHTTPObservation.$current.withValue(legacyResponse) {
+                    let result: RemoteUploadedFileResponse = try await publicMediaRequest(
+                        context: context, path: path + "/uploaded", method: "POST",
+                        body: messageAttachmentCompletionBody(conversation: conversation, channelID: channelID, clientMessageID: clientMessageID),
+                        propagateTaskCancellation: true
+                    )
+                    return result.file
+                }
+                guard legacyResponse.status == 200, file.id == fileID,
+                      file.status == "uploaded", file.uploadStatus == "uploaded",
+                      file.sizeBytes == 0 || Int64(file.sizeBytes) == sizeBytes,
+                      file.mimeType.isEmpty || file.mimeType.caseInsensitiveCompare(mimeType) == .orderedSame,
+                      file.checksum.isEmpty || file.checksum.lowercased() == checksum else {
+                    throw invalidResponse
+                }
+                return file
+            }
+            let file = status.file
+            guard status.fileID == fileID, file.id == fileID, status.appID == context.appID,
+                  status.channelID == channelID, status.channelType == channelType(conversation.kind),
+                  status.clientMessageID == clientMessageID, Int64(file.sizeBytes) == sizeBytes,
+                  file.mimeType.caseInsensitiveCompare(mimeType) == .orderedSame,
+                  file.uploadStatus == file.status, (status.retryAfter ?? 0) >= 0 else {
+                throw invalidResponse
+            }
+            if !supportsVerification {
+                try await onVerificationSelected()
+                supportsVerification = true
+            }
+            if status.verified {
+                guard status.completionState == "uploaded", file.status == "uploaded",
+                      status.checksum.lowercased() == checksum, file.checksum.lowercased() == checksum,
+                      (status.verificationError ?? "").isEmpty else {
+                    throw invalidResponse
+                }
+                return preparedFile.map { file.merged(with: $0) } ?? file
+            }
+            guard status.checksum.isEmpty, (status.verificationError ?? "").isEmpty else {
+                throw invalidResponse
+            }
+            switch (status.completionState, file.status) {
+            case ("prepared", "prepared"), ("verification_required", "uploaded"):
+                try await wait(max(response.retryAfter, status.retryAfter ?? 0))
+                let completionResponse = VideoAttachmentHTTPObservation()
+                let accepted: RemoteUploadedFileResponse = try await VideoAttachmentHTTPObservation.$current.withValue(completionResponse) {
+                    try await publicMediaRequest(
+                        context: context, path: path + "/uploaded", method: "POST",
+                        body: messageAttachmentCompletionBody(conversation: conversation, channelID: channelID, clientMessageID: clientMessageID),
+                        additionalHeaders: ["Prefer": "respond-async"], propagateTaskCancellation: true
+                    )
+                }
+                guard completionResponse.status == 200 || completionResponse.status == 202,
+                      accepted.file.id == fileID else { throw invalidResponse }
+                // Even a successful completion POST isn't proof of verification.
+                try await wait(max(nextPoll, completionResponse.retryAfter))
+            case ("verifying", "prepared"), ("verifying", "uploaded"):
+                try await wait(max(status.retryAfter ?? 0, nextPoll, response.retryAfter))
+            default:
+                throw invalidResponse
+            }
+            nextPoll = min(10, nextPoll * 2)
+        }
+        throw IMAPIError.server("video_upload_verification_timeout")
     }
 
     func markVoiceMessageUploaded(

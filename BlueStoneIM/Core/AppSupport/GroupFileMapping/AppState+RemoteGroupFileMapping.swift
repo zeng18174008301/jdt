@@ -2210,11 +2210,24 @@ extension AppState {
             let mappedCoverage = rtcListConflictSeq.map { conflictSeq in
                 min(previous?.messageCoveredThroughSeq ?? 0, max(0, conflictSeq - 1))
             } ?? previous?.messageCoveredThroughSeq ?? 0
-            let mappedLastMessagePreview = rtcListConflictSeq == nil
-                ? boundedLastMessage.map { messagePreview($0, participants: participants) } ?? previous?.lastMessage ?? ""
-                : previous?.lastMessage ?? ""
-            let mappedTime = rtcListConflictSeq == nil ? time : previous?.time ?? ""
-            let mappedSortTimestamp = rtcListConflictSeq == nil ? sortTimestamp : previous?.sortTimestamp ?? 0
+            let localTail = previous?.messages.last(where: { !$0.isPinnedContextOnly })
+            let keepLocalSummary = rtcListConflictSeq != nil
+                || (localTail?.isDeletedLocally == true && localTail?.id == boundedLastMessage?.messageID)
+            // The list response may be newer than the history loaded for this row.
+            let mappedLastMessagePreview = keepLocalSummary
+                ? previous?.lastMessage ?? ""
+                : mappedBoundedLastMessage?.conversationAttachmentPreview
+                    ?? boundedLastMessage.map { messagePreview($0, participants: participants) }
+                    ?? previous?.lastMessage ?? ""
+            let mentionSummary = remote.mentionSummary
+            let attachmentMentionPreview: String? = {
+                guard let mentionSummary, let latest = mappedBoundedLastMessage,
+                      (!mentionSummary.messageID.isEmpty && mentionSummary.messageID == latest.id)
+                        || (mentionSummary.channelSeq > 0 && mentionSummary.channelSeq == latest.channelSeq) else { return nil }
+                return latest.conversationAttachmentPreview
+            }()
+            let mappedTime = keepLocalSummary ? previous?.time ?? "" : time
+            let mappedSortTimestamp = keepLocalSummary ? previous?.sortTimestamp ?? 0 : sortTimestamp
             var mapped = Conversation(
                 id: kind == .system ? "system_notification" : (previous?.id ?? channelID),
                 title: title,
@@ -2244,7 +2257,7 @@ extension AppState {
                 unreadAnchorState: unreadState.hasUnreadMessages ? remote.unreadAnchorState : "none",
                 hasMention: unreadState.hasUnreadMessages && remote.hasMention,
                 mentionCount: unreadState.hasUnreadMessages ? remote.mentionCount : 0,
-                mentionSummaryText: unreadState.hasUnreadMessages ? (remote.mentionSummary?.text ?? "") : "",
+                mentionSummaryText: unreadState.hasUnreadMessages ? (attachmentMentionPreview ?? mentionSummary?.text ?? "") : "",
                 mentionSummaryMessageID: unreadState.hasUnreadMessages ? (remote.mentionSummary?.messageID ?? "") : "",
                 mentionSummaryChannelSeq: unreadState.hasUnreadMessages ? (remote.mentionSummary?.channelSeq ?? 0) : 0,
                 sortTimestamp: mappedSortTimestamp,

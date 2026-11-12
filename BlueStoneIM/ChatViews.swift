@@ -260,7 +260,7 @@ final class ChatTranscriptProjectionCache: ObservableObject {
     }
 }
 
-// WDT_CHAT_DELETE_REFRESH_20261021_BEGIN: validate deletion across all rows without deep message comparisons.
+// Validate terminal visibility across all rows without deep message comparisons.
 func chatMessageDeletionStateMatches<Cached: Collection, Current: Collection>(
     cachedMessages: Cached,
     messages: Current
@@ -268,6 +268,7 @@ func chatMessageDeletionStateMatches<Cached: Collection, Current: Collection>(
     guard cachedMessages.count == messages.count else { return false }
     return zip(cachedMessages, messages).allSatisfy { cached, current in
         cached.id == current.id && cached.isDeletedLocally == current.isDeletedLocally
+            && (cached.status == .recalled) == (current.status == .recalled)
     }
 }
 // WDT_CHAT_DELETE_REFRESH_20261021_END
@@ -593,6 +594,35 @@ struct ChatScrollMetricsSnapshot: Equatable {
     }
 }
 
+struct ChatScrollReadLayout {
+    let token: String
+    let sequence: Int64
+    let epoch: Int
+
+    @available(iOS 18.0, *)
+    func metrics(for geometry: ScrollGeometry) -> ChatScrollMetricsSnapshot {
+        // The container size excludes the safe-area insets, but the raw
+        // offset starts at -contentInsets.top. Use viewport coordinates.
+        let top = -(geometry.contentOffset.y + geometry.contentInsets.top)
+        return metrics(
+            viewportHeight: geometry.containerSize.height,
+            contentMinY: top,
+            contentMaxY: top + geometry.contentSize.height
+        )
+    }
+
+    func metrics(viewportHeight: CGFloat, contentMinY: CGFloat, contentMaxY: CGFloat) -> ChatScrollMetricsSnapshot {
+        ChatScrollMetricsSnapshot(
+            viewportHeight: viewportHeight,
+            contentMinY: contentMinY,
+            contentMaxY: contentMaxY,
+            renderedReadToken: token,
+            renderedReadSeq: sequence,
+            readVisibilityEpoch: epoch
+        )
+    }
+}
+
 struct ChatIncomingRowGeometry: Equatable {
     let token: String
     let frame: CGRect
@@ -864,7 +894,8 @@ struct ChatLayoutCallbackCoalescer {
 @MainActor
 private final class ChatMediaScrollActivity {
     private var lastMotion = -Double.infinity
-    private let idleInterval: TimeInterval = 0.14
+    private var nativeScrollInMotion = false
+    private let idleInterval: TimeInterval = 0.18
 
     func recordMotion() {
         lastMotion = ProcessInfo.processInfo.systemUptime
@@ -879,6 +910,23 @@ private final class ChatMediaScrollActivity {
         }
     }
 
+    func recordScrollPhase(isScrolling: Bool) {
+        if isScrolling || nativeScrollInMotion { recordMotion() }
+        nativeScrollInMotion = isScrolling
+    }
+
+    func resetMotion() {
+        nativeScrollInMotion = false
+        lastMotion = -Double.infinity
+    }
+
+    func waitForHistoryCommit() async -> Bool {
+        if !nativeScrollInMotion, ProcessInfo.processInfo.systemUptime - lastMotion >= idleInterval {
+            return !Task.isCancelled
+        }
+        return await waitUntilIdle()
+    }
+
     func waitUntilIdle() async -> Bool {
         var remaining = idleInterval
         while !Task.isCancelled {
@@ -888,7 +936,10 @@ private final class ChatMediaScrollActivity {
                 return false
             }
             remaining = idleInterval - (ProcessInfo.processInfo.systemUptime - lastMotion)
-            if remaining <= 0 { return true }
+            if remaining <= 0, !nativeScrollInMotion { return true }
+            // Native deceleration can outlast geometry notifications, for
+            // example when the offset moves by less than a point per frame.
+            if nativeScrollInMotion { remaining = idleInterval }
         }
         return false
     }
@@ -902,6 +953,36 @@ private extension EnvironmentValues {
     var chatMediaScrollActivity: ChatMediaScrollActivity? {
         get { self[ChatMediaScrollActivityKey.self] }
         set { self[ChatMediaScrollActivityKey.self] = newValue }
+    }
+}
+
+private extension View {
+    @ViewBuilder
+    func chatObserveScrollGeometry(
+        enabled: Bool,
+        readLayout: ChatScrollReadLayout,
+        onMetrics: @escaping (ChatScrollMetricsSnapshot) -> Void
+    ) -> some View {
+        if #available(iOS 18.0, *), enabled {
+            self.onScrollGeometryChange(for: ChatScrollMetricsSnapshot.self) { geometry in
+                readLayout.metrics(for: geometry)
+            } action: { _, metrics in
+                onMetrics(metrics)
+            }
+        } else {
+            self
+        }
+    }
+
+    @ViewBuilder
+    func chatTrackScrollPhase(_ activity: ChatMediaScrollActivity) -> some View {
+        if #available(iOS 18.0, *) {
+            self.onScrollPhaseChange { _, phase in
+                activity.recordScrollPhase(isScrolling: phase.isScrolling)
+            }
+        } else {
+            self
+        }
     }
 }
 
@@ -970,6 +1051,23 @@ func chatScrollVisibility(
         isNearHistoryBoundary: metrics.contentMinY >= -historySlack,
         isContentUnderfilled: metrics.contentHeight <= metrics.viewportHeight + 1
     )
+}
+
+// Offset-only movement between the edges does not affect any transcript action.
+// Keep the exact read boundary separate from the looser follow-bottom threshold.
+func chatNeedsTranscriptLayoutUpdate(
+    from previous: ChatScrollMetricsSnapshot,
+    to current: ChatScrollMetricsSnapshot
+) -> Bool {
+    guard current.isValid else { return false }
+    return !previous.isValid
+        || chatScrollVisibility(metrics: previous) != chatScrollVisibility(metrics: current)
+        || (previous.bottomDistance <= 1) != (current.bottomDistance <= 1)
+        || !chatCGFloatApproximatelyEqual(previous.viewportHeight, current.viewportHeight)
+        || !chatCGFloatApproximatelyEqual(previous.contentHeight, current.contentHeight)
+        || previous.renderedReadToken != current.renderedReadToken
+        || previous.renderedReadSeq != current.renderedReadSeq
+        || previous.readVisibilityEpoch != current.readVisibilityEpoch
 }
 
 /// UIKit may preserve the keyboard-sized content offset when the viewport grows.
@@ -1085,6 +1183,7 @@ final class ChatMessagePresentationState: ObservableObject {
     @Published var editMessage: ChatMessage?
     @Published var reportMessage: ChatMessage?
     @Published var adminDeleteCandidate: ChatMessage?
+    @Published var failedDeleteCandidate: ChatMessage?
     @Published var pendingPinnedJumpMessage: ChatMessage?
     @Published var selectedAttachmentMessage: ChatMessage?
 }
@@ -1142,6 +1241,11 @@ struct ChatView: View {
     private var adminDeleteCandidate: ChatMessage? {
         get { messagePresentation.adminDeleteCandidate }
         nonmutating set { messagePresentation.adminDeleteCandidate = newValue }
+    }
+
+    private var failedDeleteCandidate: ChatMessage? {
+        get { messagePresentation.failedDeleteCandidate }
+        nonmutating set { messagePresentation.failedDeleteCandidate = newValue }
     }
     // WDT_IOS1_CHAT_STATE_20261023_END
     @State private var replyQuote: String?
@@ -1623,8 +1727,7 @@ struct ChatView: View {
 
     private var shouldMeasureMessageTopAnchors: Bool {
         // JHT_MOD_BEGIN CHAT_SCROLL_UI_PERF_BEGIN_ANCHOR_MEASURE_GATE - 修改开始：只在需要历史锚点时测量消息位置
-        oldestHistoryLoadAnchorID != nil
-            || isLoadingConversationHistory
+        (oldestHistoryLoadAnchorID != nil && isLoadingConversationHistory)
             || (isUserBrowsingHistory && lastScrollVisibility.isNearHistoryBoundary)
             // Late initial pages can need autofill after entry stabilization.
             || lastScrollVisibility.isContentUnderfilled
@@ -2576,6 +2679,14 @@ struct ChatView: View {
                                 reportMessage = actionMessage
                                 self.actionMessage = nil
                             },
+                            onDelete: {
+                                self.actionMessage = nil
+                                if actionMessage.status == .failed {
+                                    failedDeleteCandidate = actionMessage
+                                } else {
+                                    Task { await state.deleteOwnMessage(messageID: actionMessage.id, in: conversationID, as: .sent) }
+                                }
+                            },
                             onAdminDeleteForAll: {
                                 adminDeleteCandidate = actionMessage
                                 self.actionMessage = nil
@@ -2698,12 +2809,14 @@ struct ChatView: View {
             lastVisibleReadAckToken = ""
             scrollMetricsMeasurements.layoutCallbacks.cancel()
             if phase != .active {
+                mediaScrollActivity.resetMotion()
                 state.updateRealtimeConversationAutoRead(conversationID, canAutoRead: false)
                 _ = nextAutomaticBottomScrollGeneration()
                 finishMessageTranscriptDrag()
             }
         }
         .onDisappear {
+            mediaScrollActivity.resetMotion()
             // JHT_MOD_BEGIN CHAT_BACK_STUCK_DIAG_BEGIN_DISAPPEAR - 修改开始：记录返回后 ChatView 是否真正退出
             chatBackDisappearedAttemptID = chatBackDismissAttemptID
             chatBackStuckDiagnostic(
@@ -2861,6 +2974,18 @@ struct ChatView: View {
         } message: {
             Text("删除后群内所有成员不可见。")
         }
+        .alert("删除失败消息？", isPresented: Binding(
+            get: { failedDeleteCandidate != nil },
+            set: { if !$0 { failedDeleteCandidate = nil } }
+        ), presenting: failedDeleteCandidate) { message in
+            Button("取消", role: .cancel) { failedDeleteCandidate = nil }
+            Button("删除", role: .destructive) {
+                failedDeleteCandidate = nil
+                Task { await state.deleteOwnMessage(messageID: message.id, in: conversationID, as: .failed) }
+            }
+        } message: { _ in
+            Text("这条消息尚未发送成功，删除后将从本机移除。")
+        }
         .animation(.spring(response: 0.28, dampingFraction: 0.88), value: actionMessage?.id)
         .onAppear {
             beginChatOpenPerfTrace(reason: "view_appear")
@@ -2968,17 +3093,17 @@ struct ChatView: View {
             }
             // JHT_MOD_BEGIN CHAT_HISTORY_SYNC_UI_PERF_BEGIN_MESSAGE_CHANGE_COALESCE - 修改开始：避免监听整个 messages 数组导致历史多时比较卡顿
             .onReceive(state.conversationStore.$conversations) { updatedConversations in
-                captureBottomBeforeMessageGrowth(updatedConversations)
-                refreshHistoryAnchorBeforeMessageGrowth(updatedConversations)
                 // WDT_CHAT_FIX2_DELETE_REFRESH_20261023: @Published emits before storage changes; use its new snapshot.
-                if let updated = updatedConversations.first(where: { $0.id == conversationID }) {
-                    let publishedMessages = transcriptProjectionCache.projection(
-                        for: updated.messages, showsProcessingNotices: state.shouldShowMessageProcessingNotices
-                    ).timeline
-                    if !chatMessagesShareStorage(cachedMessageRowsSource, publishedMessages),
-                       chatNeedsImmediateRemovalRefresh(cachedMessages: cachedMessageRowsSource, messages: publishedMessages) {
-                        refreshMessageRowCache(for: publishedMessages, allowsPrependReuse: false)
-                    }
+                guard let updated = updatedConversations.first(where: { $0.id == conversationID }),
+                      !chatMessagesShareStorage(conversation.messages, updated.messages) else { return }
+                captureBottomBeforeMessageGrowth(updated)
+                refreshHistoryAnchorBeforeMessageGrowth(updated)
+                let publishedMessages = transcriptProjectionCache.projection(
+                    for: updated.messages, showsProcessingNotices: state.shouldShowMessageProcessingNotices
+                ).timeline
+                if !chatMessagesShareStorage(cachedMessageRowsSource, publishedMessages),
+                   chatNeedsImmediateRemovalRefresh(cachedMessages: cachedMessageRowsSource, messages: publishedMessages) {
+                    refreshMessageRowCache(for: publishedMessages, allowsPrependReuse: false)
                 }
                 scheduleMessageRenderCacheRefreshAfterStoreChange(reader)
             }
@@ -3065,8 +3190,12 @@ struct ChatView: View {
         // newer conversation snapshot arriving before SwiftUI displays it.
         // WDT_CHAT_UNREAD_BADGE_20261021: do not require an older incoming row to remain onscreen below our replies.
         let readTarget = chatReadAcknowledgementTarget(in: renderMessageRows.lazy.map(\.message))
-        let renderedReadSeq = readTarget?.channelSeq ?? 0
-        let renderedReadToken = readTarget.map { "\(conversationID):\($0.channelSeq)" } ?? ""
+        let readLayout = ChatScrollReadLayout(
+            token: readTarget.map { "\(conversationID):\($0.channelSeq)" } ?? "",
+            sequence: readTarget?.channelSeq ?? 0,
+            epoch: readVisibilityEpoch
+        )
+        let usesNativeGeometry = usesNativeChatScrollGeometry
         return GeometryReader { viewportProxy in
             ScrollView(showsIndicators: false) {
                 LazyVStack(spacing: 0) {
@@ -3082,25 +3211,28 @@ struct ChatView: View {
                 .padding(.horizontal, 14)
                 .padding(.top, 12)
                 // WDT_CHAT_READ_TRIGGER_20261021: bottom padding belongs inside the scroll target below.
-                .background(
-                    GeometryReader { contentProxy in
-                        let frame = contentProxy.frame(in: .named(chatScrollCoordinateSpaceName))
-                        Color.clear.preference(
-                            key: ChatScrollMetricsPreferenceKey.self,
-                            value: ChatScrollMetricsSnapshot(
-                                viewportHeight: viewportProxy.size.height,
-                                contentMinY: frame.minY,
-                                contentMaxY: frame.maxY,
-                                renderedReadToken: renderedReadToken,
-                                renderedReadSeq: renderedReadSeq,
-                                readVisibilityEpoch: readVisibilityEpoch
+                .background {
+                    if !usesNativeGeometry {
+                        GeometryReader { contentProxy in
+                            let frame = contentProxy.frame(in: .named(chatScrollCoordinateSpaceName))
+                            Color.clear.preference(
+                                key: ChatScrollMetricsPreferenceKey.self,
+                                value: readLayout.metrics(
+                                    viewportHeight: viewportProxy.size.height,
+                                    contentMinY: frame.minY,
+                                    contentMaxY: frame.maxY
+                                )
                             )
-                        )
+                        }
                     }
-                )
+                }
+            }
+            .chatObserveScrollGeometry(enabled: usesNativeGeometry, readLayout: readLayout) { metrics in
+                receiveChatScrollMetrics(metrics, reader: reader)
             }
             .environment(\.stickerGIFPlaybackViewport, previewImageAttachment == nil ? viewportProxy.frame(in: .global) : .zero)
             .environment(\.chatMediaScrollActivity, mediaScrollActivity)
+            .chatTrackScrollPhase(mediaScrollActivity)
             .chatScrollDismissesKeyboardOnDrag()
             .coordinateSpace(name: chatScrollCoordinateSpaceName)
             .overlay(alignment: .top) {
@@ -3109,20 +3241,27 @@ struct ChatView: View {
             }
         }
         .onPreferenceChange(ChatScrollMetricsPreferenceKey.self) { metrics in
-            if abs(metrics.contentMinY - scrollMetricsMeasurements.metrics.contentMinY) >= 1 {
-                mediaScrollActivity.recordOffsetChange()
-            }
-            // JHT_MOD_BEGIN CHAT_PAGE_SCROLL_LAG_FIX_METRICS_CALLBACK - 修改开始：滚动指标未变时不触发聊天页布局处理
-            if scrollMetricsMeasurements.replace(with: metrics) {
-                scheduleTranscriptLayoutUpdate(reader)
-            }
-            // JHT_MOD_END CHAT_PAGE_SCROLL_LAG_FIX_METRICS_CALLBACK - 修改结束
+            guard !usesNativeGeometry else { return }
+            receiveChatScrollMetrics(metrics, reader: reader)
         }
         .onPreferenceChange(ChatIncomingRowPreferenceKey.self) { row in
             // JHT_MOD_BEGIN CHAT_PAGE_SCROLL_LAG_FIX_INCOMING_ROW_CALLBACK - 修改开始：最新入站消息几何无变化时跳过处理
             if !chatIncomingRowGeometryApproximatelyEqual(scrollMetricsMeasurements.incomingRow, row) {
                 scrollMetricsMeasurements.incomingRow = row
-                scheduleTranscriptLayoutUpdate(reader)
+                let metrics = scrollMetricsMeasurements.metrics
+                // The rendered tail can change without changing scroll
+                // geometry. Use its measured row to refresh the read identity.
+                if usesNativeGeometry, metrics.isValid, !row.token.isEmpty,
+                   row.token == readLayout.token, row.epoch == readLayout.epoch {
+                    receiveChatScrollMetrics(readLayout.metrics(
+                        viewportHeight: metrics.viewportHeight,
+                        contentMinY: metrics.contentMinY,
+                        contentMaxY: metrics.contentMaxY
+                    ), reader: reader)
+                }
+                if metrics.isValid, metrics.bottomDistance <= 1 {
+                    scheduleTranscriptLayoutUpdate(reader)
+                }
             }
             // JHT_MOD_END CHAT_PAGE_SCROLL_LAG_FIX_INCOMING_ROW_CALLBACK - 修改结束
         }
@@ -3136,6 +3275,29 @@ struct ChatView: View {
                 scheduleTranscriptLayoutUpdate(reader)
             }
             // JHT_MOD_END CHAT_PAGE_SCROLL_LAG_FIX_TOP_ANCHOR_CALLBACK - 修改结束
+        }
+    }
+
+    private var usesNativeChatScrollGeometry: Bool {
+        if #available(iOS 18.0, *) { return true }
+        return false
+    }
+
+    private func receiveChatScrollMetrics(_ metrics: ChatScrollMetricsSnapshot, reader: ScrollViewProxy) {
+        guard metrics.isValid else { return }
+        if abs(metrics.contentMinY - scrollMetricsMeasurements.metrics.contentMinY) >= 1 {
+            mediaScrollActivity.recordOffsetChange()
+        }
+        guard scrollMetricsMeasurements.replace(with: metrics) else { return }
+        let visibility = chatScrollVisibility(metrics: metrics)
+        let shouldCheckHistory = !isLoadingConversationHistory && chatCanLoadOlderFromScrollMetrics(
+            didUserInteractWithMessageScroll: didUserInteractWithMessageScroll,
+            isUserBrowsingHistory: isUserBrowsingHistory,
+            visibility: visibility
+        )
+        if chatNeedsTranscriptLayoutUpdate(from: scrollMetricsMeasurements.lastHandledMetrics, to: metrics)
+            || shouldCheckHistory {
+            scheduleTranscriptLayoutUpdate(reader)
         }
     }
 
@@ -3510,7 +3672,7 @@ struct ChatView: View {
         guard consumeOlderHistoryLoadAttemptIfNeeded() else { return }
         // JHT_MOD_END CHAT_HISTORY_SYNC_UI_PERF_END_OLDER_LOAD_ATTEMPT_THROTTLE_APPEAR - 修改结束：顶部行出现时节流旧消息加载尝试
         // 只有真正发起了加载才关闭重试门,否则节流/引擎拒绝会把重试永久堵死。
-        guard state.loadOlderMessagesIfAvailable(conversationID) else { return }
+        guard requestOlderHistoryForTranscript() else { return }
         rememberHistoryLoadAnchor(anchorID, minY: anchorY)
         didTriggerOlderHistoryLoadForScrollIntent = true
         isUserBrowsingHistory = true
@@ -3536,7 +3698,7 @@ struct ChatView: View {
         // JHT_MOD_END CHAT_HISTORY_SYNC_UI_PERF_END_OLDER_LOAD_ATTEMPT_THROTTLE_METRICS - 修改结束：滚动边界几何回调节流旧消息加载尝试
         // 只有真正发起了加载才关闭锚点门并进入历史浏览态,
         // 否则节流/引擎拒绝会让相同锚点永远不再触发加载。
-        guard state.loadOlderMessagesIfAvailable(conversationID) else { return }
+        guard requestOlderHistoryForTranscript() else { return }
         rememberHistoryLoadAnchor(anchorID, minY: anchorY)
         didTriggerOlderHistoryLoadForScrollIntent = true
         isUserBrowsingHistory = true
@@ -3558,11 +3720,17 @@ struct ChatView: View {
         let anchorID = currentViewportHistoryAnchorID() ?? timelineMessages.first?.id
         let anchorY = anchorID.flatMap(measuredHistoryAnchorY)
         guard timelineMessages.isEmpty || anchorY != nil else { return }
-        guard state.loadOlderMessagesIfAvailable(conversationID) else { return }
+        guard requestOlderHistoryForTranscript() else { return }
         if let anchorID, let anchorY {
             rememberHistoryLoadAnchor(anchorID, minY: anchorY)
         }
         underfilledOlderAutofillAttempts += 1
+    }
+
+    private func requestOlderHistoryForTranscript() -> Bool {
+        state.loadOlderMessagesIfAvailable(conversationID) { [mediaScrollActivity] in
+            await mediaScrollActivity.waitForHistoryCommit()
+        }
     }
 
     // JHT_MOD_BEGIN CHAT_HISTORY_SYNC_UI_PERF_BEGIN_OLDER_LOAD_ATTEMPT_THROTTLE_HELPER - 修改开始：减少顶部边界反复扫描历史可用性
@@ -3616,8 +3784,7 @@ struct ChatView: View {
         oldestHistoryLoadAnchorMinY = value
     }
 
-    private func captureBottomBeforeMessageGrowth(_ updatedConversations: [Conversation]) {
-        guard let updated = updatedConversations.first(where: { $0.id == conversationID }) else { return }
+    private func captureBottomBeforeMessageGrowth(_ updated: Conversation) {
         let oldMessages = conversation.messages
         guard updated.messages.count > oldMessages.count else { return }
         guard didInitialScroll, !isApplyingInitialScroll, !isLoadingConversationHistory else {
@@ -3663,10 +3830,9 @@ struct ChatView: View {
         }
     }
 
-    private func refreshHistoryAnchorBeforeMessageGrowth(_ updatedConversations: [Conversation]) {
+    private func refreshHistoryAnchorBeforeMessageGrowth(_ updated: Conversation) {
         guard !isAtBottom,
               oldestHistoryLoadAnchorID != nil || isLoadingConversationHistory,
-              let updated = updatedConversations.first(where: { $0.id == conversationID }),
               updated.messages.count > conversation.messages.count else { return }
         // @Published delivers the incoming array before the Store replaces it.
         // Sample the latest pre-update viewport, including continued dragging or
@@ -5772,7 +5938,7 @@ private struct ChatMessageLazyLeaf<Content: View>: View {
     let content: () -> Content
 
     var body: some View {
-        VStack(spacing: 0) { content() }
+        content()
     }
 }
 
@@ -9954,6 +10120,7 @@ enum MessageActionMenuKind: Hashable {
     case read
     case edit
     case recall
+    case delete
     case adminDeleteForAll
     case report
 
@@ -9968,6 +10135,7 @@ enum MessageActionMenuKind: Hashable {
         case .read: return "read"
         case .edit: return "edit"
         case .recall: return "recall"
+        case .delete: return "delete"
         case .adminDeleteForAll: return "admin_delete_for_all"
         case .report: return "report"
         }
@@ -10083,6 +10251,15 @@ func messageActionMenuDescriptors(
             disabledReason: recallDisabledReason
         ))
     }
+    if let deletion = OwnMessageDeletion.available(for: message, isCurrentSender: canShowReadActions) {
+        items.append(MessageActionMenuDescriptor(
+            kind: .delete,
+            symbol: "trash",
+            title: deletion == .failed ? "删除失败消息" : "删除该消息",
+            tone: .danger,
+            showsDividerBefore: true
+        ))
+    }
     if canAdminDeleteForAll {
         items.append(MessageActionMenuDescriptor(
             kind: .adminDeleteForAll,
@@ -10161,6 +10338,7 @@ private struct MessageActionOverlay: View {
     let onForward: () -> Void
     let onSaveAttachment: () -> Void
     let onReport: () -> Void
+    let onDelete: () -> Void
     let onAdminDeleteForAll: () -> Void
     let onRecall: () -> Void
 
@@ -10286,6 +10464,8 @@ private struct MessageActionOverlay: View {
             return onEdit
         case .recall:
             return onRecall
+        case .delete:
+            return onDelete
         case .adminDeleteForAll:
             return onAdminDeleteForAll
         case .report:
@@ -10626,7 +10806,7 @@ private struct ComposerTextView: UIViewRepresentable {
         textView.textContainerInset = UIEdgeInsets(top: 10, left: 0, bottom: 10, right: 0)
         textView.textContainer.lineFragmentPadding = 0
         textView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        textView.isScrollEnabled = false
+        textView.isScrollEnabled = true
         textView.isEditable = isEditable
         textView.selectedRange = boundedSelection(for: textView.text)
         return textView
@@ -10664,24 +10844,19 @@ private struct ComposerTextView: UIViewRepresentable {
 
     // JHT_MOD_BEGIN CHAT_SEND_UI_PERF_BEGIN_HEIGHT_RECALC - 修改开始：输入框测高缓存与无动画高度回写
     private func recalculateHeight(_ textView: UITextView, coordinator: Coordinator) {
-        let targetWidth = max(textView.bounds.width, 1)
+        let targetWidth = textView.bounds.width
+        guard targetWidth > 0 else { return }
         let text = textView.text ?? ""
         guard coordinator.shouldMeasureHeight(text: text, width: targetWidth) else { return }
-        // JHT_MOD_BEGIN CHAT_INPUT_TYPE_UI_PERF_BEGIN_HEIGHT_CONTENT_SIZE - 修改开始：输入时优先复用 UITextView contentSize 减少强制测高
-        let contentHeight = textView.contentSize.height
-        let fittingHeight = contentHeight.isFinite && contentHeight > 0
-            ? contentHeight
-            : textView.sizeThatFits(CGSize(width: targetWidth, height: .greatestFiniteMagnitude)).height
+        // contentSize can still reflect the previous layout during textViewDidChange.
+        let fittingHeight = textView.sizeThatFits(
+            CGSize(width: targetWidth, height: .greatestFiniteMagnitude)
+        ).height
         let clampedHeight = min(max(fittingHeight, minHeight), maxHeight)
-        let shouldScroll = fittingHeight > maxHeight
-        // JHT_MOD_END CHAT_INPUT_TYPE_UI_PERF_END_HEIGHT_CONTENT_SIZE - 修改结束：输入时优先复用 UITextView contentSize 减少强制测高
         coordinator.recordHeightMeasurement(
             text: text,
             width: targetWidth
         )
-        if textView.isScrollEnabled != shouldScroll {
-            textView.isScrollEnabled = shouldScroll
-        }
         DispatchQueue.main.async {
             guard coordinator.isCurrentHeightMeasurement(text: text, width: targetWidth) else { return }
             guard abs(dynamicHeight - clampedHeight) > 0.5 else { return }
@@ -10693,18 +10868,6 @@ private struct ComposerTextView: UIViewRepresentable {
         }
     }
     // JHT_MOD_END CHAT_SEND_UI_PERF_END_HEIGHT_RECALC - 修改结束：输入框测高缓存与无动画高度回写
-
-//    private func recalculateHeight(_ textView: UITextView) {
-//        let targetWidth = max(textView.bounds.width, 1)
-//        let fittingSize = textView.sizeThatFits(CGSize(width: targetWidth, height: .greatestFiniteMagnitude))
-//        let clampedHeight = min(max(fittingSize.height, minHeight), maxHeight)
-//        DispatchQueue.main.async {
-//            if abs(dynamicHeight - clampedHeight) > 0.5 {
-//                dynamicHeight = clampedHeight
-//            }
-//            textView.isScrollEnabled = fittingSize.height > maxHeight
-//        }
-//    }
 
     private func boundedSelection(for value: String) -> NSRange {
         let utf16Length = (value as NSString).length
@@ -13384,14 +13547,14 @@ private struct PendingAttachmentSelection: Identifiable {
         )
         let mimeType = contentType?.preferredMIMEType ?? (isVideo ? "video/quicktime" : "image/jpeg")
         let previewImage: UIImage?
-        if let fileURL = item.fileURL {
-            previewImage = isVideo
-                ? videoPreviewImage(fileURL: fileURL)
-                : RemoteImageDecoder.image(fromFileURL: fileURL, maxPixelSize: 320)
+        if isVideo {
+            // Like Android, show the video icon immediately in the send sheet.
+            // Chat covers continue through the normal attachment preview path.
+            previewImage = nil
+        } else if let fileURL = item.fileURL {
+            previewImage = RemoteImageDecoder.image(fromFileURL: fileURL, maxPixelSize: 320)
         } else if let data = item.data {
-            previewImage = isVideo
-                ? videoPreviewImage(data: data, fileExtension: fileExtension)
-                : RemoteImageDecoder.image(from: data, maxPixelSize: 320) // WDT_IOS1_IMAGE_BUDGET_20261023
+            previewImage = RemoteImageDecoder.image(from: data, maxPixelSize: 320) // WDT_IOS1_IMAGE_BUDGET_20261023
         } else {
             previewImage = nil
         }
@@ -13471,32 +13634,6 @@ private struct PendingAttachmentSelection: Identifiable {
         return sanitized.isEmpty ? fallback : sanitized
     }
 
-    private static func videoPreviewImage(data: Data, fileExtension: String) -> UIImage? {
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("im2-picker-\(UUID().uuidString)")
-            .appendingPathExtension(fileExtension)
-        do {
-            try data.write(to: url, options: .atomic)
-            defer { try? FileManager.default.removeItem(at: url) }
-            let asset = AVAsset(url: url)
-            let generator = AVAssetImageGenerator(asset: asset)
-            generator.appliesPreferredTrackTransform = true
-            let time = CMTime(seconds: 0.12, preferredTimescale: 600)
-            let cgImage = try generator.copyCGImage(at: time, actualTime: nil)
-            return UIImage(cgImage: cgImage)
-        } catch {
-            return nil
-        }
-    }
-
-    private static func videoPreviewImage(fileURL: URL) -> UIImage? {
-        let asset = AVAsset(url: fileURL)
-        let generator = AVAssetImageGenerator(asset: asset)
-        generator.appliesPreferredTrackTransform = true
-        let time = CMTime(seconds: 0.12, preferredTimescale: 600)
-        guard let cgImage = try? generator.copyCGImage(at: time, actualTime: nil) else { return nil }
-        return UIImage(cgImage: cgImage)
-    }
 }
 
 private struct PendingAttachmentSelectionBatch: Identifiable {
@@ -13665,7 +13802,8 @@ private struct AttachmentSendConfirmationSheet: View {
             HStack(alignment: .top, spacing: 14) {
                 preview(for: primarySelection)
                 VStack(alignment: .leading, spacing: 8) {
-                    Text(primarySelection.name)
+                    Text(["image", "video"].contains(primarySelection.mediaCategory)
+                        ? mediaAttachmentDisplayName(primarySelection.name) : primarySelection.name)
                         .font(.system(size: 17, weight: .black))
                         .foregroundStyle(IMColor.ink)
                         .lineLimit(2)
@@ -14370,7 +14508,7 @@ struct AttachmentImagePreviewSheet: View {
                 }
             }
             .overlay(alignment: .top) {
-                mediaTopControls(title: message.attachmentName ?? "图片") {
+                mediaTopControls(title: mediaAttachmentDisplayName(message.attachmentName ?? "图片")) {
                     requestDismissal(.closeButton)
                 } onSave: {
                     saveImage()
@@ -15275,7 +15413,7 @@ struct AttachmentDetailSheet: View {
             .frame(width: 58, height: 58)
             .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
             VStack(alignment: .leading, spacing: 6) {
-                Text(fileName)
+                Text(["image", "video"].contains(mediaCategory) ? mediaAttachmentDisplayName(fileName) : fileName)
                     .font(.system(size: 17, weight: .black))
                     .foregroundStyle(IMColor.ink)
                     .lineLimit(2)
@@ -16398,34 +16536,28 @@ struct ServerVideoPosterThumbnail: View {
     @State private var presentation: IOSVideoPosterPresentation = .pending
     @State private var displayedResource = ""
     @State private var completedBinding: String?
-    private var resourceBinding: String {
-        "\(state.mediaCacheScopeContext?.scopeHash ?? "")|\(state.mediaCacheScopeContext?.sessionGeneration ?? 0)|\(message.id)|\(message.attachmentFileID ?? "")|\(message.attachmentChecksum)|\(message.attachmentVersion)"
-    }
-    private var binding: String {
-        "\(resourceBinding)|\(state.mediaNetworkRecoveryGeneration)"
-    }
-    private var displayCacheKey: String { state.chatAttachmentImageCacheKey(for: message, videoPoster: true) }
 
-    private var posterURL: URL? {
-        guard displayedResource == resourceBinding, case .ready(let url) = presentation else { return nil }
+    private func posterURL(for presentation: IOSVideoPosterPresentation) -> URL? {
+        guard case .ready(let url) = presentation else { return nil }
         return url
     }
 
-    private var isResolvingPoster: Bool {
-        guard completedBinding != binding else { return false }
-        if displayedResource != resourceBinding { return true }
-        return presentation == .pending
-    }
-
     var body: some View {
+        let scope = state.mediaCacheScopeContext
+        let generation = scope?.sessionGeneration ?? 0
+        let resource = "\(scope?.scopeHash ?? "")|\(generation)|\(message.id)|\(message.attachmentFileID ?? "")|\(message.attachmentChecksum)|\(message.attachmentVersion)"
+        let requestBinding = "\(resource)|\(state.mediaNetworkRecoveryGeneration)"
+        let currentPresentation = displayedResource == resource ? presentation : .pending
+        let isResolvingPoster = currentPresentation == .pending && completedBinding != requestBinding
         Group {
-            if !message.isDeletedLocally, message.status != .recalled, !isUnavailable {
-                let localURL = posterURL
+            if !message.isDeletedLocally, message.status != .recalled, currentPresentation != .unavailable {
+                let localURL = posterURL(for: currentPresentation)
                 let lookup: (() async -> URL?)? = localURL.map { url in { url } }
                 // Keep the same renderer before and after disk lookup. It
                 // paints memory hits immediately and retains the decoded frame.
-                AttachmentThumbnailImage(url: localURL, cacheKey: displayCacheKey,
-                    scopeGeneration: state.mediaCacheScopeContext?.sessionGeneration ?? 0,
+                AttachmentThumbnailImage(url: localURL,
+                    cacheKey: state.chatAttachmentImageCacheKey(for: message, videoPoster: true),
+                    scopeGeneration: generation,
                     indexedCacheURL: lookup,
                     placeholder: {
                         Color.clear.overlay(alignment: .topTrailing) {
@@ -16439,9 +16571,7 @@ struct ServerVideoPosterThumbnail: View {
                     .allowsHitTesting(false)
             }
         }
-        .task(id: binding, priority: .utility) {
-            let requestBinding = binding
-            let resource = resourceBinding
+        .task(id: requestBinding, priority: .utility) {
             if let mediaScrollActivity, !(await mediaScrollActivity.waitUntilIdle()) { return }
             await state.loadServerVideoPoster(message, conversationID: conversationID) { result in
                 guard !Task.isCancelled else { return }
@@ -16462,12 +16592,12 @@ struct ServerVideoPosterThumbnail: View {
                 presentation = result
             }
             guard !Task.isCancelled else { return }
-            completedBinding = requestBinding
+            // Terminal results already hide the spinner. Record completion only
+            // when the loader exited without a terminal result.
+            if displayedResource != resource || presentation == .pending {
+                completedBinding = requestBinding
+            }
         }
-    }
-    private var isUnavailable: Bool {
-        if displayedResource == resourceBinding, case .unavailable = presentation { return true }
-        return false
     }
 }
 

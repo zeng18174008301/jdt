@@ -1726,11 +1726,20 @@ VStack(alignment: .leading, spacing: 18) {
 
     private func latestUnreadMention(in conversation: Conversation) -> MentionPreview? {
         if conversation.hasMention, !conversation.mentionSummaryText.isEmpty {
+            if let message = conversation.messages.last(where: {
+                (!conversation.mentionSummaryMessageID.isEmpty && $0.id == conversation.mentionSummaryMessageID)
+                    || (conversation.mentionSummaryChannelSeq > 0 && $0.channelSeq == conversation.mentionSummaryChannelSeq)
+            }), let label = message.conversationAttachmentPreview {
+                return MentionPreview(senderName: "", text: label)
+            }
             return MentionPreview(senderName: conversationDisplayTitle(for: conversation), text: conversation.mentionSummaryText)
         }
         // JHT_MOD_BEGIN CONVERSATION_LIST_DATA_SCALE_PERF_20260912 - 修改开始：直接取最新未读 mention，避免为列表行预览构造临时数组
         return latestUnreadMentionMessage(in: conversation).map { message in
-            MentionPreview(senderName: mentionSenderDisplayName(for: message), text: message.text)
+            if let label = message.conversationAttachmentPreview {
+                return MentionPreview(senderName: "", text: label)
+            }
+            return MentionPreview(senderName: mentionSenderDisplayName(for: message), text: message.text)
         }
         // JHT_MOD_END CONVERSATION_LIST_DATA_SCALE_PERF_20260912 - 修改结束
     }
@@ -2876,7 +2885,7 @@ private struct ConversationActionSheet: View {
                             )
                         }
                     }
-                    Text(conversation.lastMessage)
+                    Text(state.visibleConversationLastMessage(conversation))
                         .font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(IMColor.muted)
                         .lineLimit(1)
@@ -3640,7 +3649,7 @@ func findUserNumericIDHint(userID: String) -> String? {
 }
 // WDT_CHAT_FIX4_USER_ID_HINT_20261023_END
 
-private struct FindUserSheet: View {
+struct FindUserSheet: View {
     @EnvironmentObject private var state: AppState
     @Environment(\.dismiss) private var dismiss
     @State private var keyword = ""
@@ -4249,7 +4258,7 @@ private struct ConversationRow: View {
         guard let unreadMention else {
             return Text(rowModel.lastMessage).foregroundColor(IMColor.muted)
         }
-        let prefix = "\(unreadMention.senderName)："
+        let prefix = unreadMention.senderName.isEmpty ? "" : "\(unreadMention.senderName)："
         return Text(prefix).foregroundColor(IMColor.muted) + highlightedMentionText(unreadMention.text, target: mentionTarget, baseColor: IMColor.muted)
     }
 }
@@ -4361,6 +4370,9 @@ private struct RecycledConversationTable: UIViewControllerRepresentable {
     func updateUIViewController(_ controller: RecycledConversationController, context: Context) {
         controller.apply(self)
     }
+    static func dismantleUIViewController(_ controller: RecycledConversationController, coordinator: ()) {
+        controller.stopTrackingScroll()
+    }
 }
 
 private final class RecycledConversationController: UIViewController, UITableViewDelegate {
@@ -4377,6 +4389,8 @@ private final class RecycledConversationController: UIViewController, UITableVie
     private var searchNeedsMeasurement = true
     private var measuredSearchWidth: CGFloat = 0
     private var measuredSearchHeight: CGFloat = 64
+    private var lastScrollMovement: TimeInterval = 0
+    private var scrollSettlingTask: Task<Void, Never>?
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -4424,7 +4438,7 @@ private final class RecycledConversationController: UIViewController, UITableVie
     func apply(_ next: RecycledConversationTable) {
         loadViewIfNeeded()
         // Never reorder or resize rows under an active finger/deceleration.
-        if table.isDragging || table.isDecelerating { pending = next; return }
+        if scrollSettlingTask != nil || table.isDragging || table.isDecelerating { pending = next; return }
         pending = nil
         let previous = input
         input = next
@@ -4524,16 +4538,42 @@ private final class RecycledConversationController: UIViewController, UITableVie
         let callback = input?.interactionChanged
         DispatchQueue.main.async { callback?(interacting) }
     }
-    func scrollViewWillBeginDragging(_ scrollView: UIScrollView) { notifyInteraction(true) }
+    func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
+        lastScrollMovement = ProcessInfo.processInfo.systemUptime
+        guard scrollSettlingTask == nil else { return }
+        notifyInteraction(true)
+        scrollSettlingTask = Task { [weak self] in
+            while !Task.isCancelled {
+                do { try await Task.sleep(nanoseconds: 90_000_000) } catch { return }
+                guard let self, !Task.isCancelled else { return }
+                guard !table.isTracking, !table.isDragging, !table.isDecelerating,
+                      ProcessInfo.processInfo.systemUptime - lastScrollMovement >= 0.18 else { continue }
+                scrollSettlingTask = nil
+                // Applying a snapshot in UIKit's final layout callback can
+                // interrupt the final frames even though isDecelerating is false.
+                if let pending { apply(pending) }
+                notifyInteraction(false)
+                return
+            }
+        }
+    }
+
+    func scrollViewDidScroll(_ scrollView: UIScrollView) {
+        guard scrollSettlingTask != nil else { return }
+        lastScrollMovement = ProcessInfo.processInfo.systemUptime
+    }
+
     func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
-        if !decelerate { flushPending(); notifyInteraction(false) }
+        if !decelerate { lastScrollMovement = ProcessInfo.processInfo.systemUptime }
     }
     func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
-        flushPending(); notifyInteraction(false)
+        lastScrollMovement = ProcessInfo.processInfo.systemUptime
     }
-    private func flushPending() {
-        guard let next = pending else { return }
-        pending = nil; apply(next)
+    func stopTrackingScroll() {
+        if scrollSettlingTask != nil { notifyInteraction(false) }
+        scrollSettlingTask?.cancel()
+        scrollSettlingTask = nil
+        pending = nil
     }
 }
 

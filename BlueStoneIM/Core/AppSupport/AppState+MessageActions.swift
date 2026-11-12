@@ -14,6 +14,22 @@ import CryptoKit
 
 // MARK: - Message Actions
 
+enum OwnMessageDeletion: Equatable {
+    case sent
+    case failed
+
+    static func available(for message: ChatMessage, isCurrentSender: Bool) -> Self? {
+        guard isCurrentSender, message.isOutgoing,
+              message.kind != .system, !message.isRTCCallRecordMessage,
+              !message.isDeletedLocally,
+              !message.id.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        if message.status == .failed, message.channelSeq == 0 { return .failed }
+        if message.channelSeq > 0, !message.id.hasPrefix("local_"),
+           message.status == .sent || message.status == .read { return .sent }
+        return nil
+    }
+}
+
 extension AppState {
     func deleteConversation(_ conversationID: String) {
         guard let targetConversation = conversations.first(where: { $0.id == conversationID }),
@@ -774,6 +790,7 @@ extension AppState {
         }
         let context = apiContext
         let scope = remoteDataScopeKey(for: context)
+        let generation = localMessageSessionGeneration
         guard context.hasIMSession else {
             toast = "登录会话不可用，请重新登录"
             return
@@ -782,7 +799,7 @@ extension AppState {
         Task {
             do {
                 try await api.recallMessage(context: context, messageID: messageID)
-                guard isCurrentRemoteScope(scope) else { return }
+                guard isCurrentRemoteScope(scope), localMessageSessionGeneration == generation else { return }
                 guard let cIndex = conversations.firstIndex(where: { $0.id == conversationID }),
                       let mIndex = conversations[cIndex].messages.firstIndex(where: { $0.id == messageID }) else { return }
                 let senderName = conversations[cIndex].messages[mIndex].isOutgoing ? "你" : conversations[cIndex].messages[mIndex].senderName
@@ -796,10 +813,74 @@ extension AppState {
                     recallText: "\(senderName)撤回了一条消息"
                 )
                 toast = shouldShowMessageProcessingNotices ? "消息已撤回" : nil
+                await persistConversationSnapshotImmediately(
+                    conversationID: conversationID, scope: scope, source: .localMutation
+                )
             } catch {
-                guard isCurrentRemoteScope(scope) else { return }
+                guard isCurrentRemoteScope(scope), localMessageSessionGeneration == generation else { return }
                 handleRemoteError(error, fallback: "消息撤回失败")
             }
+        }
+    }
+
+    func deleteOwnMessage(messageID: String, in conversationID: String, as deletion: OwnMessageDeletion) async {
+        guard let conversation = conversationStore.conversation(id: conversationID),
+              !isSystemReadOnlyConversation(conversation),
+              let message = conversation.messages.first(where: { $0.id == messageID }),
+              OwnMessageDeletion.available(for: message, isCurrentSender: isCurrentMessageSender(message.senderId)) == deletion else { return }
+
+        let context = apiContext
+        guard context.hasIMSession else {
+            toast = "登录会话不可用，请重新登录"
+            return
+        }
+        let scope = remoteDataScopeKey(for: context)
+        let generation = localMessageSessionGeneration
+        let operationKey = "\(generation):\(messageID)"
+        guard pendingMessageDeletions.insert(operationKey).inserted else { return }
+        defer { pendingMessageDeletions.remove(operationKey) }
+
+        do {
+            switch deletion {
+            case .sent:
+                let response = try await api.deleteMessage(context: context, messageID: messageID)
+                guard isCurrentRemoteScope(scope), localMessageSessionGeneration == generation else { return }
+                let version = response.extra.flatMap { extra -> String? in
+                    guard extra.tenantID == context.tenantID, extra.messageID == messageID,
+                          extra.normalizedExtraType == "delete" else { return nil }
+                    return String(max(0, extra.version))
+                }
+                applyAdminDeletedMessage(messageID: messageID, conversationID: conversationID, authorityVersion: version)
+            case .failed:
+                let ticket: LocalMessageSessionTicket
+                if let localMessageTicket {
+                    ticket = localMessageTicket
+                } else {
+                    ticket = try await messagePersistence.ensureTicket(context: context, sessionGeneration: generation)
+                }
+                guard isCurrentRemoteScope(scope), localMessageSessionGeneration == generation else { return }
+                let didDiscard = try await messagePersistence.discardFailedOutgoing(
+                    ticket: ticket,
+                    clientMessageID: messageID,
+                    conversationID: conversationID,
+                    channelID: remoteChannelID(for: conversation),
+                    channelType: apiChannelType(for: conversation.kind)
+                )
+                guard isCurrentRemoteScope(scope), localMessageSessionGeneration == generation else { return }
+                guard didDiscard else {
+                    toast = "消息正在同步，请稍后重试"
+                    return
+                }
+                fileStore.cancelAttachmentUpload(messageID: messageID)
+                invalidateIndexedMediaCache(for: message, state: .deleted)
+                conversationStore.removeMessage(messageID: messageID, conversationID: conversationID)
+            }
+            await persistConversationSnapshotImmediately(conversationID: conversationID, scope: scope, source: .localMutation)
+            guard isCurrentRemoteScope(scope), localMessageSessionGeneration == generation else { return }
+            toast = deletion == .failed ? "已删除失败消息" : (shouldShowMessageProcessingNotices ? "消息已删除" : nil)
+        } catch {
+            guard isCurrentRemoteScope(scope), localMessageSessionGeneration == generation else { return }
+            handleRemoteError(error, fallback: "删除消息失败")
         }
     }
 

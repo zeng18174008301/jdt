@@ -1687,13 +1687,25 @@ extension AppState {
     private func refreshFriendPresenceSilently() async {
         let context = apiContext
         let scope = remoteDataScopeKey(for: context)
+        let generation = localMessageSessionGeneration
         guard context.hasIMSession,
               isCurrentRemoteScope(scope) else { return }
         profileContactRevisionFence.rebind(scopeHash: scope)
         let readStamp = profileContactRevisionFence.beginRead(scopeHash: scope)
-        guard let relations = try? await api.listFriends(context: context),
-              isCurrentRemoteScope(scope) else { return }
+        guard let relations = try? await api.listFriends(context: context) else { return }
+        do { try await waitForDirectoryOrConversationScrollToEnd(scope: scope) }
+        catch { return }
+        guard generation == localMessageSessionGeneration, isCurrentRemoteScope(scope) else { return }
         applyFriendRelations(relations, readStamp: readStamp)
+    }
+
+    func waitForDirectoryOrConversationScrollToEnd(scope: String) async throws {
+        while isContactDirectoryUserInteracting || isConversationListUserInteracting {
+            try Task.checkCancellation()
+            guard isCurrentRemoteScope(scope) else { throw CancellationError() }
+            try await Task.sleep(nanoseconds: 120_000_000)
+        }
+        try Task.checkCancellation()
     }
 
 #if DEBUG

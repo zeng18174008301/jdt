@@ -412,6 +412,9 @@ actor SQLiteMessageRepository {
         do {
             return try databasePool.write { db in
                 try assertWriter(db)
+                if try String.fetchOne(db, sql: "SELECT state FROM outbox WHERE client_msg_no = ?", arguments: [clientMessageID]) == "cancelled" {
+                    throw LocalMessageDatabaseError.identityConflict
+                }
                 var metrics = LocalMessageMergeMetrics()
                 var fastIdentityState: MessageIdentityAccumulator?
                 _ = try persistConversation(
@@ -519,7 +522,7 @@ actor SQLiteMessageRepository {
             try assertWriter(db)
             let current = try Row.fetchOne(
                 db,
-                sql: "SELECT state, attempt_count FROM outbox WHERE client_msg_no = ? AND state <> 'acked'",
+                sql: "SELECT state, attempt_count FROM outbox WHERE client_msg_no = ? AND state NOT IN ('acked', 'cancelled')",
                 arguments: [clientMessageID]
             )
             guard let current else { return }
@@ -573,6 +576,45 @@ actor SQLiteMessageRepository {
         if state == .acknowledged || state == .cancelled || state == .failedPermanent {
             try? FileManager.default.removeItem(at: paths.stagedAttachmentURL(clientMessageID: clientMessageID))
         }
+    }
+
+    func discardFailedOutgoing(
+        clientMessageID: String,
+        conversationID: String,
+        channelID: String,
+        channelType: String
+    ) throws -> Bool {
+        let now = Date().timeIntervalSince1970
+        let discarded = try databasePool.write { db in
+            try assertWriter(db)
+            // Keep the cancellation as a fence against old snapshots and retries.
+            try db.execute(
+                sql: """
+                INSERT INTO outbox (
+                    client_msg_no, operation_kind, conversation_key, channel_key, channel_type,
+                    scope_hash, payload, state, created_at, updated_at
+                ) VALUES (?, 'discard', ?, ?, ?, ?, ?, 'cancelled', ?, ?)
+                ON CONFLICT(client_msg_no) DO UPDATE SET
+                    state = 'cancelled', payload = excluded.payload, next_attempt_at = NULL,
+                    lease_owner = '', lease_fence = 0, updated_at = excluded.updated_at
+                WHERE outbox.scope_hash = excluded.scope_hash
+                  AND outbox.conversation_key = excluded.conversation_key
+                  AND outbox.state NOT IN ('sending', 'awaiting_ack', 'acked')
+                """,
+                arguments: [clientMessageID, conversationID, channelID, channelType, scope.scopeHash, Data("{}".utf8), now, now]
+            )
+            guard db.changesCount > 0 else { return false }
+            try db.execute(sql: "DELETE FROM attachment_transfer WHERE client_msg_no = ?", arguments: [clientMessageID])
+            try db.execute(
+                sql: "DELETE FROM message WHERE conversation_key = ? AND client_msg_no = ? AND COALESCE(channel_seq, 0) = 0",
+                arguments: [conversationID, clientMessageID]
+            )
+            return true
+        }
+        if discarded {
+            try? FileManager.default.removeItem(at: paths.stagedAttachmentURL(clientMessageID: clientMessageID))
+        }
+        return discarded
     }
 
     func confirmOutgoing(
@@ -1258,6 +1300,29 @@ actor SQLiteMessageRepository {
             )
             return rows.compactMap { recoveredOutbox(from: $0, replayPolicy: replayPolicy) }
         }
+    }
+
+    func stagedVideoUploadSource(clientMessageID: String, expectedSizeBytes: Int64) throws -> StagedVideoUploadSource {
+        let row = try databasePool.read { db in
+            try Row.fetchOne(
+                db,
+                sql: "SELECT relative_path, size_bytes, checksum FROM attachment_transfer WHERE client_msg_no = ?",
+                arguments: [clientMessageID]
+            )
+        }
+        guard let row,
+              let relativePath: String = row["relative_path"],
+              let size: Int64 = row["size_bytes"], size == expectedSizeBytes,
+              let storedChecksum: String = row["checksum"] else {
+            throw LocalMessageDatabaseError.missingStagedAttachment
+        }
+        let checksum = MediaFileIntegrityAuthority.normalizedSHA256(storedChecksum)
+        let url = try paths.resolveScopeRelativePath(relativePath)
+        guard !checksum.isEmpty, url.standardizedFileURL == paths.stagedAttachmentURL(clientMessageID: clientMessageID).standardizedFileURL,
+              try PendingAttachmentFileStore.regularFileSize(at: url) == expectedSizeBytes else {
+            throw LocalMessageDatabaseError.missingStagedAttachment
+        }
+        return StagedVideoUploadSource(url: url, checksum: checksum)
     }
 
     func loadStagedAttachment(for item: LocalMessageRecoveredOutbox) throws -> Data? {
@@ -2218,6 +2283,13 @@ actor SQLiteMessageRepository {
             && message.isOutgoing
             && !message.id.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         let clientMessageID = isPendingLocal ? message.id.trimmingCharacters(in: .whitespacesAndNewlines) : ""
+        if isPendingLocal, try Bool.fetchOne(
+            db,
+            sql: "SELECT EXISTS (SELECT 1 FROM outbox WHERE client_msg_no = ? AND state = 'cancelled')",
+            arguments: [clientMessageID]
+        ) == true {
+            return .duplicate
+        }
         if let callRecord = message.rtcCallRecord {
             guard !messageID.isEmpty, message.channelSeq > 0 else {
                 try recordConflict(
@@ -2290,12 +2362,15 @@ actor SQLiteMessageRepository {
             return .conflict
         }
         let incomingEditRevision = message.editRevision ?? 0
+        let lifecycleRank = self.lifecycleRank(message)
         if let existing = identityRows.first {
             let previousPayload: Data = existing["payload"]
             let previousContentType: String = existing["content_type"]
             let previousMessage = try? decoder.decode(CachedMessage.self, from: previousPayload)
             let previousEditRevision = previousMessage?.editRevision ?? 0
-            if previousEditRevision > 0 && incomingEditRevision <= previousEditRevision {
+            let existingRank: Int = existing["lifecycle_rank"]
+            let advancesTombstone = lifecycleRank >= 30 && lifecycleRank > existingRank
+            if !advancesTombstone && previousEditRevision > 0 && incomingEditRevision <= previousEditRevision {
                 return .duplicate
             }
             let previousRecord = previousMessage?.rtcCallRecord
@@ -2332,7 +2407,6 @@ actor SQLiteMessageRepository {
         let existingRowID = candidateIDs.first
         let rowID = existingRowID
             ?? (!messageID.isEmpty ? "message:\(messageID)" : "client:\(senderUID):\(clientMessageID)")
-        let lifecycleRank = self.lifecycleRank(message)
         let isTombstone = lifecycleRank >= 30
         let body = isTombstone ? "" : message.text
         let payload = try encoder.encode(message)

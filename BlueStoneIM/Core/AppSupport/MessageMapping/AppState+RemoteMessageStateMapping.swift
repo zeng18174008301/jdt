@@ -1966,15 +1966,6 @@ extension AppState {
         }
         message.stickerSnapshot = stickerSnapshot
         message.rtcCallRecord = rtcCallRecord
-        if isAdminDeleted {
-            conversationStore.markMessageAsAdminDeleted(&message)
-        } else if ["recalled", "revoked"].contains(remote.status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()) {
-            // 服务端撤回只改消息本体 status,payload 仍保留原文。冷读(历史分页/
-            // 重进会话)不能依赖 message-extras 补丁——extras 只按 after_version=0
-            // 拉前 100 条,活跃频道(反应/置顶也是 extra)很容易越界。必须在映射
-            // 阶段就按撤回墓碑处理,否则其他用户回看会看到已撤回消息的原文。
-            conversationStore.markMessageAsRecalledFromRemoteStatus(&message)
-        }
         message.isEdited = remote.isEdited
 		message.editRevision = remote.editRevision
         if isAttachment && !isAdminDeleted {
@@ -1996,7 +1987,15 @@ extension AppState {
             message.attachmentUploadStatus = attachmentUploadStatus
         }
         message.mentionedUsers = remoteMentionIdentities(from: remote)
-        applyRemoteReadSummary(from: remote, to: &message)
+        // History may retain the original payload and a read summary after a
+        // recall. Sanitize after mapping so neither can reappear in the row.
+        if isAdminDeleted {
+            conversationStore.markMessageAsAdminDeleted(&message)
+        } else if ["recalled", "revoked"].contains(remote.status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()) {
+            conversationStore.markMessageAsRecalledFromRemoteStatus(&message)
+        } else {
+            applyRemoteReadSummary(from: remote, to: &message)
+        }
         return message
     }
 

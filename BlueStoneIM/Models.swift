@@ -2,6 +2,11 @@ import Foundation
 import CryptoKit
 import UIKit
 
+func mediaAttachmentDisplayName(_ fileName: String) -> String {
+    let name = fileName as NSString
+    return name.pathExtension.isEmpty ? fileName : name.deletingPathExtension
+}
+
 enum JHTRuntimeFeatureFlags {
     // 仅用于排查 RTC/CallKit/WebRTC 线程问题。默认关闭，避免影响正常功能。
     // Debug 下可通过启动参数 --jht-disable-rtc-runtime 或环境变量 JHT_DISABLE_RTC_RUNTIME=1 打开。
@@ -1294,7 +1299,7 @@ struct AttachmentUploadFailure: Codable, Hashable, Sendable {
             "service_unavailable", "unrecognized_server_code",
             "signaturedoesnotmatch", "accessdenied", "requesttimetooskewed",
             "invalidaccesskeyid", "securitytokenexpired", "invalidsecuritytoken",
-            "requestexpired", "invaliddigest", "baddigest", "invalidargument"
+            "requestexpired", "invaliddigest", "baddigest", "invalidargument", "filealreadyexists", "object_not_found"
         ]
         if let serverCode, !serverCode.isEmpty {
             let normalized = serverCode.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -1447,6 +1452,87 @@ struct ChatMessage: Identifiable, Hashable, Sendable {
     var groupInviteApproval: GroupInviteApproval? = nil
 }
 // JHT_MOD_END APPSTATE_MODEL_SENDABLE_PERF_20260912 - 修改结束
+
+func inferredAttachmentMediaCategory(kind: MessageKind, name: String, mimeType: String) -> String {
+    let normalizedMime = mimeType.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    let ext = (name as NSString).pathExtension.lowercased()
+    if kind == .voice {
+        return "voice"
+    }
+    if kind == .image || normalizedMime.hasPrefix("image/") || ["png", "jpg", "jpeg", "webp", "heic", "gif", "bmp", "tiff"].contains(ext) {
+        return "image"
+    }
+    if normalizedMime.hasPrefix("video/") || ["mp4", "mov", "m4v", "avi", "mkv", "webm", "3gp"].contains(ext) {
+        return "video"
+    }
+    if normalizedMime.contains("pdf") || ext == "pdf" {
+        return "pdf"
+    }
+    if normalizedMime.hasPrefix("audio/") || ["mp3", "m4a", "aac", "wav", "flac", "ogg"].contains(ext) {
+        return "audio"
+    }
+    if ["zip", "rar", "7z", "tar", "gz"].contains(ext) {
+        return "archive"
+    }
+    return "file"
+}
+
+extension ChatMessage {
+    var resolvedAttachmentMimeType: String {
+        let explicit = attachmentMimeType.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if !explicit.isEmpty {
+            return explicit
+        }
+        if let value = attachmentMeta?
+            .components(separatedBy: " · ")
+            .first?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !value.isEmpty,
+           value.contains("/") {
+            return value.lowercased()
+        }
+        if kind == .image { return "image/jpeg" }
+        if kind == .voice { return "audio/mp4" }
+        return "application/octet-stream"
+    }
+
+    var conversationAttachmentPreview: String? {
+        guard !isDeletedLocally, status != .recalled else { return nil }
+        switch kind {
+        case .image: return "图片"
+        case .video: return "视频"
+        case .voice: return "音频"
+        case .file:
+            let explicit = attachmentMediaCategory.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            let preview = attachmentPreviewKind.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            let name = attachmentName.flatMap { $0.isEmpty ? nil : $0 } ?? text
+            let category = [explicit, preview].first { ["image", "video", "audio", "voice"].contains($0) }
+                ?? inferredAttachmentMediaCategory(
+                    kind: kind,
+                    name: name,
+                    mimeType: resolvedAttachmentMimeType
+                )
+            switch category {
+            case "image": return "图片"
+            case "video": return "视频"
+            case "audio", "voice": return "音频"
+            default: return "文件"
+            }
+        default: return nil
+        }
+    }
+
+    var conversationListPreview: String {
+        if let attachmentPreview = conversationAttachmentPreview { return attachmentPreview }
+        switch kind {
+        case .rtcCallRecord:
+            return rtcCallRecord?.presentation(viewerIsCaller: isOutgoing).conversationPreview
+                ?? RTCCallRecordPayload.safeFallbackText(payload: [:])
+        case .location: return "[位置] \(text)"
+        default: return text
+        }
+    }
+}
 
 enum MessageMentionProjection {
     static func includes(_ message: ChatMessage, currentActor: IMUser) -> Bool {

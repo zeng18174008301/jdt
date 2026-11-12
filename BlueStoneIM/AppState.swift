@@ -847,6 +847,7 @@ final class AppState: ObservableObject {
     var realtimeIngestFlushTask: Task<Void, Never>?
     var realtimeResubscriptionTask: Task<Void, Never>?
     var isConversationListUserInteracting = false
+    var isContactDirectoryUserInteracting = false
     var deliveryAckHighWaterByScope: [String: Int64] = [:]
     var deliveryAckTasksByScope: [String: Task<Void, Never>] = [:]
     // JHT_MOD_BEGIN DELIVERY_ACK_SWEEP_SLICE_PERF_20260912 - 修改开始：送达回执全量扫描改为可取消分片，避免主线程连续卡顿
@@ -865,7 +866,8 @@ final class AppState: ObservableObject {
 
     var avatarImageRouteContext: AvatarImageRouteContext? {
         guard let client = api as? IMAPIClient,
-              let route = client.runtimeTenantBinaryRouteContext(context: apiContext) else {
+              let route = client.runtimeTenantBinaryRouteContext(context: apiContext),
+              let routeSnapshotHash = client.tenantRouteSnapshot?.configHash else {
             return nil
         }
         let capturedContext = apiContext
@@ -875,12 +877,15 @@ final class AppState: ObservableObject {
             guard let self, let client,
                   self.apiContext.appID == route.appID,
                   self.apiContext.tenantID == route.tenantID,
-                  let current = client.runtimeTenantBinaryRouteContext(context: self.apiContext) else {
+                  let current = client.tenantRouteSnapshot,
+                  current.appID == route.appID,
+                  current.tenantID == route.tenantID,
+                  current.revision == route.revision,
+                  current.configHash == routeSnapshotHash,
+                  !client.isTenantRuntimeRevoked(appID: route.appID, tenantID: route.tenantID) else {
                 return false
             }
-            return current.appID == route.appID
-                && current.tenantID == route.tenantID
-                && current.revision == route.revision
+            return true
         }
         return AvatarImageRouteContext(
             authorityID: authorityID,
@@ -1223,6 +1228,7 @@ final class AppState: ObservableObject {
     let messageStore: any MessageStore
     let messagePersistence: MessagePersistenceCoordinator
     var localMessageTicket: LocalMessageSessionTicket?
+    var pendingMessageDeletions: Set<String> = []
     var durableOutboxRecoveryTask: Task<Void, Never>?
     var attachmentUploadOperations: [String: (id: UUID, task: Task<Void, Never>)] = [:]
     // JHT_MOD_BEGIN ATTACHMENT_FOREGROUND_RESUME_20260912 - 修改开始：前后台切换时恢复图片/文件附件上传任务

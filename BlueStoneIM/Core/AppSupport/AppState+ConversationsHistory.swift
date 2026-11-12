@@ -1069,15 +1069,18 @@ extension AppState {
     /// 返回是否真正发起了旧消息加载请求。节流、窗口不可用、已到最早消息等
     /// 情况下返回 false,调用方据此决定是否关闭各自的重试门。
     @discardableResult
-    func loadOlderMessagesIfAvailable(_ conversationID: String) -> Bool {
+    func loadOlderMessagesIfAvailable(
+        _ conversationID: String,
+        waitForViewportIdle: @escaping @MainActor () async -> Bool = { true }
+    ) -> Bool {
         guard apiContext.hasIMSession else {
-            return loadOlderPersistedMessagesIfAvailable(conversationID)
+            return loadOlderPersistedMessagesIfAvailable(conversationID, waitForViewportIdle: waitForViewportIdle)
         }
         let context = apiContext
         let scope = remoteDataScopeKey(for: context)
         guard let refreshSession = remoteSyncEngine.currentRemoteSnapshotRefreshSession(),
               isCurrentRemoteRefresh(refreshSession, scope: scope) else {
-            return loadOlderPersistedMessagesIfAvailable(conversationID)
+            return loadOlderPersistedMessagesIfAvailable(conversationID, waitForViewportIdle: waitForViewportIdle)
         }
         let sidecarSession = MessageSidecarSyncSession(context: context, scope: scope, refreshSession: refreshSession)
         guard !conversationStore.isHistoryLoading(conversationID: conversationID) else { return false }
@@ -1151,6 +1154,8 @@ extension AppState {
                    isCurrentRemoteRefresh(refreshSession, scope: scope) {
                     // JHT_MOD_BEGIN CHAT_HISTORY_PREP_ASYNC_PERF_20260913 - 修改开始：本地缓存消息恢复放到后台
                     let persistedModels = await MessageHistoryPreparationBuilder.cachedMessageModelsOffMain(persisted)
+                    guard await waitForViewportIdle(),
+                          isCurrentRemoteRefresh(refreshSession, scope: scope) else { return }
                     _ = conversationStore.mergePersistedMessagePage(
                         persistedModels,
                         conversationID: plannedConversationID
@@ -1164,7 +1169,8 @@ extension AppState {
                     beforeSeq: oldestSeq,
                     limit: pageLimit
                 )
-                guard isCurrentRemoteRefresh(refreshSession, scope: scope),
+                guard await waitForViewportIdle(),
+                      isCurrentRemoteRefresh(refreshSession, scope: scope),
                       isCurrentGroupHistoryBoundaryResponse(context: context, channelID: channelID, channelType: channelType, generation: boundaryGeneration) else { return }
                 let syncBoundary = historyBoundary(from: page, channelType: channelType)
                 if let syncBoundary {
@@ -1231,7 +1237,10 @@ extension AppState {
     }
 
     @discardableResult
-    private func loadOlderPersistedMessagesIfAvailable(_ conversationID: String) -> Bool {
+    private func loadOlderPersistedMessagesIfAvailable(
+        _ conversationID: String,
+        waitForViewportIdle: @escaping @MainActor () async -> Bool
+    ) -> Bool {
         guard !conversationStore.isHistoryLoading(conversationID: conversationID),
               let ticket = localMessageTicket,
               let conversation = conversations.first(where: { $0.id == conversationID }) else { return false }
@@ -1271,6 +1280,7 @@ extension AppState {
             }
             // JHT_MOD_BEGIN CHAT_HISTORY_PREP_ASYNC_PERF_20260913 - 修改开始：离线本地分页消息恢复放到后台
             let persistedModels = await MessageHistoryPreparationBuilder.cachedMessageModelsOffMain(persisted)
+            guard await waitForViewportIdle(), localMessageTicket == ticket else { return }
             _ = conversationStore.mergePersistedMessagePage(
                 persistedModels,
                 conversationID: conversationID

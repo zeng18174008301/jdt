@@ -452,6 +452,17 @@ extension IMAPIClient {
         let _: RemoteExtraResponse = try await request(base: imBase(for: context), path: "/api/im/messages/\(messageID.urlPathEncoded)/recall", method: "POST", bearer: context.imToken, body: try actionBody(context))
     }
 
+    func deleteMessage(context: IMAPIContext, messageID: String) async throws -> RemoteExtraResponse {
+        try await request(
+            base: imBase(for: context),
+            path: "/api/im/messages/\(messageID.urlPathEncoded)/delete",
+            method: "POST",
+            bearer: context.imToken,
+            body: try baseIMBody(context),
+            runtimeRouteReplayPolicy: .singleSend
+        )
+    }
+
     func adminDeleteGroupMessage(context: IMAPIContext, groupID: String, messageID: String) async throws {
         try requireIM(context)
         let _: EmptyPayload = try await request(

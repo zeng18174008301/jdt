@@ -13573,6 +13573,187 @@ final class HTTPTransportTests: XCTestCase {
         }
     }
 
+    func testVideoUploadFallsBackOnceWithTheSameStagedBytesAndIdentities() async throws {
+        let bytes = Data([0, 1, 2, 3, 4, 5, 6, 7])
+        let context = makeContext(tenantID: "video-route-\(UUID().uuidString)")
+        let fileID = "video-upload"
+        let acceleratedURL = "https://fast.example.test/object?sig=fast"
+        let standardURL = "https://storage.example.test/object?sig=standard"
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("route-video-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sourceURL = root.appendingPathComponent("clip.mp4")
+        try bytes.write(to: sourceURL)
+        let managed = try PendingAttachmentFileStore.stageFile(from: sourceURL, preferredName: "clip.mp4")
+        defer { PendingAttachmentFileStore.removeManagedFile(at: managed.url) }
+        let transport = StrictAttachmentHTTPTransport(
+            results: [
+                attachmentConfigResult(),
+                videoPresignFixture(fileID: fileID, url: acceleratedURL, transport: "accelerated", size: bytes.count),
+                videoUploadFixture(404, ["ok": false]),
+                videoUploadFixture(409, ["ok": false, "error": ["code": "object_not_found"]]),
+                videoPresignFixture(fileID: fileID, url: standardURL, transport: "standard", size: bytes.count),
+                videoUploadFixture(404, ["ok": false]),
+                attachmentUploadedResult(fileID: fileID, sizeBytes: bytes.count, mimeType: "video/mp4"),
+                attachmentMessageResult(messageID: "sent-video", fileID: fileID, sizeBytes: bytes.count, mimeType: "video/mp4")
+            ],
+            uploadResults: [videoUploadFixture(200, [:]), videoUploadFixture(200, [:])]
+        )
+        let persistence = MessagePersistenceCoordinator(
+            applicationSupportBase: root.appendingPathComponent("support"),
+            cachesBase: root.appendingPathComponent("caches")
+        )
+        let state = AppState(api: makeClient(transport: transport), messagePersistence: persistence, apiContextOverride: context)
+        state.conversationStore.hydrateCachedConversations([makeGroupConversation(id: "g1")])
+        XCTAssertTrue(state.sendAttachment(
+            kind: .file, name: "clip.mp4", mimeType: "video/mp4", sizeBytes: Int64(bytes.count),
+            fileURL: managed.url, removeFileWhenFinished: true, conversationID: "g1", quote: nil
+        ))
+        let outcome = try await awaitMessage(in: state, conversationID: "g1") {
+            $0.id == "sent-video" || $0.attachmentUploadStatus.hasPrefix("failed_")
+        }
+        XCTAssertEqual(outcome.id, "sent-video", "phase=\(outcome.attachmentUploadStatus) requests=\(transport.requests().compactMap { $0.url?.path })")
+        let requests = transport.requests()
+        let presigns = try requests.filter { $0.url?.path == "/api/tenant/files/presign-upload" }.map(requestJSONObject)
+        guard presigns.count == 2 else { return XCTFail("Expected two signatures, got \(presigns.count)") }
+        XCTAssertEqual(presigns.map { $0["upload_transport"] as? String }, ["auto", "standard"])
+        XCTAssertEqual(presigns.map { $0["checksum"] as? String }, Array(repeating: AttachmentTransferRepository.sha256Hex(bytes), count: 2))
+        XCTAssertEqual(presigns[1]["expected_file_id"] as? String, fileID)
+        XCTAssertEqual(presigns[0]["client_msg_no"] as? String, presigns[1]["client_msg_no"] as? String)
+        let sent = try requests.filter { $0.url?.path == "/api/im/messages" }.map(requestJSONObject)
+        XCTAssertEqual(sent.count, 1)
+        XCTAssertEqual(sent.first?["client_msg_no"] as? String, presigns[0]["client_msg_no"] as? String)
+        XCTAssertEqual((sent.first?["payload"] as? [String: Any])?["file_id"] as? String, fileID)
+        XCTAssertEqual(transport.uploads().map { $0.request.url?.absoluteString }, [acceleratedURL, standardURL])
+        XCTAssertEqual(transport.uploads().map(\.body), [bytes, bytes])
+        XCTAssertTrue(transport.isExhausted)
+    }
+
+    func testVideoUploadRejectsMismatchedFallbackObjectWithoutSecondPut() async throws {
+        let bytes = Data([0, 1, 2, 3])
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("mismatch-video-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let transport = StrictAttachmentHTTPTransport(
+            results: [
+                attachmentConfigResult(),
+                videoPresignFixture(fileID: "original", url: "https://fast.example.test/object", transport: "accelerated", size: bytes.count),
+                videoUploadFixture(404, ["ok": false]),
+                videoUploadFixture(409, ["ok": false, "error": ["code": "object_not_found"]]),
+                videoPresignFixture(fileID: "different", url: "https://storage.example.test/object", transport: "standard", size: bytes.count)
+            ],
+            uploadResults: [videoUploadFixture(200, [:])]
+        )
+        let persistence = MessagePersistenceCoordinator(
+            applicationSupportBase: root.appendingPathComponent("support"),
+            cachesBase: root.appendingPathComponent("caches")
+        )
+        let state = AppState(
+            api: makeClient(transport: transport), messagePersistence: persistence,
+            apiContextOverride: makeContext(tenantID: "video-mismatch-\(UUID().uuidString)")
+        )
+        state.conversationStore.hydrateCachedConversations([makeGroupConversation(id: "g1")])
+        XCTAssertTrue(state.sendAttachment(
+            kind: .file, name: "clip.mp4", mimeType: "video/mp4", sizeBytes: Int64(bytes.count),
+            data: bytes, conversationID: "g1", quote: nil
+        ))
+        let outcome = try await awaitMessage(in: state, conversationID: "g1") {
+            $0.attachmentUploadStatus.hasPrefix("failed_")
+        }
+        XCTAssertEqual(transport.uploads().count, 1, "phase=\(outcome.attachmentUploadStatus) requests=\(transport.requests().compactMap { $0.url?.path })")
+        XCTAssertFalse(transport.requests().contains { $0.url?.path == "/api/im/messages" })
+        XCTAssertTrue(transport.isExhausted)
+    }
+
+    func testVideoUploadConfirmationRequiresVerifiedBinding() async throws {
+        let context = makeContext()
+        let checksum = String(repeating: "a", count: 64)
+        let file: [String: Any] = [
+            "file_id": "video", "app_id": context.appID, "channel_id": "g1", "channel_type": "group",
+            "client_msg_no": "local-video", "size_bytes": 8, "mime_type": "video/mp4",
+            "status": "uploaded", "completion_state": "uploaded", "verified": true, "checksum_sha256": checksum
+        ]
+        for matching in [true, false] {
+            let payload = matching ? file : file.merging(["client_msg_no": "another-message"]) { _, new in new }
+            let transport = StrictAttachmentHTTPTransport(
+                results: [videoUploadFixture(200, ["ok": true, "data": payload])], uploadResults: []
+            )
+            let api = makeClient(transport: transport)
+            do {
+                let confirmed = try await api.confirmRoutedVideoAttachmentUpload(
+                    context: context, conversation: makeGroupConversation(id: "g1"), channelID: "g1",
+                    clientMessageID: "local-video", fileID: "video", sizeBytes: 8, mimeType: "video/mp4",
+                    checksum: checksum, preparedFile: nil
+                )
+                XCTAssertTrue(matching, "a different message cannot confirm this upload")
+                XCTAssertEqual(confirmed.id, "video")
+                XCTAssertEqual(confirmed.checksum, checksum)
+            } catch {
+                XCTAssertFalse(matching, "matching verified upload failed: \(error)")
+            }
+            XCTAssertEqual(transport.requests().map { $0.url?.path }, ["/api/tenant/files/video/upload-status"])
+            XCTAssertTrue(transport.isExhausted)
+        }
+    }
+
+    func testVideoUploadAcceptedCompletionStillReadsAuthoritativeStatus() async throws {
+        let context = makeContext()
+        let checksum = String(repeating: "b", count: 64)
+        let identity: [String: Any] = [
+            "file_id": "video", "app_id": context.appID, "channel_id": "g1", "channel_type": "group",
+            "client_msg_no": "local-video", "size_bytes": 8, "mime_type": "video/mp4"
+        ]
+        let prepared = identity.merging(["status": "prepared", "completion_state": "prepared",
+                                         "verified": false, "checksum_sha256": ""]) { _, new in new }
+        let verified = identity.merging(["status": "uploaded", "completion_state": "uploaded",
+                                         "verified": true, "checksum_sha256": checksum]) { _, new in new }
+        let transport = StrictAttachmentHTTPTransport(results: [
+            videoUploadFixture(200, ["ok": true, "data": prepared]),
+            videoUploadFixture(202, ["ok": true, "data": ["file_id": "video", "status": "uploaded"]]),
+            videoUploadFixture(200, ["ok": true, "data": verified])
+        ], uploadResults: [])
+        var selectedVerification = false
+        let confirmed = try await makeClient(transport: transport).confirmRoutedVideoAttachmentUpload(
+            context: context, conversation: makeGroupConversation(id: "g1"), channelID: "g1",
+            clientMessageID: "local-video", fileID: "video", sizeBytes: 8, mimeType: "video/mp4",
+            checksum: checksum, preparedFile: nil
+        ) {
+            selectedVerification = true
+        }
+        XCTAssertTrue(selectedVerification)
+        XCTAssertEqual(confirmed.checksum, checksum)
+        XCTAssertEqual(transport.requests().map { $0.url?.lastPathComponent }, ["upload-status", "uploaded", "upload-status"])
+        XCTAssertEqual(transport.requests().first { $0.httpMethod == "POST" }?.value(forHTTPHeaderField: "Prefer"), "respond-async")
+        XCTAssertTrue(transport.isExhausted)
+    }
+
+    func testColdRestartDoesNotSpendVideoFallbackTwice() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("cold-video-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let context = makeContext(tenantID: "cold-video-\(UUID().uuidString)")
+        let messageID = "local-cold-video"
+        let fileID = "cold-video-file"
+        _ = try await seedDurableAttachmentCheckpoint(
+            root: root, context: context, phase: "video_standard_fallback", fileID: fileID,
+            clientMessageID: messageID, isVideo: true
+        )
+        let transport = StrictAttachmentHTTPTransport(results: [
+            attachmentConfigResult(),
+            videoUploadFixture(404, ["ok": false]),
+            videoUploadFixture(409, ["ok": false, "error": ["code": "object_not_found"]])
+        ], uploadResults: [])
+        let persistence = MessagePersistenceCoordinator(
+            applicationSupportBase: root.appendingPathComponent("support"),
+            cachesBase: root.appendingPathComponent("caches")
+        )
+        let state = AppState(api: makeClient(transport: transport), messagePersistence: persistence, apiContextOverride: context)
+        let restored = await state.recoverCachedDurableOutboxForTesting()
+        XCTAssertTrue(restored)
+        _ = try await awaitMessage(in: state, conversationID: "g1") { $0.id == messageID && $0.status == .failed }
+        XCTAssertEqual(transport.requests().map { $0.url?.lastPathComponent }, ["config", "upload-status", "uploaded"])
+        XCTAssertTrue(transport.uploads().isEmpty)
+        XCTAssertTrue(transport.isExhausted)
+    }
+
     func testImageAttachmentFinalizeFailureRetriesSameFileWithoutSecondPut() async throws {
         let imageBytes = pngFixtureBytes(count: 600_562)
         let transport = StrictAttachmentHTTPTransport(
@@ -17183,9 +17364,12 @@ final class HTTPTransportTests: XCTestCase {
         )
         XCTAssertTrue(succeeded)
         XCTAssertTrue(fixture.state.fileStore.hasPendingAttachmentUpload(messageID: localID))
+        transport.expectReplacementConfig()
         fixture.state.startQueuedAttachmentUploadsInOrder([localID], in: conversationID)
         try await waitForCondition { transport.replacementIsWaiting }
-        XCTAssertTrue(transport.replacementIsWaiting)
+        guard transport.replacementIsWaiting else {
+            return XCTFail("The replacement never reached upload configuration")
+        }
         let replacementTask = try XCTUnwrap(fixture.state.attachmentUploadTaskForReauthenticationTesting(messageID: localID))
         let beforeLate = try XCTUnwrap(fixture.state.conversationStore.conversation(id: conversationID)?.messages.first(where: { $0.id == localID }))
         let beforeCheckpoint = fixture.state.fileStore.attachmentUploadCheckpoint(messageID: localID)
@@ -18128,6 +18312,17 @@ final class HTTPTransportTests: XCTestCase {
         )
     }
 
+    private func videoUploadFixture(_ status: Int, _ payload: [String: Any]) -> HTTPTransportResult {
+        HTTPTransportResult(data: try! JSONSerialization.data(withJSONObject: payload), isHTTPResponse: true, statusCode: status)
+    }
+
+    private func videoPresignFixture(fileID: String, url: String, transport: String, size: Int) -> HTTPTransportResult {
+        videoUploadFixture(200, ["ok": true, "data": [
+            "file": ["file_id": fileID, "status": "prepared", "mime_type": "video/mp4", "size_bytes": size],
+            "upload": ["url": url, "method": "PUT", "transport": transport]
+        ]])
+    }
+
     private func attachmentPresignResult(
         fileID: String,
         uploadURL: String,
@@ -18219,37 +18414,41 @@ final class HTTPTransportTests: XCTestCase {
         context: IMAPIContext,
         phase: String,
         fileID: String,
-        clientMessageID: String
+        clientMessageID: String,
+        isVideo: Bool = false
     ) async throws -> Int {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let bytes = pngFixtureBytes(count: 600_562)
-        let sourceURL = root.appendingPathComponent("source-\(clientMessageID).png")
+        let ext = isVideo ? "mp4" : "png"
+        let mime = isVideo ? "video/mp4" : "image/png"
+        let name = isVideo ? "视频消息.mp4" : "图片消息.png"
+        let sourceURL = root.appendingPathComponent("source-\(clientMessageID).\(ext)")
         try bytes.write(to: sourceURL)
         var message = ChatMessage(
             id: clientMessageID,
             senderId: "uid-1",
             senderName: "我",
-            text: "图片消息.png",
+            text: name,
             time: "09:00",
             createdAt: Date(timeIntervalSince1970: 1_700_000_000),
             channelSeq: 0,
             isOutgoing: true,
             status: .sending,
-            kind: .image,
+            kind: isVideo ? .file : .image,
             reactions: [],
             readBy: [],
             unreadBy: [],
-            attachmentName: "图片消息.png",
+            attachmentName: name,
             attachmentSizeBytes: Int64(bytes.count),
             attachmentPreviewURL: sourceURL.absoluteString,
             attachmentDownloadURL: sourceURL.absoluteString,
             attachmentPreviewAvailable: true,
             attachmentDownloadAvailable: true
         )
-        message.contentType = "image"
-        message.attachmentMimeType = "image/png"
-        message.attachmentMediaCategory = "image"
-        message.attachmentExtension = "png"
+        message.contentType = isVideo ? "file" : "image"
+        message.attachmentMimeType = mime
+        message.attachmentMediaCategory = isVideo ? "video" : "image"
+        message.attachmentExtension = ext
         var conversation = makeGroupConversation(id: "g1")
         conversation.messages = [message]
         let scope = try LocalMessageScope(context: context)
@@ -18271,8 +18470,8 @@ final class HTTPTransportTests: XCTestCase {
                 operationKind: "send_attachment",
                 attachment: LocalMessageAttachmentIntent(
                     fileURL: sourceURL,
-                    fileName: "图片消息.png",
-                    mimeType: "image/png",
+                    fileName: name,
+                    mimeType: mime,
                     sizeBytes: Int64(bytes.count)
                 )
             ),
@@ -19417,6 +19616,7 @@ private final class SessionReauthenticationUploadGateTransport: HTTPTransport, @
     private var replacementReleased = false
     private var oldWaiting = false
     private var replacementWaiting = false
+    private var expectsReplacementConfig = false
     private var oldRequestCounts: [String: Int] = [:]
 
     init(phase: String, lateFailure: Bool, voice: Bool, size: Int, loginResult: HTTPTransportResult) {
@@ -19430,6 +19630,10 @@ private final class SessionReauthenticationUploadGateTransport: HTTPTransport, @
     var oldIsWaiting: Bool { lock.withLock { oldWaiting } }
     var replacementIsWaiting: Bool { lock.withLock { replacementWaiting } }
     var oldCounts: [String: Int] { lock.withLock { oldRequestCounts } }
+
+    func expectReplacementConfig() {
+        lock.withLock { expectsReplacementConfig = true }
+    }
 
     func data(for request: URLRequest) async throws -> HTTPTransportResult {
         let path = request.url?.path ?? ""
@@ -19448,7 +19652,14 @@ private final class SessionReauthenticationUploadGateTransport: HTTPTransport, @
         else {
             throw FakeHTTPTransportError.responseQueueExhausted(method: request.httpMethod ?? "GET", url: request.url?.absoluteString ?? "")
         }
-        let replacement = request.value(forHTTPHeaderField: "Authorization") == "Bearer reauth-im-token"
+        // File configuration uses the anonymous media contract. The old
+        // attempt is already paused, so the next config belongs to the
+        // replacement armed by the fixture, regardless of bearer headers.
+        let replacement = requestPhase == "config" && lock.withLock {
+            let armed = expectsReplacementConfig
+            expectsReplacementConfig = false
+            return armed
+        }
         if !replacement { lock.withLock { oldRequestCounts[requestPhase, default: 0] += 1 } }
         if replacement && requestPhase == "config" { await wait(replacement: true) }
         if !replacement && requestPhase == phase {
@@ -19746,6 +19957,14 @@ final class StrictAttachmentHTTPTransport: HTTPTransport, @unchecked Sendable {
             }
             return queuedUploadResults.removeFirst().resolvingResponseURL(request.url)
         }
+    }
+
+    func upload(
+        for request: URLRequest,
+        fromFile fileURL: URL,
+        delegate: URLSessionTaskDelegate?
+    ) async throws -> HTTPTransportResult {
+        try await upload(for: request, from: Data(contentsOf: fileURL), delegate: delegate)
     }
 
     func requests() -> [URLRequest] {

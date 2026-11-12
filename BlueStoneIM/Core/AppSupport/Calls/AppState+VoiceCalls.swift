@@ -6291,23 +6291,70 @@ extension AppState {
         }
     }
 
+    private struct RTCCallEventObservation {
+        let payload: [String: JSONValue]
+        let callPayload: [String: JSONValue]
+        let event: String
+        let status: String
+        let callID: String
+        let stateVersion: Int64
+
+        init(_ envelope: RealtimeEnvelope) {
+            payload = envelope.payload["rtc_call"]?.objectValue ?? envelope.payload
+            callPayload = payload["call"]?.objectValue ?? [:]
+            event = (payload["event"]?.stringValue ?? envelope.type).trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            status = (payload["status"]?.stringValue ?? callPayload["status"]?.stringValue ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            callID = (payload["call_id"]?.stringValue ?? payload["id"]?.stringValue
+                ?? callPayload["call_id"]?.stringValue ?? callPayload["id"]?.stringValue ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            stateVersion = Int64(payload["state_version"]?.stringValue ?? payload["stateVersion"]?.stringValue
+                ?? callPayload["state_version"]?.stringValue ?? callPayload["stateVersion"]?.stringValue ?? "") ?? 0
+        }
+
+        var callerUID: String {
+            (payload["caller_uid"]?.stringValue ?? payload["from_uid"]?.stringValue
+                ?? callPayload["caller_uid"]?.stringValue ?? callPayload["from_uid"]?.stringValue ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        var calleeUID: String {
+            (payload["callee_uid"]?.stringValue ?? payload["target_uid"]?.stringValue
+                ?? callPayload["callee_uid"]?.stringValue ?? callPayload["target_uid"]?.stringValue ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        var isRinging: Bool { event == "rtc.call.ringing" || status == "ringing" }
+
+        var terminalStatus: String? {
+            let value: String
+            if event.hasPrefix("rtc.call.") {
+                value = String(event.dropFirst("rtc.call.".count))
+            } else if event == "rtc_call" || event.isEmpty {
+                value = status
+            } else {
+                return nil
+            }
+            switch value {
+            case "canceled", "cancelled": return "canceled"
+            case "timeout", "timed_out": return "timed_out"
+            case "ended", "rejected", "busy": return value
+            default: return nil
+            }
+        }
+    }
+
     @discardableResult
     func handleRTCCallEvent(_ envelope: RealtimeEnvelope, scope: String? = nil) -> Bool {
         if let scope {
             guard isCurrentRemoteScope(scope) else { return false }
         }
-        let payload = envelope.payload["rtc_call"]?.objectValue ?? envelope.payload
-        let callPayload = payload["call"]?.objectValue ?? [:]
-        let event = (payload["event"]?.stringValue ?? envelope.type).trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let status = (payload["status"]?.stringValue ?? callPayload["status"]?.stringValue ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let callID = (payload["call_id"]?.stringValue ?? payload["id"]?.stringValue ?? callPayload["call_id"]?.stringValue ?? callPayload["id"]?.stringValue ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        let terminalStateVersion = Int64(
-            payload["state_version"]?.stringValue
-                ?? payload["stateVersion"]?.stringValue
-                ?? callPayload["state_version"]?.stringValue
-                ?? callPayload["stateVersion"]?.stringValue
-                ?? ""
-        ) ?? 0
+        return handleRTCCallEvent(RTCCallEventObservation(envelope), scope: scope)
+    }
+
+    private func handleRTCCallEvent(_ observation: RTCCallEventObservation, scope: String?) -> Bool {
+        let payload = observation.payload
+        let callPayload = observation.callPayload
+        let event = observation.event
+        let status = observation.status
+        let callID = observation.callID
+        let terminalStateVersion = observation.stateVersion
         let terminalReason = rtcTerminalReason(
             event: event,
             status: status,
@@ -6315,8 +6362,8 @@ extension AppState {
             callPayload: callPayload
         )
         let historicalTiming = rtcHistoricalCallTiming(payload: payload, callPayload: callPayload)
-        let callerUID = (payload["caller_uid"]?.stringValue ?? payload["from_uid"]?.stringValue ?? callPayload["caller_uid"]?.stringValue ?? callPayload["from_uid"]?.stringValue ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        let calleeUID = (payload["callee_uid"]?.stringValue ?? payload["target_uid"]?.stringValue ?? callPayload["callee_uid"]?.stringValue ?? callPayload["target_uid"]?.stringValue ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let callerUID = observation.callerUID
+        let calleeUID = observation.calleeUID
         let roomID = (payload["room_id"]?.stringValue ?? callPayload["room_id"]?.stringValue ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         let channelID = (payload["channel_id"]?.stringValue ?? callPayload["channel_id"]?.stringValue ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         let identities = currentUserIdentitySet()
@@ -6344,7 +6391,7 @@ extension AppState {
             return true
         }
 
-        if event == "rtc.call.ringing" || status == "ringing" {
+        if observation.isRinging {
             guard !callerUID.isEmpty,
                   !identities.contains(callerUID),
                   calleeUID.isEmpty || identities.contains(calleeUID) else { return false }
@@ -7233,15 +7280,21 @@ extension AppState {
                 return .cancelled
             }
             voiceDebug(routine: true, "events_refresh_ok http=2xx count=\(events.count) types=\(Self.rtcStatusCountsSummary(events.map(\.type))) context=\(Self.rtcDebugContextSummary(context))")
+            let observations = events.map { event in
+                RTCCallEventObservation(RealtimeEnvelope(type: event.type, requestID: nil, payload: event.payload))
+            }
+            let closedBeforePresentation = reconcileUnownedPolledTerminals(observations)
             var processedNotificationIDs: [String] = []
-            for event in events {
+            for (event, observation) in zip(events, observations) {
                 // JHT_MOD_BEGIN IOS_RTC_REQUEST_LIFECYCLE_20260911
                 guard !Task.isCancelled,
                       isCurrentRemoteScope(scope),
                       allowBackgroundExecution || !isApplicationBackgroundedForRTC else { return .cancelled }
                 // JHT_MOD_END IOS_RTC_REQUEST_LIFECYCLE_20260911
-                let envelope = RealtimeEnvelope(type: event.type, requestID: nil, payload: event.payload)
-                if handleRTCCallEvent(envelope, scope: scope), !event.notificationID.isEmpty {
+                let isClosedReplay = closedBeforePresentation.contains(observation.callID)
+                    && (observation.terminalStatus != nil || observation.isRinging || observation.event == "rtc.call.accepted")
+                if isClosedReplay || handleRTCCallEvent(observation, scope: scope),
+                   !event.notificationID.isEmpty {
                     processedNotificationIDs.append(event.notificationID)
                 }
             }
@@ -7270,6 +7323,86 @@ extension AppState {
         }
     }
     // JHT_MOD_END IOS_RTC_REQUEST_BACKOFF_20260910
+
+    private func reconcileUnownedPolledTerminals(_ observations: [RTCCallEventObservation]) -> Set<String> {
+        let owned = Set([
+            activeVoiceCall?.callID,
+            incomingVoiceCall?.callID,
+            callStore.activeLifecycleSnapshot?.identity.callID
+        ].compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) })
+        var terminalIndexByID: [String: Int] = [:]
+        var newestNonterminalRevision: [String: Int64] = [:]
+        var incomingByID: [String: RTCCallEventObservation] = [:]
+        let identities = currentUserIdentitySet()
+        for (index, observation) in observations.enumerated()
+            where !observation.callID.isEmpty && !owned.contains(observation.callID) {
+            let callID = observation.callID
+            if observation.terminalStatus != nil {
+                if terminalIndexByID[callID].map({ observations[$0].stateVersion <= observation.stateVersion }) ?? true {
+                    terminalIndexByID[callID] = index
+                }
+            } else {
+                newestNonterminalRevision[callID] = max(newestNonterminalRevision[callID] ?? 0, observation.stateVersion)
+                if observation.isRinging, !observation.callerUID.isEmpty, !identities.contains(observation.callerUID),
+                   observation.calleeUID.isEmpty || identities.contains(observation.calleeUID) {
+                    incomingByID[callID] = observation
+                }
+            }
+        }
+
+        var closed: Set<String> = []
+        for index in terminalIndexByID.values.sorted() {
+            let terminal = observations[index]
+            let callID = terminal.callID
+            // A terminal revision older than a known live revision cannot close it.
+            guard terminal.stateVersion <= 0 || terminal.stateVersion >= (newestNonterminalRevision[callID] ?? 0),
+                  let status = terminal.terminalStatus else { continue }
+            closed.insert(callID)
+            let explicitReason = rtcTerminalReason(
+                event: "rtc.call.\(status)", status: status, payload: terminal.payload, callPayload: terminal.callPayload
+            )
+            let reason = explicitReason.isEmpty ? status : explicitReason
+            let timing = rtcHistoricalCallTiming(payload: terminal.payload, callPayload: terminal.callPayload)
+            if rtcTerminalMarkersByCallID[callID] != nil {
+                refineTerminalMarkerAndRecord(
+                    callID: callID, reason: reason, stateVersion: terminal.stateVersion, historicalTiming: timing
+                )
+                continue
+            }
+            // The inbox can contain ringing followed by cancellation from
+            // before launch. Acknowledge both without claiming a local call.
+            rtcTerminalMarkersByCallID[callID] = RTCCallTerminalMarker(
+                callID: callID, reason: reason, stateVersion: max(0, terminal.stateVersion)
+            )
+            if let ringing = incomingByID[callID] {
+                ensureCallRecordPersistenceBindingIfNeeded()
+                guard !calls.contains(where: { $0.callID == callID }) else { continue }
+                let channelID = ringing.payload["channel_id"]?.stringValue ?? ringing.callPayload["channel_id"]?.stringValue ?? ""
+                let peer = voiceCallPeer(
+                    from: ringing.payload, callPayload: ringing.callPayload, peerUID: ringing.callerUID,
+                    peerRole: .caller, channelID: channelID
+                )
+                let media = requestedRTCCallMediaMode(payload: ringing.payload, callPayload: ringing.callPayload) == "video"
+                    ? "视频" : "语音"
+                let summary: String
+                switch status {
+                case "canceled": summary = "已取消"
+                case "rejected": summary = "已拒绝"
+                case "timed_out": summary = "未接通"
+                case "busy": summary = "忙线"
+                default: summary = "已结束"
+                }
+                upsertVoiceCallRecord(
+                    callID: callID, title: peer.name, subtitle: "\(media)来电 · \(summary)",
+                    status: summary, direction: .incoming, peer: peer,
+                    startedAt: timing.startedAt, endedAt: timing.endedAt, durationSeconds: timing.durationSeconds,
+                    endReason: reason, stateVersion: terminal.stateVersion, replaceHistoricalTiming: true
+                )
+            }
+            voiceDebug("events_replay_closed call=\(Self.shortDebugID(callID)) status=\(status)")
+        }
+        return closed
+    }
 
     private struct RTCHistoricalCallTiming {
         var startedAt: Date?
@@ -7425,7 +7558,9 @@ extension AppState {
         }
         activeVoiceCall = nil
         incomingVoiceCall = nil
-        if isVideoCall, let peer {
+        // An unanswered incoming banner can end while the user is elsewhere.
+        // Keep its record and toast, but don't open a new full-screen result.
+        if activeCall?.isVideoCall == true, let peer {
             presentVideoCallTerminal(
                 callID: normalizedCallID,
                 peer: peer,

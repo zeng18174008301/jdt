@@ -404,7 +404,7 @@ final class ConversationStore: ObservableObject {
             normalized.messages = messages
             if removedOriginalLatest {
                 if let latest = latestConfirmedMessage(in: messages) {
-                    normalized.lastMessage = messageListPreview(latest)
+                    normalized.lastMessage = latest.conversationListPreview
                     normalized.time = latest.time
                 } else {
                     normalized.lastMessage = ""
@@ -1127,7 +1127,7 @@ final class ConversationStore: ObservableObject {
         if refreshSummary {
             if let latest = latestConfirmedMessage(in: conversation.messages.filter { !$0.isPinnedContextOnly })
                 ?? latestConfirmedMessage(in: conversation.messages) {
-                conversation.lastMessage = messageListPreview(latest)
+                conversation.lastMessage = latest.conversationListPreview
                 conversation.time = latest.time
                 conversation.sortTimestamp = effectiveCreatedAt(for: latest)?.timeIntervalSince1970 ?? conversation.sortTimestamp
             } else if boundary.isRestrictive || conversation.historyBoundaryConfirmed {
@@ -1728,40 +1728,10 @@ final class ConversationStore: ObservableObject {
         }
     }
 
-    func messageListPreview(_ message: ChatMessage) -> String {
-        switch message.kind {
-        case .rtcCallRecord:
-            return message.rtcCallRecord?.presentation(viewerIsCaller: message.isOutgoing).conversationPreview
-                ?? RTCCallRecordPayload.safeFallbackText(payload: [:])
-        case .image:
-            return "[图片] \(message.attachmentName ?? message.text)"
-        case .file:
-            switch attachmentMediaCategory(for: message) {
-            case "video":
-                return "[视频] \(message.attachmentName ?? message.text)"
-            case "pdf":
-                return "[PDF] \(message.attachmentName ?? message.text)"
-            default:
-                break
-            }
-            return "[文件] \(message.attachmentName ?? message.text)"
-        case .voice:
-            return "[语音] \(message.text)"
-        case .video:
-            return "[视频] \(message.text)"
-        case .location:
-            return "[位置] \(message.text)"
-        case .contactCard:
-            return message.text
-        case .system, .text:
-            return message.text
-        }
-    }
-
     func updateConversationLatestFromMessages(at index: Int) {
         guard conversations.indices.contains(index),
               let latest = latestConfirmedMessage(in: conversations[index].messages) else { return }
-        conversations[index].lastMessage = messageListPreview(latest)
+        conversations[index].lastMessage = latest.conversationListPreview
         conversations[index].time = latest.time
         conversations[index].sortTimestamp = max(conversations[index].sortTimestamp, effectiveCreatedAt(for: latest)?.timeIntervalSince1970 ?? 0)
     }
@@ -1777,7 +1747,7 @@ final class ConversationStore: ObservableObject {
         guard !normalizedConversationID.isEmpty,
               let index = conversations.firstIndex(where: { $0.id == normalizedConversationID }) else { return nil }
         conversations[index].messages.append(message)
-        conversations[index].lastMessage = preview ?? messageListPreview(message)
+        conversations[index].lastMessage = message.conversationAttachmentPreview ?? preview ?? message.conversationListPreview
         conversations[index].time = displayTime
         conversations[index].sortTimestamp = effectiveCreatedAt(for: message)?.timeIntervalSince1970 ?? Date().timeIntervalSince1970
         return conversations[index]
@@ -2063,10 +2033,14 @@ final class ConversationStore: ObservableObject {
         guard !normalizedMessageID.isEmpty,
               !normalizedConversationID.isEmpty,
               let cIndex = conversations.firstIndex(where: { $0.id == normalizedConversationID }) else { return false }
-        let originalCount = conversations[cIndex].messages.count
+        guard let removed = conversations[cIndex].messages.first(where: { $0.id == normalizedMessageID }) else { return false }
         conversations[cIndex].messages.removeAll { $0.id == normalizedMessageID }
-        guard conversations[cIndex].messages.count != originalCount else { return false }
-        updateConversationLatestFromMessages(at: cIndex)
+        if latestConfirmedMessage(in: conversations[cIndex].messages) != nil {
+            updateConversationLatestFromMessages(at: cIndex)
+        } else if conversations[cIndex].lastMsgSeq == 0 || conversations[cIndex].lastMessage == removed.conversationListPreview {
+            conversations[cIndex].lastMessage = ""
+            conversations[cIndex].time = ""
+        }
         return true
     }
 
@@ -2159,7 +2133,7 @@ final class ConversationStore: ObservableObject {
         guard updated != previous else { return nil }
         conversation.messages[mIndex] = updated
         if let latest = latestConfirmedMessage(in: conversation.messages) {
-            conversation.lastMessage = messageListPreview(latest)
+            conversation.lastMessage = latest.conversationListPreview
             conversation.time = latest.time
             conversation.sortTimestamp = max(conversation.sortTimestamp, effectiveCreatedAt(for: latest)?.timeIntervalSince1970 ?? 0)
         }
@@ -2343,8 +2317,14 @@ final class ConversationStore: ObservableObject {
                channelIDForConversation?(conversations[cIndex]) != normalizedConversationID {
                 continue
             }
-            markMessageAsRecalled(&conversations[cIndex].messages[mIndex], recallText: recallText)
-            updateConversationLatestFromMessages(at: cIndex)
+            let original = conversations[cIndex].messages[mIndex]
+            guard !original.isDeletedLocally else { return true }
+            var recalled = original
+            markMessageAsRecalled(&recalled, recallText: recallText)
+            if recalled != original {
+                conversations[cIndex].messages[mIndex] = recalled
+                updateConversationLatestFromMessages(at: cIndex)
+            }
             return true
         }
         return false
@@ -2423,8 +2403,17 @@ final class ConversationStore: ObservableObject {
                 continue
             }
             guard let mIndex = conversations[cIndex].messages.firstIndex(where: { $0.id == normalizedMessageID }) else { continue }
+            let message = conversations[cIndex].messages[mIndex]
+            guard !message.isDeletedLocally else { return true }
             markMessageAsAdminDeleted(&conversations[cIndex].messages[mIndex])
-            updateConversationLatestFromMessages(at: cIndex)
+            if message.channelSeq >= conversations[cIndex].lastMsgSeq {
+                if latestConfirmedMessage(in: conversations[cIndex].messages) != nil {
+                    updateConversationLatestFromMessages(at: cIndex)
+                } else {
+                    conversations[cIndex].lastMessage = ""
+                    conversations[cIndex].time = ""
+                }
+            }
             return true
         }
         return false
@@ -3174,7 +3163,7 @@ final class ConversationStore: ObservableObject {
             title: resolvedTitle,
             subtitle: subtitle,
             kind: kind,
-            lastMessage: shouldUseLatestSummary ? messageListPreview(latestMessage) : previous?.lastMessage ?? "",
+            lastMessage: shouldUseLatestSummary ? latestMessage.conversationListPreview : previous?.lastMessage ?? "",
             time: resolvedTime,
             unread: nextUnread,
             isPinned: previous?.isPinned ?? false,
@@ -4025,7 +4014,8 @@ final class ConversationStore: ObservableObject {
         makeReactionDetail: (RemoteMessageExtra, String) -> ReactionDetail
     ) -> Bool {
         let normalizedEmoji = extra.emoji.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !extra.messageID.isEmpty, !normalizedEmoji.isEmpty else { return false }
+        guard !extra.messageID.isEmpty, !normalizedEmoji.isEmpty,
+              message.status != .recalled, !message.isDeletedLocally else { return false }
         let normalizedAction = extra.action.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let detailID = reactionDetailID(
             messageID: extra.messageID,
@@ -4765,7 +4755,9 @@ final class ConversationStore: ObservableObject {
               extra.action.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() != "remove" else { return }
         for cIndex in conversations.indices {
             guard let mIndex = conversations[cIndex].messages.firstIndex(where: { $0.id == extra.messageID }),
-                  conversations[cIndex].messages[mIndex].isOutgoing else { continue }
+                  conversations[cIndex].messages[mIndex].isOutgoing,
+                  conversations[cIndex].messages[mIndex].status != .recalled,
+                  !conversations[cIndex].messages[mIndex].isDeletedLocally else { continue }
             conversations[cIndex].messages[mIndex].status = .read
             conversations[cIndex].messages[mIndex].readStateKnown = true
             if conversations[cIndex].messages[mIndex].readCount == nil {
@@ -4840,6 +4832,14 @@ final class ConversationStore: ObservableObject {
     }
 
     private func mergeExistingRemoteState(from previous: ChatMessage, into message: inout ChatMessage) {
+        // History and sidecars are fetched independently. A stale body or read
+        // state cannot undo a recall or deletion that has already been applied.
+        if previous.isDeletedLocally, !message.isDeletedLocally {
+            markMessageAsAdminDeleted(&message)
+        } else if previous.status == .recalled, message.status != .recalled {
+            markMessageAsRecalled(&message, recallText: nil)
+        }
+        guard message.status != .recalled, !message.isDeletedLocally else { return }
         // WDT_CHAT_MEDIA_CACHE_REUSE_20261102: history payloads can omit file-detail cache metadata.
         if let fileID = previous.attachmentFileID, !fileID.isEmpty,
            message.attachmentFileID == fileID, message.kind == previous.kind,
@@ -4907,63 +4907,12 @@ final class ConversationStore: ObservableObject {
         )
     }
 
-    private func attachmentMediaCategory(for message: ChatMessage) -> String {
-        let explicit = message.attachmentMediaCategory.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        if !explicit.isEmpty { return explicit }
-        let previewKind = message.attachmentPreviewKind.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        if ["image", "video", "pdf"].contains(previewKind) {
-            return previewKind
-        }
-        return inferredAttachmentMediaCategory(
-            kind: message.kind,
-            name: message.attachmentName ?? message.text,
-            mimeType: attachmentMimeType(from: message)
-        )
-    }
-
-    private func attachmentMimeType(from message: ChatMessage) -> String {
-        let explicit = message.attachmentMimeType.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        if !explicit.isEmpty {
-            return explicit
-        }
-        if let value = message.attachmentMeta?
-            .components(separatedBy: " · ")
-            .first?
-            .trimmingCharacters(in: .whitespacesAndNewlines),
-           !value.isEmpty,
-           value.contains("/") {
-            return value.lowercased()
-        }
-        return message.kind == .image ? "image/jpeg" : "application/octet-stream"
-    }
-
-    private func inferredAttachmentMediaCategory(kind: MessageKind, name: String, mimeType: String) -> String {
-        let normalizedMime = mimeType.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let ext = (name as NSString).pathExtension.lowercased()
-        if kind == .image || normalizedMime.hasPrefix("image/") || ["png", "jpg", "jpeg", "webp", "heic", "gif", "bmp", "tiff"].contains(ext) {
-            return "image"
-        }
-        if normalizedMime.hasPrefix("video/") || ["mp4", "mov", "m4v", "avi", "mkv", "webm", "3gp"].contains(ext) {
-            return "video"
-        }
-        if normalizedMime.contains("pdf") || ext == "pdf" {
-            return "pdf"
-        }
-        if normalizedMime.hasPrefix("audio/") || ["mp3", "m4a", "aac", "wav", "flac", "ogg"].contains(ext) {
-            return "audio"
-        }
-        if ["zip", "rar", "7z", "tar", "gz"].contains(ext) {
-            return "archive"
-        }
-        return "file"
-    }
-
     func applyRemoteReadSummary(
         from remote: RemoteMessage,
         to message: inout ChatMessage,
         readReceiptsEnabled: Bool
     ) {
-        guard message.isOutgoing else { return }
+        guard message.isOutgoing, message.status != .recalled, !message.isDeletedLocally else { return }
         guard readReceiptsEnabled else {
             stripReadReceiptDetails(from: &message)
             return
@@ -5017,6 +4966,7 @@ final class ConversationStore: ObservableObject {
               conversations[cIndex].messages[mIndex].isOutgoing else { return false }
         let conversation = conversations[cIndex]
         let previous = conversation.messages[mIndex]
+        guard previous.status != .recalled, !previous.isDeletedLocally else { return false }
         let readReceipts = response.items
             .filter { normalizedReadReceiptType($0.receiptType) == "read" && !$0.imUID.isEmpty }
             .map { makeReadReceipt($0, conversation) }
@@ -5167,7 +5117,8 @@ final class ConversationStore: ObservableObject {
         var didChange = false
         for mIndex in conversation.messages.indices {
             let originalMessage = conversation.messages[mIndex]
-            guard originalMessage.isOutgoing else { continue }
+            guard originalMessage.isOutgoing,
+                  originalMessage.status != .recalled, !originalMessage.isDeletedLocally else { continue }
 
             var matchedEntries = exactReceiptsByMessageID[originalMessage.id] ?? []
             if originalMessage.channelSeq > 0 {

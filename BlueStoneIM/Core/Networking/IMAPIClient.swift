@@ -4,9 +4,21 @@ import Dispatch
 
 final class UploadProgressDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
     let progress: @Sendable (Double) -> Void
+    private let rejectsRedirects: Bool
 
-    init(progress: @escaping @Sendable (Double) -> Void) {
+    init(progress: @escaping @Sendable (Double) -> Void, rejectsRedirects: Bool = false) {
         self.progress = progress
+        self.rejectsRedirects = rejectsRedirects
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest,
+        completionHandler: @escaping (URLRequest?) -> Void
+    ) {
+        completionHandler(rejectsRedirects ? nil : request)
     }
 
     func urlSession(
@@ -1436,6 +1448,11 @@ final class IMAPIClient: IMAPIProtocol {
                 request.setValue(value, forHTTPHeaderField: "Idempotency-Key")
             }
         }
+        if bearerPurpose == .publicMedia, VideoAttachmentHTTPObservation.current != nil,
+           method == "POST", path.hasPrefix("/api/tenant/files/"), path.hasSuffix("/uploaded"),
+           additionalHeaders["Prefer"] == "respond-async" {
+            request.setValue("respond-async", forHTTPHeaderField: "Prefer")
+        }
         if let body {
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
             do {
@@ -1525,6 +1542,10 @@ final class IMAPIClient: IMAPIProtocol {
 			}
 		}
         let data = rawResult.data
+        if bearerPurpose == .publicMedia, let videoUpload = VideoAttachmentHTTPObservation.current {
+            videoUpload.status = statusCode
+            videoUpload.retryAfter = max(0, rawResult.retryAfterSeconds ?? 0)
+        }
         // Capture the actual envelope code and trace before the existing error
         // branches normalize them to .server(String) and a generic UI toast.
         acceptanceDiagnostic?.record(.response, endpoint: base, status: statusCode,
@@ -1757,6 +1778,14 @@ final class IMAPIClient: IMAPIProtocol {
         if statusCode == 409 {
             let conflictCode = Self.effectiveErrorCode(for: errorBody) ?? "conflict"
             logRequestFailure(method: method, url: url, statusCode: statusCode, errorCode: conflictCode, requestID: requestID, error: nil)
+            if bearerPurpose == .publicMedia, VideoAttachmentHTTPObservation.current != nil, method == "POST",
+               path.hasPrefix("/api/tenant/files/"), path.hasSuffix("/uploaded"),
+               path.split(separator: "/").count == 5,
+               errorBody?.code == "object_not_found" {
+                throw VideoAttachmentObjectMissing(retryAfterSeconds: max(
+                    0, errorBody?.retryAfterSeconds ?? 0, rawResult.retryAfterSeconds ?? 0
+                ))
+            }
             throw IMAPIError.conflict(
                 code: conflictCode,
                 message: Self.userMessage(for: errorBody, fallback: "操作冲突")

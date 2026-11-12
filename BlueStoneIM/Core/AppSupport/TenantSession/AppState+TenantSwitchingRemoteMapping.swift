@@ -1082,6 +1082,7 @@ extension AppState {
         )
         var nextRemarks: [String: String] = [:]
         let scope = remoteDataScopeKey(for: apiContext)
+        let presencePolicy = resolvedTenantClientPolicy
         let currentScopePrefix = "\(scope)|"
         var nextContactCardOriginalNames = contactCardOriginalNamesByScopedUserKey.filter { key, _ in
             !key.hasPrefix(currentScopePrefix)
@@ -1158,11 +1159,12 @@ extension AppState {
                 departmentPathNames: departmentPathNames,
                 phone: relation.visiblePhone,
                 email: "",
-                status: presenceStatusText(
+                status: Self.presenceStatusText(
                     rawStatus: relation.friendStatus,
-                    online: relation.friendOnlineKnown ? relation.friendOnline : nil
+                    online: relation.friendOnlineKnown ? relation.friendOnline : nil,
+                    policy: presencePolicy
                 ),
-                lastLoginAt: resolvedLastLoginText(relation.friendLastSeenAt),
+                lastLoginAt: Self.lastLoginPresentationText(rawValue: relation.friendLastSeenAt ?? "", policy: presencePolicy) ?? "",
                 enterprise: currentEnterprise.name,
                 avatarSeed: existingUser?.avatarSeed ?? stableSeed(friendUID),
                 avatarURL: avatar,
@@ -1265,8 +1267,10 @@ extension AppState {
             } catch {
                 return
             }
-            guard let self,
-                  !Task.isCancelled,
+            guard let self else { return }
+            do { try await self.waitForDirectoryOrConversationScrollToEnd(scope: scope) }
+            catch { return }
+            guard !Task.isCancelled,
                   self.contactsPostApplyReconciliationGeneration == generation,
                   self.isCurrentRemoteScope(scope),
                   self.contactStore.friendRelationsLoaded() else {
@@ -1299,6 +1303,7 @@ extension AppState {
         await Task.yield()
         do {
             try await Task.sleep(nanoseconds: 16_000_000)
+            try await waitForDirectoryOrConversationScrollToEnd(scope: scope)
         } catch {
             return false
         }

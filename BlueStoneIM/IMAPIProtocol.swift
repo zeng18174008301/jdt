@@ -264,6 +264,7 @@ protocol IMAPIProtocol: AccessDiscoveryFetching, Sendable {
     func sendContactCard(context: IMAPIContext, conversation: Conversation, channelID: String, contactID: String, contactName: String, contactAvatar: String?, quote: String?, clientMessageID: String) async throws -> RemoteMessage
 	func editMessage(context: IMAPIContext, messageID: String, text: String, clientEditID: String, expectedEditRevision: Int64) async throws -> RemoteExtraResponse
     func recallMessage(context: IMAPIContext, messageID: String) async throws
+    func deleteMessage(context: IMAPIContext, messageID: String) async throws -> RemoteExtraResponse
     func adminDeleteGroupMessage(context: IMAPIContext, groupID: String, messageID: String) async throws
     func reactMessage(context: IMAPIContext, messageID: String, emoji: String, action: String) async throws -> RemoteExtraResponse
     func pinMessage(context: IMAPIContext, messageID: String, pinned: Bool) async throws -> RemoteExtraResponse
@@ -275,6 +276,10 @@ protocol IMAPIProtocol: AccessDiscoveryFetching, Sendable {
 }
 
 extension IMAPIProtocol {
+
+func deleteMessage(context: IMAPIContext, messageID: String) async throws -> RemoteExtraResponse {
+    throw IMAPIError.server("当前接口未实现消息删除")
+}
 
 func registrationSession(appID: String, deviceID: String, requestID: String, secret: String) async throws -> RemoteRegistrationSessionResult {
     throw IMAPIError.server("当前接口未实现注册会话恢复")

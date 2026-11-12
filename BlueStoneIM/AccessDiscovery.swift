@@ -538,6 +538,7 @@ final class IMRuntimeRouteStore: @unchecked Sendable {
     // Accessed under processLock. Still read the persisted bytes so updates from
     // another store (including revocation and rollback) remain visible.
     private var lastDecodedRecord: (key: String, data: Data, value: IMRuntimeRouteAtomicRecord)?
+    private var lastStorageKey: (appID: String, tenantID: String, key: String)?
     init(defaults: UserDefaults = .standard) { self.defaults = defaults }
 
     func record(appID: String, tenantID: String?) -> IMRuntimeRouteAtomicRecord {
@@ -750,8 +751,18 @@ final class IMRuntimeRouteStore: @unchecked Sendable {
         defaults.set(data, forKey: key(appID: appID, tenantID: tenantID)); return defaults.synchronize()
     }
     private func key(appID: String, tenantID: String?) -> String {
-        let digest = SHA256.hash(data: Data("\(appID)\u{0}\(tenantID ?? "")".utf8))
-        return prefix + digest.prefix(16).map { String(format: "%02x", $0) }.joined()
+        let tenantID = tenantID ?? ""
+        // The key hashes UTF-8 bytes, so compare the bytes rather than using
+        // String's canonical-equivalence comparison.
+        if let cached = lastStorageKey,
+           cached.appID.utf8.elementsEqual(appID.utf8),
+           cached.tenantID.utf8.elementsEqual(tenantID.utf8) {
+            return cached.key
+        }
+        let digest = SHA256.hash(data: Data("\(appID)\u{0}\(tenantID)".utf8))
+        let key = prefix + digest.prefix(16).map { String(format: "%02x", $0) }.joined()
+        lastStorageKey = (appID, tenantID, key)
+        return key
     }
 }
 

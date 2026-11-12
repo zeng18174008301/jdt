@@ -414,6 +414,13 @@ actor MessagePersistenceCoordinator {
         return try await repository.enqueueOutgoing(intent, revision: revision)
     }
 
+    func stagedVideoUploadSource(
+        ticket: LocalMessageSessionTicket, clientMessageID: String, expectedSizeBytes: Int64
+    ) async throws -> StagedVideoUploadSource {
+        let repository = try repository(for: ticket)
+        return try await repository.stagedVideoUploadSource(clientMessageID: clientMessageID, expectedSizeBytes: expectedSizeBytes)
+    }
+
     func updateOutboxState(
         ticket: LocalMessageSessionTicket,
         clientMessageID: String,
@@ -435,6 +442,22 @@ actor MessagePersistenceCoordinator {
             now: now,
             retryAfter: retryAfter,
             replayPolicy: replayPolicy
+        )
+    }
+
+    func discardFailedOutgoing(
+        ticket: LocalMessageSessionTicket,
+        clientMessageID: String,
+        conversationID: String,
+        channelID: String,
+        channelType: String
+    ) async throws -> Bool {
+        let repository = try repository(for: ticket)
+        return try await repository.discardFailedOutgoing(
+            clientMessageID: clientMessageID,
+            conversationID: conversationID,
+            channelID: channelID,
+            channelType: channelType
         )
     }
 

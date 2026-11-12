@@ -1487,6 +1487,27 @@ final class MessageDatabaseSemanticsTests: XCTestCase {
         loaded = try await repository.loadInitialConversations(limit: 10, messagesPerConversation: 10)
         XCTAssertEqual(loaded.0.first?.messages.first?.text, "revision three")
         XCTAssertEqual(loaded.0.first?.messages.first?.editRevision, 3)
+
+        var recalled = revisionThree
+        recalled.status = .recalled
+        recalled.text = "你撤回了一条消息"
+        conversation.messages = [recalled]
+        func currentSnapshot() -> LocalMessageConversationSnapshot {
+            LocalMessageConversationSnapshot(
+                conversation: conversation, channelID: "channel-edit-conversation",
+                channelType: "person", currentActorID: "actor-a"
+            )
+        }
+        _ = try await repository.persistProjection(
+            [currentSnapshot()], source: .localMutation, revision: 4, replaceMissingConversations: false
+        )
+        conversation.messages = [revisionThree]
+        _ = try await repository.persistProjection(
+            [currentSnapshot()], source: .history, revision: 5, replaceMissingConversations: false
+        )
+        loaded = try await repository.loadInitialConversations(limit: 10, messagesPerConversation: 10)
+        XCTAssertEqual(loaded.0.first?.messages.first?.status, MessageDelivery.recalled.rawValue)
+        XCTAssertEqual(loaded.0.first?.messages.first?.text, "你撤回了一条消息")
     }
 
     func testRTCCallRecordPersistsTypedPayloadAndRejectsSecondAuthorityIdentityWithoutAdvancingAck() async throws {
@@ -1727,6 +1748,39 @@ final class MessageDatabaseSemanticsTests: XCTestCase {
             state: .cancelled
         )
         XCTAssertFalse(FileManager.default.fileExists(atPath: stagedURL.path))
+    }
+
+    func testDiscardFailedOutgoingRemovesMessageAndFencesOldSnapshotAndRetry() async throws {
+        let repository = try await makeRepository(suffix: "discard-failed-outgoing")
+        var conversation = LocalMessageTestFixture.conversation(id: "discard-conversation", sequences: [])
+        let local = LocalMessageTestFixture.message(id: "local_discard", sequence: 0, outgoing: true, status: .failed)
+        conversation.messages = [local]
+        let projection = LocalMessageConversationSnapshot(
+            conversation: conversation,
+            channelID: "discard-channel",
+            channelType: "person",
+            currentActorID: "actor-a"
+        )
+        _ = try await repository.enqueueOutgoing(
+            LocalMessageOutgoingIntent(conversation: projection, message: CachedMessage(message: local), operationKind: "send_text", attachment: nil),
+            revision: 1
+        )
+        try await repository.updateOutboxState(clientMessageID: local.id, state: .retryWait)
+
+        let discarded = try await repository.discardFailedOutgoing(
+            clientMessageID: local.id, conversationID: conversation.id,
+            channelID: projection.channelID, channelType: projection.channelType
+        )
+        XCTAssertTrue(discarded)
+        try await repository.updateOutboxState(clientMessageID: local.id, state: .retryWait)
+        _ = try await repository.persistProjection([projection], source: .localMutation, revision: 2, replaceMissingConversations: false)
+
+        let authority = try await repository.outgoingAuthority(clientMessageID: local.id)
+        let recoverable = try await repository.recoverableOutbox()
+        let (cached, _) = try await repository.loadInitialConversations()
+        XCTAssertEqual(authority?.state, LocalMessageOutboxState.cancelled.rawValue)
+        XCTAssertTrue(recoverable.isEmpty)
+        XCTAssertTrue(try XCTUnwrap(cached.first).messages.isEmpty)
     }
 
     func testAttachmentCheckpointSurvivesReenqueueAndRepositoryReopenWithoutDowngrade() async throws {

@@ -1,5 +1,6 @@
 import PhotosUI
 import SwiftUI
+import UIKit
 
 func contactAuthoritativeUserNumber(userID: String) -> String? {
     let normalized = userID.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -109,12 +110,12 @@ private func contactDirectoryRowPresentation(
     for user: IMUser,
     state: AppState,
     includeDepartmentSummary: Bool,
-    accessibilityPrefix: String = "联系人"
+    accessibilityPrefix: String = "联系人",
+    displayName: String? = nil
 ) -> ContactDirectoryRowPresentation {
-    let displayName = state.contactDirectoryDisplayName(for: user)
     return ContactDirectoryRowPresentation(
         user: user,
-        displayName: displayName,
+        displayName: displayName ?? state.contactDirectoryDisplayName(for: user),
         userNumber: contactAuthoritativeUserNumber(userID: user.userID),
         departmentSummary: includeDepartmentSummary ? state.departmentSummary(for: user) : nil,
         certification: state.certificationPresentation(forExactUID: user.id),
@@ -125,6 +126,7 @@ private func contactDirectoryRowPresentation(
 
 struct ContactsView: View {
     @EnvironmentObject private var state: AppState
+    @Environment(\.avatarImageRouteContext) private var avatarImageRouteContext
     @State private var appliedQuery = ""
     @State private var contactSearchDraft = ""
     @State private var selectedRoute: ContactRoute?
@@ -138,7 +140,12 @@ struct ContactsView: View {
     @State private var showingDepartmentManagement = false
     @State private var selectedOrganizationDepartment: RemoteDepartmentNode?
     @State private var isContactSearchEditing = false
+    @State private var showingFindUser = false
     @State private var contactGroupsRebuildTask: Task<Void, Never>?
+    @State private var isDirectoryVisible = false
+    @State private var isDirectoryScrolling = false
+    @State private var needsDirectoryRebuild = false
+    @State private var needsGroupCountRefresh = false
     @State private var groupDirectoryRefreshTask: Task<Void, Never>?
     // JHT_MOD_BEGIN MAIN_TAB_SWITCH_PERF_20260912 - 修改开始：伙伴 Tab 入口计数缓存与自动刷新节流，减少切换卡顿
     @State private var groupDirectoryRefreshGeneration = 0
@@ -190,7 +197,8 @@ struct ContactsView: View {
             let row = contactDirectoryRowPresentation(
                 for: user,
                 state: state,
-                includeDepartmentSummary: shouldShowDepartment
+                includeDepartmentSummary: shouldShowDepartment,
+                displayName: displayName
             )
             return (
                 row: row,
@@ -231,20 +239,18 @@ struct ContactsView: View {
     var body: some View {
         ZStack {
             AuroraBackground()
-            ScrollView(showsIndicators: false) {
-                VStack(alignment: .leading, spacing: 0) {
-                    PinnedSearchHeader {
-                        DebouncedContactsSearchField(
-                            placeholder: "搜索联系人、用户ID或拼音",
-                            onDraftChange: { contactSearchDraft = $0 },
-                            onEditingChange: { isContactSearchEditing = $0 },
-                            onQueryChange: applyContactSearchQuery
-                        )
+            VStack(spacing: 0) {
+                // Keep the same search field mounted when its results replace the table.
+                contactSearchHeader
+                if (state.isDepartmentFeatureEnabled && activeContentTab == .organization) || isContactSearchActive {
+                    ScrollView(showsIndicators: false) {
+                        alternateContactContent
+                            .padding(.horizontal, 18)
+                            .padding(.top, 16)
+                            .padding(.bottom, 24)
                     }
-                    contactContent
-                        .padding(.horizontal, 18)
-                        .padding(.top, 16)
-                        .padding(.bottom, 24)
+                } else {
+                    recycledDirectory
                 }
             }
         }
@@ -279,6 +285,7 @@ struct ContactsView: View {
         }
         // JHT_MOD_END CONTACT_CHAT_BLANK_FIX_CONTACTS_DESTINATION - 修改结束
         .onAppear {
+            isDirectoryVisible = true
             rebuildContactGroupsIfNeeded()
             // JHT_MOD_BEGIN MAIN_TAB_SWITCH_PERF_20260912 - 修改开始：切回伙伴页时复用缓存计数，自动群目录刷新短时间内只触发一次
             refreshContactQuickEntryCaches()
@@ -286,8 +293,13 @@ struct ContactsView: View {
             // JHT_MOD_END MAIN_TAB_SWITCH_PERF_20260912 - 修改结束
         }
         .onDisappear {
+            isDirectoryVisible = false
             contactGroupsRebuildTask?.cancel()
             contactGroupsRebuildTask = nil
+            isDirectoryScrolling = false
+            state.isContactDirectoryUserInteracting = false
+            needsDirectoryRebuild = false
+            needsGroupCountRefresh = false
             // JHT_MOD_BEGIN MAIN_TAB_SWITCH_PERF_20260912 - 修改开始：取消隐藏页刷新时递增 generation，避免旧任务回写任务状态
             groupDirectoryRefreshGeneration += 1
             groupDirectoryRefreshTask?.cancel()
@@ -330,12 +342,62 @@ struct ContactsView: View {
             refreshBlacklistCountCache()
         }
         // JHT_MOD_END MAIN_TAB_SWITCH_PERF_20260912 - 修改结束
+        .sheet(isPresented: $showingFindUser) {
+            FindUserSheet()
+                .presentationDetentsCompat([.large])
+                .presentationCornerRadiusCompat(30)
+        }
         .sheet(isPresented: $showingDepartmentManagement) {
             DepartmentManagementSheet()
                 .environmentObject(state)
                 .presentationDetentsCompat([.large])
                 .presentationDragIndicatorCompat(.visible)
         }
+    }
+
+    private var contactSearchHeader: some View {
+        PinnedSearchHeader {
+            DebouncedContactsSearchField(
+                placeholder: "搜索联系人、用户ID或拼音",
+                onDraftChange: { contactSearchDraft = $0 },
+                onEditingChange: { isContactSearchEditing = $0 },
+                onQueryChange: applyContactSearchQuery
+            )
+        }
+    }
+
+    private var recycledDirectory: some View {
+        let revision = ContactDirectoryTable.HeaderRevision(
+            showsTabs: state.isDepartmentFeatureEnabled,
+            requests: cachedPendingFriendRequestCount,
+            groups: cachedProjectedGroupCount,
+            blacklist: cachedBlacklistCount,
+            status: displayedContactGroups.isEmpty ? contactListStatus : nil
+        )
+        return ContactDirectoryTable(
+            groups: displayedContactGroups, groupsRevision: cachedContactGroupsSignature,
+            headerRevision: revision, state: state, avatarImageRouteContext: avatarImageRouteContext,
+            header: AnyView(
+                VStack(alignment: .leading, spacing: 22) {
+                    if revision.showsTabs {
+                        contentTabs
+                    }
+                    quickEntries
+                    VStack(alignment: .leading, spacing: 12) {
+                        contactListTitle
+                        if let status = revision.status {
+                            contactStatusView(status)
+                        }
+                    }
+                }
+                .padding(.horizontal, 18)
+                .padding(.top, 16)
+                .padding(.bottom, revision.status == nil ? 0 : 24)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            ),
+            onSelect: { selectedUser = $0 },
+            onScrollChange: directoryScrollChanged
+        )
     }
 
     private var pendingFriendRequestSubtitle: String {
@@ -386,6 +448,12 @@ struct ContactsView: View {
     }
 
     private func refreshProjectedGroupCountCache() {
+        guard isDirectoryVisible else { return }
+        guard !isDirectoryScrolling else {
+            needsGroupCountRefresh = true
+            return
+        }
+        needsGroupCountRefresh = false
         let nextValue = projectedGroups.count
         guard cachedProjectedGroupCount != nextValue else { return }
         cachedProjectedGroupCount = nextValue
@@ -426,7 +494,7 @@ struct ContactsView: View {
     // JHT_MOD_END MAIN_TAB_SWITCH_PERF_20260912 - 修改结束
 
     @ViewBuilder
-    private var contactContent: some View {
+    private var alternateContactContent: some View {
         VStack(alignment: .leading, spacing: 22) {
             if state.isDepartmentFeatureEnabled {
                 contentTabs
@@ -434,11 +502,8 @@ struct ContactsView: View {
 
             if state.isDepartmentFeatureEnabled && activeContentTab == .organization {
                 organizationSection
-            } else if isContactSearchActive {
-                contactSearchSection
             } else {
-                quickEntries
-                contactSection
+                contactSearchSection
             }
         }
     }
@@ -544,71 +609,58 @@ struct ContactsView: View {
         }
     }
 
-    private var contactSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
+    private var contactListTitle: some View {
+        HStack {
             Text("联系人")
                 .font(.system(size: 18, weight: .black))
                 .foregroundStyle(IMColor.ink)
-            if (state.isInitialDataLoading && !state.hasLoadedRemoteSnapshot && state.contacts.isEmpty && appliedQuery.isEmpty)
-                || (state.isContactsSyncing && state.contacts.isEmpty && appliedQuery.isEmpty) {
-                RemoteLoadingStateView(
-                    title: "正在同步通讯录",
-                    subtitle: "正在拉取好友、群组和黑名单数据。"
-                )
-            } else if let contactsSyncError = state.contactsSyncErrorMessage, displayedContactGroups.isEmpty, appliedQuery.isEmpty {
-                EmptyStateView(symbol: "wifi.exclamationmark", title: "通讯录同步失败", subtitle: contactsSyncError)
-                PrimaryButton(title: "重试同步", systemImage: "arrow.clockwise") {
-                    state.retryContactsSync()
-                }
-            } else if displayedContactGroups.isEmpty {
-                EmptyStateView(symbol: "person.crop.circle.badge.questionmark", title: "没有联系人", subtitle: "换个关键词再试。")
-            } else {
-                LazyVStack(alignment: .leading, spacing: 16) {
-                    ForEach(displayedContactGroups, id: \.letter) { group in
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text(group.letter)
-                                .font(.system(size: 13, weight: .black))
-                                .foregroundStyle(IMColor.muted)
-                                .padding(.horizontal, 6)
-                            LazyVStack(spacing: 0) {
-                                ForEach(group.rows) { row in
-                                    let isLastRow = group.rows.last?.id == row.id
-                                    Button {
-                                        selectedUser = row.user
-                                    } label: {
-                                        ContactDirectoryRow(row: row)
-                                    }
-                                    .buttonStyle(.plain)
-                                    .contentShape(Rectangle())
-                                    .accessibilityIdentifier("contact_row_\(row.user.id)")
-                                    .accessibilityLabel(row.accessibilityLabel)
-                                    if !isLastRow {
-                                        Divider()
-                                            .padding(.leading, 62)
-                                            .opacity(0.72)
-                                    }
-                                }
-                            }
-                            .background(
-                                RoundedRectangle(cornerRadius: 22, style: .continuous)
-                                    .fill(.white.opacity(0.88))
-                                    .shadow(color: IMColor.brand.opacity(0.06), radius: 14, y: 8)
-                            )
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 22, style: .continuous)
-                                    .stroke(.white.opacity(0.72), lineWidth: 1)
-                            )
-                        }
-                    }
-                }
+            Spacer()
+            Button {
+                showingFindUser = true
+            } label: {
+                Label("添加好友", systemImage: "person.badge.plus")
+                    .font(.subheadline.weight(.bold))
+                    .foregroundStyle(IMColor.brand)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(Capsule().fill(IMColor.brand.opacity(0.10)))
+                    .frame(minHeight: 44)
+                    .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("contacts_add_friend_button")
+        }
+    }
+
+    private var contactListStatus: ContactDirectoryTable.Status {
+        if ((state.isInitialDataLoading && !state.hasLoadedRemoteSnapshot) || state.isContactsSyncing)
+            && state.contacts.isEmpty && appliedQuery.isEmpty {
+            return .loading
+        }
+        if let error = state.contactsSyncErrorMessage, appliedQuery.isEmpty {
+            return .failed(error)
+        }
+        return .empty
+    }
+
+    @ViewBuilder
+    private func contactStatusView(_ status: ContactDirectoryTable.Status) -> some View {
+        switch status {
+        case .loading:
+            RemoteLoadingStateView(title: "正在同步通讯录", subtitle: "正在拉取好友、群组和黑名单数据。")
+        case .failed(let error):
+            EmptyStateView(symbol: "wifi.exclamationmark", title: "通讯录同步失败", subtitle: error)
+            PrimaryButton(title: "重试同步", systemImage: "arrow.clockwise") {
+                state.retryContactsSync()
+            }
+        case .empty:
+            EmptyStateView(symbol: "person.crop.circle.badge.questionmark", title: "没有联系人", subtitle: "换个关键词再试。")
         }
     }
 
     private func contactInitial(forSortKey key: String) -> String {
-        guard let first = key.unicodeScalars.first else { return "#" }
-        let letter = String(Character(first)).uppercased()
-        return letter.range(of: "^[A-Z]$", options: .regularExpression) == nil ? "#" : letter
+        guard let first = key.utf8.first, (65...90).contains(first) else { return "#" }
+        return String(UnicodeScalar(first))
     }
 
     private func contactSortKey(_ displayName: String) -> String {
@@ -693,6 +745,13 @@ struct ContactsView: View {
     }
 
     private func scheduleContactGroupsRebuild() {
+        // TabView keeps this view mounted. Sync notifications can still arrive
+        // after leaving it, but the directory can rebuild when it appears again.
+        guard isDirectoryVisible else { return }
+        if isDirectoryScrolling {
+            needsDirectoryRebuild = true
+            return
+        }
         contactGroupsRebuildTask?.cancel()
         contactGroupsRebuildTask = Task { @MainActor in
             do {
@@ -700,9 +759,25 @@ struct ContactsView: View {
             } catch {
                 return
             }
-            guard !Task.isCancelled else { return }
-            rebuildContactGroupsIfNeeded()
+            guard !Task.isCancelled, isDirectoryVisible else { return }
             contactGroupsRebuildTask = nil
+            if isDirectoryScrolling {
+                needsDirectoryRebuild = true
+            } else {
+                rebuildContactGroupsIfNeeded()
+            }
+        }
+    }
+
+    private func directoryScrollChanged(_ isScrolling: Bool) {
+        isDirectoryScrolling = isScrolling
+        state.isContactDirectoryUserInteracting = isScrolling
+        if !isScrolling {
+            if needsGroupCountRefresh { refreshProjectedGroupCountCache() }
+            if needsDirectoryRebuild {
+                needsDirectoryRebuild = false
+                scheduleContactGroupsRebuild()
+            }
         }
     }
 
@@ -713,6 +788,643 @@ struct ContactsView: View {
         contactGroupsRebuildTask = nil
         appliedQuery = normalizedQuery
         rebuildContactGroups()
+    }
+}
+
+private struct ContactDirectoryTable: UIViewControllerRepresentable {
+    enum Status: Equatable { case loading, empty, failed(String) }
+
+    struct HeaderRevision: Equatable {
+        let showsTabs: Bool
+        let requests: Int
+        let groups: Int
+        let blacklist: Int
+        let status: Status?
+    }
+
+    let groups: [ContactDirectoryGroup]
+    let groupsRevision: String
+    let headerRevision: HeaderRevision
+    let state: AppState
+    let avatarImageRouteContext: AvatarImageRouteContext?
+    let header: AnyView
+    let onSelect: (IMUser) -> Void
+    let onScrollChange: (Bool) -> Void
+
+    func makeUIViewController(context: Context) -> ContactDirectoryTableController {
+        let controller = ContactDirectoryTableController()
+        controller.apply(self)
+        return controller
+    }
+
+    func updateUIViewController(_ controller: ContactDirectoryTableController, context: Context) {
+        controller.apply(self)
+    }
+
+    static func dismantleUIViewController(_ controller: ContactDirectoryTableController, coordinator: ()) {
+        controller.endInteraction(applyingPending: false)
+        controller.cancelAvatarLoads()
+    }
+}
+
+private final class ContactDirectoryTableController: UIViewController, UITableViewDelegate {
+    private enum ItemID: Hashable { case heading(String), contact(String) }
+
+    private enum RowHeight: Hashable, CaseIterable {
+        case name, number, department, numberAndDepartment, automatic
+
+        func fixedHeight(captionHeight: CGFloat) -> CGFloat? {
+            guard self != .automatic else { return nil }
+            var height = ceil(UIFont.systemFont(ofSize: 16, weight: .black).lineHeight)
+            if self == .number || self == .numberAndDepartment { height += 5 + captionHeight }
+            if self == .department || self == .numberAndDepartment {
+                height += 5 + ceil(UIFont.systemFont(ofSize: 11, weight: .semibold).lineHeight)
+            }
+            return max(44, height) + 22
+        }
+    }
+
+    private struct Row: Equatable {
+        let presentation: ContactDirectoryRowPresentation
+        let isFirst: Bool
+        let isLast: Bool
+
+        var heightKind: RowHeight {
+            guard presentation.certification == nil else { return .automatic }
+            switch (presentation.userNumber != nil, presentation.departmentSummary != nil) {
+            case (false, false): return .name
+            case (true, false): return .number
+            case (false, true): return .department
+            case (true, true): return .numberAndDepartment
+            }
+        }
+    }
+
+    private let table = UITableView(frame: .zero, style: .plain)
+    private let headerHost = UIHostingController(rootView: AnyView(EmptyView()))
+    private var source: UITableViewDiffableDataSource<Int, ItemID>!
+    private var rows: [ItemID: Row] = [:]
+    private var avatars: [ItemID: ContactDirectoryAvatar] = [:]
+    private var input: ContactDirectoryTable?
+    private var pending: ContactDirectoryTable?
+    private var isInteracting = false
+    private var headerNeedsMeasurement = true
+    private var headerWidth: CGFloat = 0
+    private var fixedHeights: [RowHeight: CGFloat] = [:]
+    private var captionFont = UIFont.systemFont(ofSize: 11, weight: .semibold)
+    private var lastScrollMovement: TimeInterval = 0
+    private var scrollSettlingTask: Task<Void, Never>?
+    private var avatarUpdateTask: Task<Void, Never>?
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        view.backgroundColor = .clear
+        table.backgroundColor = .clear
+        table.accessibilityIdentifier = "contact_directory_table"
+        table.showsVerticalScrollIndicator = false
+        table.separatorStyle = .none
+        table.sectionHeaderTopPadding = 0
+        table.contentInset.bottom = 24
+        table.contentInsetAdjustmentBehavior = .never
+        table.isPrefetchingEnabled = false
+        table.rowHeight = UITableView.automaticDimension
+        table.estimatedRowHeight = 66
+        updateFixedHeights()
+        table.delegate = self
+        table.register(ContactDirectoryNativeCell.self, forCellReuseIdentifier: "contact")
+        table.register(ContactDirectoryCell.self, forCellReuseIdentifier: "richContact")
+        table.register(ContactDirectoryCell.self, forCellReuseIdentifier: "heading")
+        table.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(table)
+        NSLayoutConstraint.activate([
+            table.topAnchor.constraint(equalTo: view.topAnchor),
+            table.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            table.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            table.bottomAnchor.constraint(equalTo: view.bottomAnchor)
+        ])
+
+        addChild(headerHost)
+        headerHost.view.backgroundColor = .clear
+        table.tableHeaderView = headerHost.view
+        headerHost.didMove(toParent: self)
+
+        source = UITableViewDiffableDataSource<Int, ItemID>(tableView: table) { [weak self] table, indexPath, id in
+            self?.makeCell(in: table, at: indexPath, id: id)
+        }
+    }
+
+    func apply(_ next: ContactDirectoryTable) {
+        loadViewIfNeeded()
+        let previous = input
+        let routeChanged = previous?.avatarImageRouteContext?.requestIdentity != next.avatarImageRouteContext?.requestIdentity
+        let stateChanged = previous?.state !== next.state
+        if isInteracting, !routeChanged, !stateChanged {
+            pending = next
+            return
+        }
+        pending = nil
+        input = next
+        if previous?.headerRevision != next.headerRevision || routeChanged || stateChanged {
+            headerHost.rootView = AnyView(next.header
+                .environmentObject(next.state)
+                .environment(\.avatarImageRouteContext, next.avatarImageRouteContext))
+            headerNeedsMeasurement = true
+            measureHeaderIfNeeded()
+        }
+        guard previous?.groupsRevision != next.groupsRevision || routeChanged || stateChanged else { return }
+
+        var identifiers: [ItemID] = []
+        var updatedRows: [ItemID: Row] = [:]
+        var updatedAvatars: [ItemID: ContactDirectoryAvatar] = [:]
+        for group in next.groups {
+            identifiers.append(.heading(group.letter))
+            for (index, presentation) in group.rows.enumerated() {
+                let id = ItemID.contact(presentation.id)
+                guard updatedRows[id] == nil else { continue }
+                identifiers.append(id)
+                updatedRows[id] = Row(presentation: presentation, isFirst: index == 0,
+                                      isLast: index == group.rows.count - 1)
+                if !routeChanged, !stateChanged, rows[id]?.presentation.user == presentation.user {
+                    updatedAvatars[id] = avatars[id]
+                } else {
+                    updatedAvatars[id] = ContactDirectoryAvatar(
+                        user: presentation.user, routeContext: next.avatarImageRouteContext
+                    )
+                }
+            }
+        }
+        let oldIdentifiers = source.snapshot().itemIdentifiers
+        let retained = Set(oldIdentifiers)
+        let changed = identifiers.filter {
+            retained.contains($0) && updatedRows[$0] != nil
+                && (routeChanged || stateChanged || rows[$0] != updatedRows[$0])
+        }
+        let resized = Set(changed.filter { rows[$0]?.heightKind != updatedRows[$0]?.heightKind })
+        rows = updatedRows
+        avatars = updatedAvatars
+        guard oldIdentifiers != identifiers || !changed.isEmpty else { return }
+        var snapshot = NSDiffableDataSourceSnapshot<Int, ItemID>()
+        snapshot.appendSections([0])
+        snapshot.appendItems(identifiers)
+        snapshot.reloadItems(changed.filter { resized.contains($0) })
+        snapshot.reconfigureItems(changed.filter { !resized.contains($0) })
+        source.apply(snapshot, animatingDifferences: false)
+        scheduleVisibleAvatars()
+    }
+
+    private func makeCell(in table: UITableView, at indexPath: IndexPath, id: ItemID) -> UITableViewCell {
+        switch id {
+        case .heading(let letter):
+            let cell = table.dequeueReusableCell(withIdentifier: "heading", for: indexPath) as! ContactDirectoryCell
+            cell.accessibilityLabel = letter
+            cell.accessibilityIdentifier = "contact_group_\(letter)"
+            cell.accessibilityTraits = .header
+            cell.configure(AnyView(
+                Text(letter)
+                    .font(.system(size: 13, weight: .black))
+                    .foregroundStyle(IMColor.muted)
+                    .padding(.horizontal, 24)
+                    .padding(.top, 6)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+            ), parent: self)
+            return cell
+        case .contact(let userID):
+            guard let row = rows[id], let input else { return UITableViewCell() }
+            if fixedHeights[row.heightKind] != nil {
+                let cell = table.dequeueReusableCell(withIdentifier: "contact", for: indexPath) as! ContactDirectoryNativeCell
+                cell.bind(row.presentation, avatar: avatars[id], captionFont: captionFont,
+                          isFirst: row.isFirst, isLast: row.isLast)
+                return cell
+            }
+            let cell = table.dequeueReusableCell(withIdentifier: "richContact", for: indexPath) as! ContactDirectoryCell
+            cell.accessibilityLabel = row.presentation.accessibilityLabel
+            cell.accessibilityIdentifier = "contact_row_\(userID)"
+            cell.accessibilityTraits = .button
+            cell.configure(AnyView(
+                ContactDirectoryRow(row: row.presentation)
+                    .background {
+                        ContactListCardEdge(roundsTop: row.isFirst, roundsBottom: row.isLast)
+                            .fill(.white.opacity(0.88))
+                    }
+                    .overlay(alignment: .bottom) {
+                        if !row.isLast { Divider().padding(.leading, 62).opacity(0.72) }
+                    }
+                    .padding(.horizontal, 18)
+                    .id(userID)
+                    .environmentObject(input.state)
+                    .environment(\.avatarImageRouteContext, input.avatarImageRouteContext)
+            ), parent: self, selfSizing: true)
+            return cell
+        }
+    }
+
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        measureHeaderIfNeeded()
+    }
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        scheduleVisibleAvatars()
+    }
+
+    override func viewDidDisappear(_ animated: Bool) {
+        super.viewDidDisappear(animated)
+        cancelAvatarLoads()
+    }
+
+    override func traitCollectionDidChange(_ previousTraitCollection: UITraitCollection?) {
+        super.traitCollectionDidChange(previousTraitCollection)
+        if previousTraitCollection?.preferredContentSizeCategory != traitCollection.preferredContentSizeCategory {
+            updateFixedHeights()
+            headerNeedsMeasurement = true
+            viewIfLoaded?.setNeedsLayout()
+            if source != nil { table.reloadData() }
+        }
+    }
+
+    private func updateFixedHeights() {
+        fixedHeights.removeAll(keepingCapacity: true)
+        guard !traitCollection.preferredContentSizeCategory.isAccessibilityCategory else { return }
+        let captionSize = UIFont.preferredFont(forTextStyle: .caption2, compatibleWith: traitCollection).pointSize
+        captionFont = .systemFont(ofSize: captionSize, weight: .semibold)
+        let captionHeight = ceil(captionFont.lineHeight)
+        for kind in RowHeight.allCases {
+            fixedHeights[kind] = kind.fixedHeight(captionHeight: captionHeight)
+        }
+    }
+
+    private func measureHeaderIfNeeded() {
+        let width = table.bounds.width
+        guard width > 0, headerNeedsMeasurement || abs(width - headerWidth) > 0.5 else { return }
+        headerNeedsMeasurement = false
+        headerWidth = width
+        let height = headerHost.sizeThatFits(in: CGSize(width: width, height: UIView.layoutFittingCompressedSize.height)).height
+        guard height.isFinite, height > 0 else { return }
+        let frame = CGRect(x: 0, y: 0, width: width, height: ceil(height))
+        guard headerHost.view.frame.size != frame.size else { return }
+        headerHost.view.frame = frame
+        table.tableHeaderView = headerHost.view
+    }
+
+    func tableView(_ tableView: UITableView, heightForRowAt indexPath: IndexPath) -> CGFloat {
+        fixedHeight(at: indexPath) ?? UITableView.automaticDimension
+    }
+
+    func tableView(_ tableView: UITableView, estimatedHeightForRowAt indexPath: IndexPath) -> CGFloat {
+        // Most rows already have an exact height. Replacing an estimate while
+        // the table is decelerating can shift its scroll position.
+        fixedHeight(at: indexPath) ?? 82
+    }
+
+    private func fixedHeight(at indexPath: IndexPath) -> CGFloat? {
+        guard let id = source.itemIdentifier(for: indexPath) else { return nil }
+        if case .heading = id { return 38 }
+        return rows[id].flatMap { fixedHeights[$0.heightKind] }
+    }
+
+    func tableView(_ tableView: UITableView, willSelectRowAt indexPath: IndexPath) -> IndexPath? {
+        guard !tableView.isDragging, !tableView.isDecelerating,
+              case .contact? = source.itemIdentifier(for: indexPath) else { return nil }
+        return indexPath
+    }
+
+    func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+        tableView.deselectRow(at: indexPath, animated: false)
+        guard let id = source.itemIdentifier(for: indexPath), let row = rows[id] else { return }
+        input?.onSelect(row.presentation.user)
+    }
+
+    func tableView(_ tableView: UITableView, willDisplay cell: UITableViewCell, forRowAt indexPath: IndexPath) {
+        if cell is ContactDirectoryNativeCell { scheduleVisibleAvatars() }
+    }
+
+    func tableView(_ tableView: UITableView, didEndDisplaying cell: UITableViewCell, forRowAt indexPath: IndexPath) {
+        (cell as? ContactDirectoryNativeCell)?.cancelAvatarLoad()
+    }
+
+    func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
+        lastScrollMovement = ProcessInfo.processInfo.systemUptime
+        guard !isInteracting else { return }
+        isInteracting = true
+        cancelAvatarLoads()
+        notifyScrollChange(true)
+        waitForScrollToSettle()
+    }
+
+    func scrollViewDidScroll(_ scrollView: UIScrollView) {
+        guard isInteracting else { return }
+        lastScrollMovement = ProcessInfo.processInfo.systemUptime
+    }
+
+    func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
+        if !decelerate { lastScrollMovement = ProcessInfo.processInfo.systemUptime }
+    }
+
+    func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
+        lastScrollMovement = ProcessInfo.processInfo.systemUptime
+    }
+
+    private func waitForScrollToSettle() {
+        // The last delegate callback can run inside UIKit's final scrolling
+        // layout. Release queued work only after the offset has stayed still.
+        scrollSettlingTask = Task { [weak self] in
+            while !Task.isCancelled {
+                do { try await Task.sleep(nanoseconds: 90_000_000) } catch { return }
+                guard let self, !Task.isCancelled else { return }
+                if !table.isTracking, !table.isDragging, !table.isDecelerating,
+                   ProcessInfo.processInfo.systemUptime - lastScrollMovement >= 0.18 {
+                    scrollSettlingTask = nil
+                    endInteraction()
+                    return
+                }
+            }
+        }
+    }
+
+    func endInteraction(applyingPending: Bool = true) {
+        scrollSettlingTask?.cancel()
+        scrollSettlingTask = nil
+        guard isInteracting else { return }
+        isInteracting = false
+        if let pending, applyingPending { apply(pending) }
+        pending = nil
+        if applyingPending { scheduleVisibleAvatars() }
+        notifyScrollChange(false)
+    }
+
+    private func notifyScrollChange(_ isScrolling: Bool) {
+        guard let callback = input?.onScrollChange else { return }
+        DispatchQueue.main.async { callback(isScrolling) }
+    }
+
+    private func scheduleVisibleAvatars() {
+        guard !isInteracting, avatarUpdateTask == nil else { return }
+        avatarUpdateTask = Task { [weak self] in
+            do { try await Task.sleep(nanoseconds: 160_000_000) } catch { return }
+            guard let self, !Task.isCancelled else { return }
+            defer { if !Task.isCancelled { avatarUpdateTask = nil } }
+            guard !isInteracting, table.window != nil else { return }
+            for cell in table.visibleCells {
+                guard !Task.isCancelled, !isInteracting else { return }
+                guard table.indexPath(for: cell) != nil,
+                      (cell as? ContactDirectoryNativeCell)?.loadAvatarIfNeeded() == true else { continue }
+                // Keep cold avatars from all completing on the first idle frame.
+                do { try await Task.sleep(nanoseconds: 45_000_000) } catch { return }
+            }
+        }
+    }
+
+    func cancelAvatarLoads() {
+        avatarUpdateTask?.cancel()
+        avatarUpdateTask = nil
+        for cell in table.visibleCells {
+            (cell as? ContactDirectoryNativeCell)?.cancelAvatarLoad()
+        }
+    }
+}
+
+private struct ContactDirectoryAvatar: Sendable {
+    let url: String
+    let request: AvatarRemoteImageRequest
+    let cacheKey: String
+    let storageKey: String
+    let routeContext: AvatarImageRouteContext?
+
+    init?(user: IMUser, routeContext: AvatarImageRouteContext?) {
+        let url = user.displayAvatarURL
+        guard !isCancelledUserAvatarURL(url),
+              let request = TenantRelativeImageURLResolver.request(url, routeContext: routeContext) else { return nil }
+        let cacheKey = AvatarImageCache.cacheKey(url: request.stableIdentity, version: user.avatarVersion,
+                                                 updatedAt: user.avatarUpdatedAt)
+        guard let storageKey = request.storageCacheKey(cacheKey, routeContext: routeContext) else { return nil }
+        self.url = url
+        self.request = request
+        self.cacheKey = cacheKey
+        self.storageKey = storageKey
+        self.routeContext = routeContext
+    }
+
+    @MainActor
+    func cachedImage(maxPixelSize: Int) -> UIImage? {
+        guard let image = AvatarImageCache.shared.peekImage(for: storageKey, maxPixelSize: maxPixelSize),
+              request.isAuthorized(routeContext: routeContext) else { return nil }
+        return image
+    }
+
+    @MainActor
+    func load(maxPixelSize: Int) async -> UIImage? {
+        await AvatarImageCache.shared.remoteImage(for: url, routeContext: routeContext,
+                                                  cacheKey: cacheKey, maxPixelSize: maxPixelSize)
+    }
+}
+
+private final class ContactDirectoryNativeCell: UITableViewCell {
+    private let card = UIView()
+    private let divider = UIView()
+    private let avatarImage = UIImageView()
+    private let avatarInitials = UILabel()
+    private let nameLabel = UILabel()
+    private let numberLabel = UILabel()
+    private let departmentLabel = UILabel()
+    private let chevron = UIImageView(image: UIImage(
+        systemName: "chevron.right", withConfiguration: UIImage.SymbolConfiguration(pointSize: 12, weight: .bold)
+    )?.imageFlippedForRightToLeftLayoutDirection())
+    private var avatar: ContactDirectoryAvatar?
+    private var avatarLoad: Task<Void, Never>?
+    private var avatarGeneration: UInt64 = 0
+    private var hasAvatarImage = false
+    private var maxPixelSize: Int { max(96, Int(ceil(66 * traitCollection.displayScale))) }
+
+    override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
+        super.init(style: style, reuseIdentifier: reuseIdentifier)
+        backgroundColor = .clear
+        selectionStyle = .none
+        isAccessibilityElement = true
+        accessibilityTraits = .button
+
+        card.backgroundColor = .white.withAlphaComponent(0.88)
+        card.layer.cornerCurve = .continuous
+        contentView.addSubview(card)
+        for view in [avatarImage, avatarInitials, nameLabel, numberLabel, departmentLabel, chevron, divider] {
+            card.addSubview(view)
+        }
+        avatarImage.contentMode = .scaleAspectFill
+        avatarImage.clipsToBounds = true
+        avatarImage.layer.cornerRadius = 22
+        avatarImage.layer.borderWidth = 1
+        avatarImage.layer.borderColor = UIColor.white.withAlphaComponent(0.65).cgColor
+        avatarInitials.font = .systemFont(ofSize: 15, weight: .bold)
+        avatarInitials.textColor = .white
+        avatarInitials.textAlignment = .center
+        avatarInitials.adjustsFontSizeToFitWidth = true
+        avatarInitials.minimumScaleFactor = 0.6
+        nameLabel.font = .systemFont(ofSize: 16, weight: .black)
+        nameLabel.textColor = UIColor(IMColor.ink)
+        numberLabel.lineBreakMode = .byTruncatingMiddle
+        numberLabel.textColor = UIColor(IMColor.muted)
+        departmentLabel.font = .systemFont(ofSize: 11, weight: .semibold)
+        departmentLabel.textColor = UIColor(IMColor.muted)
+        chevron.contentMode = .scaleAspectFit
+        chevron.tintColor = UIColor(IMColor.muted).withAlphaComponent(0.82)
+        divider.backgroundColor = UIColor(IMColor.line).withAlphaComponent(0.72)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    func bind(_ row: ContactDirectoryRowPresentation, avatar: ContactDirectoryAvatar?, captionFont: UIFont,
+              isFirst: Bool, isLast: Bool) {
+        cancelAvatarLoad()
+        avatarGeneration &+= 1
+        self.avatar = avatar
+        accessibilityIdentifier = "contact_row_\(row.id)"
+        accessibilityLabel = row.accessibilityLabel
+        nameLabel.text = row.displayName
+        numberLabel.text = row.userNumber.map { "用户编号：\($0)" }
+        numberLabel.isHidden = row.userNumber == nil
+        if numberLabel.font != captionFont { numberLabel.font = captionFont }
+        departmentLabel.text = row.departmentSummary
+        departmentLabel.isHidden = row.departmentSummary == nil
+        divider.isHidden = isLast
+        var corners: CACornerMask = []
+        if isFirst { corners.formUnion([.layerMinXMinYCorner, .layerMaxXMinYCorner]) }
+        if isLast { corners.formUnion([.layerMinXMaxYCorner, .layerMaxXMaxYCorner]) }
+        card.layer.maskedCorners = corners
+        card.layer.cornerRadius = corners.isEmpty ? 0 : 22
+
+        let cached = avatar?.cachedImage(maxPixelSize: maxPixelSize)
+        let cancelled = row.user.isCancelledUser || isCancelledUserAvatarURL(row.user.displayAvatarURL)
+        let seed = row.user.avatarSeed
+        avatarImage.backgroundColor = cancelled ? UIColor(white: 0.87, alpha: 1) : UIColor(
+            red: CGFloat((seed >> 16) & 255) / 255,
+            green: CGFloat((seed >> 8) & 255) / 255,
+            blue: CGFloat(seed & 255) / 255,
+            alpha: 0.76
+        )
+        avatarImage.image = cached ?? (cancelled ? UIImage(systemName: "person.fill") : nil)
+        avatarImage.contentMode = cancelled ? .center : .scaleAspectFill
+        avatarImage.tintColor = UIColor(IMColor.muted)
+        hasAvatarImage = cached != nil
+        avatarInitials.text = String(row.displayName.prefix(2))
+        avatarInitials.isHidden = cached != nil || cancelled
+        setNeedsLayout()
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        card.frame = contentView.bounds.insetBy(dx: 18, dy: 0)
+        let width = card.bounds.width
+        let height = card.bounds.height
+        let rtl = effectiveUserInterfaceLayoutDirection == .rightToLeft
+        func leading(_ inset: CGFloat, width itemWidth: CGFloat) -> CGFloat {
+            rtl ? width - inset - itemWidth : inset
+        }
+        avatarImage.frame = CGRect(x: leading(14, width: 44), y: floor((height - 44) / 2), width: 44, height: 44)
+        avatarInitials.frame = avatarImage.frame.insetBy(dx: 3, dy: 0)
+        chevron.frame = CGRect(x: rtl ? 14 : width - 24, y: floor((height - 14) / 2), width: 10, height: 14)
+        let textWidth = max(0, width - 106)
+        let nameHeight = ceil(nameLabel.font.lineHeight)
+        let numberHeight = numberLabel.isHidden ? 0 : ceil(numberLabel.font.lineHeight)
+        let departmentHeight = departmentLabel.isHidden ? 0 : ceil(departmentLabel.font.lineHeight)
+        let numberSpacing: CGFloat = numberHeight == 0 ? 0 : 5
+        let departmentSpacing: CGFloat = departmentHeight == 0 ? 0 : 5
+        let y = floor((height - nameHeight - numberHeight - departmentHeight - numberSpacing - departmentSpacing) / 2)
+        let x = leading(70, width: textWidth)
+        nameLabel.frame = CGRect(x: x, y: y, width: textWidth, height: nameHeight)
+        numberLabel.frame = CGRect(x: x, y: nameLabel.frame.maxY + numberSpacing, width: textWidth, height: numberHeight)
+        departmentLabel.frame = CGRect(x: x, y: numberLabel.frame.maxY + departmentSpacing, width: textWidth, height: departmentHeight)
+        let pixel = 1 / max(1, traitCollection.displayScale)
+        divider.frame = CGRect(x: rtl ? 0 : 62, y: height - pixel, width: max(0, width - 62), height: pixel)
+    }
+
+    func loadAvatarIfNeeded() -> Bool {
+        guard !hasAvatarImage, avatarLoad == nil, let avatar else { return false }
+        let generation = avatarGeneration
+        let pixelSize = maxPixelSize
+        avatarLoad = Task { [weak self] in
+            let image = await avatar.load(maxPixelSize: pixelSize)
+            guard let self, !Task.isCancelled, avatarGeneration == generation else { return }
+            avatarLoad = nil
+            guard let image, avatar.request.isAuthorized(routeContext: avatar.routeContext) else { return }
+            avatarImage.image = image
+            avatarInitials.isHidden = true
+            hasAvatarImage = true
+        }
+        return true
+    }
+
+    func cancelAvatarLoad() {
+        avatarLoad?.cancel()
+        avatarLoad = nil
+    }
+
+    override func prepareForReuse() {
+        super.prepareForReuse()
+        cancelAvatarLoad()
+        avatar = nil
+        avatarImage.image = nil
+    }
+}
+
+private final class ContactDirectoryCell: UITableViewCell {
+    private var host: UIHostingController<AnyView>?
+
+    override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
+        super.init(style: style, reuseIdentifier: reuseIdentifier)
+        backgroundColor = .clear
+        contentView.backgroundColor = .clear
+        selectionStyle = .none
+        isAccessibilityElement = true
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    func configure(_ rootView: AnyView, parent: UIViewController, selfSizing: Bool = false) {
+        if let host {
+            if host.parent == nil {
+                parent.addChild(host)
+                host.didMove(toParent: parent)
+            }
+            host.rootView = rootView
+            if selfSizing { host.view.invalidateIntrinsicContentSize() }
+            return
+        }
+        let host = UIHostingController(rootView: rootView)
+        self.host = host
+        parent.addChild(host)
+        host.view.backgroundColor = .clear
+        host.view.isUserInteractionEnabled = false
+        host.view.translatesAutoresizingMaskIntoConstraints = false
+        contentView.addSubview(host.view)
+        NSLayoutConstraint.activate([
+            host.view.topAnchor.constraint(equalTo: contentView.topAnchor),
+            host.view.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+            host.view.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+            host.view.bottomAnchor.constraint(equalTo: contentView.bottomAnchor)
+        ])
+        host.didMove(toParent: parent)
+    }
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        if window == nil, let host, host.parent != nil {
+            host.willMove(toParent: nil)
+            host.removeFromParent()
+        }
+    }
+}
+
+private struct ContactListCardEdge: Shape {
+    let roundsTop: Bool
+    let roundsBottom: Bool
+
+    func path(in rect: CGRect) -> Path {
+        var corners: UIRectCorner = []
+        if roundsTop { corners.formUnion([.topLeft, .topRight]) }
+        if roundsBottom { corners.formUnion([.bottomLeft, .bottomRight]) }
+        guard !corners.isEmpty else { return Path(rect) }
+        return Path(UIBezierPath(roundedRect: rect, byRoundingCorners: corners,
+                                 cornerRadii: CGSize(width: 22, height: 22)).cgPath)
     }
 }
 
@@ -1707,12 +2419,14 @@ private struct ContactDirectoryRow: View {
                         .font(.system(size: 16, weight: .black))
                         .foregroundStyle(IMColor.ink)
                         .lineLimit(1)
-                    CertificationPillView(
-                        exactUID: user.id,
-                        compact: true,
-                        presentation: certification,
-                        usesProvidedPresentationOnly: true
-                    )
+                    if let certification {
+                        CertificationPillView(
+                            exactUID: user.id,
+                            compact: true,
+                            presentation: certification,
+                            usesProvidedPresentationOnly: true
+                        )
+                    }
                 }
                 if let userNumber = row.userNumber {
                     Text("用户编号：\(userNumber)")

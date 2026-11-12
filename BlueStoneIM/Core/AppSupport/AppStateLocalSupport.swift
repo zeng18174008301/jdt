@@ -1382,6 +1382,14 @@ struct AttachmentUploadCheckpoint {
     var fileID: String
     var putCompleted: Bool
     var completedFile: RemoteAvatarFile?
+    var accelerated = false
+    var standardFallbackUsed = false
+    var videoVerificationSelected = false
+
+    var videoVerificationPhase: String {
+        if standardFallbackUsed { return "video_fallback_verifying" }
+        return accelerated ? "video_accelerated_verifying" : "video_verifying"
+    }
 }
 
 extension AttachmentUploadFailure {
@@ -1993,7 +2001,7 @@ enum CachedConversationHistoryProjection {
     private static func refreshHistoryBoundedSummary(_ conversation: inout Conversation, boundary: HistoryVisibilityBoundary) {
         if let latest = latestConfirmedMessage(in: conversation.messages.filter { !$0.isPinnedContextOnly })
             ?? latestConfirmedMessage(in: conversation.messages) {
-            conversation.lastMessage = messageListPreview(latest)
+            conversation.lastMessage = latest.conversationListPreview
             conversation.time = latest.time
             conversation.sortTimestamp = effectiveCreatedAt(for: latest)?.timeIntervalSince1970 ?? conversation.sortTimestamp
         } else if boundary.isRestrictive || conversation.historyBoundaryConfirmed {
@@ -2030,84 +2038,6 @@ enum CachedConversationHistoryProjection {
         messages.last { message in
             message.status != .failed && message.status != .sending && !message.isDeletedLocally
         }
-    }
-
-    private static func messageListPreview(_ message: ChatMessage) -> String {
-        switch message.kind {
-        case .rtcCallRecord:
-            return message.rtcCallRecord?.presentation(viewerIsCaller: message.isOutgoing).conversationPreview
-                ?? RTCCallRecordPayload.safeFallbackText(payload: [:])
-        case .image:
-            return "[图片] \(message.attachmentName ?? message.text)"
-        case .file:
-            switch attachmentMediaCategory(for: message) {
-            case "video":
-                return "[视频] \(message.attachmentName ?? message.text)"
-            case "pdf":
-                return "[PDF] \(message.attachmentName ?? message.text)"
-            default:
-                break
-            }
-            return "[文件] \(message.attachmentName ?? message.text)"
-        case .voice:
-            return "[语音] \(message.text)"
-        case .video:
-            return "[视频] \(message.text)"
-        case .location:
-            return "[位置] \(message.text)"
-        case .contactCard:
-            return message.text
-        case .system, .text:
-            return message.text
-        }
-    }
-
-    private static func attachmentMediaCategory(for message: ChatMessage) -> String {
-        let explicit = message.attachmentMediaCategory.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        if !explicit.isEmpty { return explicit }
-        let previewKind = message.attachmentPreviewKind.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        if ["image", "video", "pdf"].contains(previewKind) {
-            return previewKind
-        }
-        return inferredAttachmentMediaCategory(
-            kind: message.kind,
-            name: message.attachmentName ?? message.text,
-            mimeType: attachmentMimeType(from: message)
-        )
-    }
-
-    private static func attachmentMimeType(from message: ChatMessage) -> String {
-        let explicit = message.attachmentMimeType.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        if !explicit.isEmpty {
-            return explicit
-        }
-        if let value = message.attachmentMeta?
-            .components(separatedBy: " · ")
-            .first?
-            .trimmingCharacters(in: .whitespacesAndNewlines),
-           !value.isEmpty,
-           value.contains("/") {
-            return value.lowercased()
-        }
-        return message.kind == .image ? "image/jpeg" : "application/octet-stream"
-    }
-
-    private static func inferredAttachmentMediaCategory(kind: MessageKind, name: String, mimeType: String) -> String {
-        let normalizedMime = mimeType.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let ext = (name as NSString).pathExtension.lowercased()
-        if kind == .image || normalizedMime.hasPrefix("image/") || ["png", "jpg", "jpeg", "webp", "heic", "gif", "bmp", "tiff"].contains(ext) {
-            return "image"
-        }
-        if normalizedMime.hasPrefix("video/") || ["mp4", "mov", "m4v", "avi", "mkv", "webm", "3gp"].contains(ext) {
-            return "video"
-        }
-        if normalizedMime.contains("pdf") || ext == "pdf" {
-            return "pdf"
-        }
-        if normalizedMime.hasPrefix("audio/") || ["mp3", "m4a", "aac", "wav", "flac", "ogg"].contains(ext) {
-            return "audio"
-        }
-        return "file"
     }
 
     private static func effectiveCreatedAt(for message: ChatMessage) -> Date? {

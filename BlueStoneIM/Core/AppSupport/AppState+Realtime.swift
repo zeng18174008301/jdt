@@ -1946,7 +1946,7 @@ extension AppState {
             scheduleRealtimeRecoveryRefresh(reason: "message_extra_decode_fallback")
             return
         }
-        if extra.isReaction || extra.normalizedExtraType == "recall" || extra.normalizedExtraType == "edit" || extra.normalizedExtraType == "pin" || isAdminDeleteExtra(extra) || searchInvalidationEvent(from: extra) != nil {
+        if extra.isReaction || extra.normalizedExtraType == "recall" || extra.normalizedExtraType == "edit" || extra.normalizedExtraType == "pin" || isMessageDeleteExtra(extra) || searchInvalidationEvent(from: extra) != nil {
             applyRemoteMessageExtra(extra, fromRealtime: true)
             return
         }
@@ -2037,7 +2037,7 @@ extension AppState {
             }
             return
         }
-        if isAdminDeleteExtra(extra) {
+        if isMessageDeleteExtra(extra) {
             if applyAdminDeletedMessage(
                 messageID: extra.messageID,
                 authorityVersion: String(max(extra.version, 0))
@@ -2104,13 +2104,14 @@ extension AppState {
     }
     // JHT_MOD_END MESSAGE_EXTRAS_BATCH_REACTION_APPLY_PERF_20260912 - 修改结束
 
-    private func isAdminDeleteExtra(_ extra: RemoteMessageExtra) -> Bool {
+    private func isMessageDeleteExtra(_ extra: RemoteMessageExtra) -> Bool {
         let type = extra.normalizedExtraType
         let action = extra.action.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let event = (extra.payload["event"]?.stringValue ?? extra.payload["event_type"]?.stringValue ?? "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
         return [
+            "delete",
             "admin_delete",
             "admin_deleted",
             "admin_delete_message",

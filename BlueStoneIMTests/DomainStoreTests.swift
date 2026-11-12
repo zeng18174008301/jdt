@@ -3243,7 +3243,19 @@ final class DomainStoreTests: XCTestCase {
         conversation.messageCoveredThroughSeq = 149
         state.conversationStore.conversations = [conversation]
 
-        XCTAssertTrue(state.loadOlderMessagesIfAvailable(conversation.id))
+        let viewport = FirstJoinSuspensionGate()
+        XCTAssertTrue(state.loadOlderMessagesIfAvailable(conversation.id) {
+            await viewport.passOrSuspendFirst()
+            return true
+        })
+        for _ in 0..<200 {
+            if await viewport.isWaiting() { break }
+            try? await Task.sleep(nanoseconds: 5_000_000)
+        }
+        let reachedViewportGate = await viewport.isWaiting()
+        XCTAssertTrue(reachedViewportGate)
+        XCTAssertEqual(state.conversationStore.conversation(id: conversation.id)?.messages.count, 100)
+        await viewport.resumeFirst()
         for _ in 0..<200 {
             let hasOldMessage = state.conversations.first?.messages.contains(where: { $0.id == "msg-49" }) == true
             if hasOldMessage && !state.conversationStore.isHistoryLoading(conversationID: conversation.id) {
@@ -4182,6 +4194,36 @@ final class DomainStoreTests: XCTestCase {
     }
     // WDT_CHAT_READ_TRIGGER_20261021_END
 
+    func testNativeChatScrollGeometryAccountsForHeaderSafeArea() throws {
+        guard #available(iOS 18.0, *) else { throw XCTSkip("Requires native scroll geometry") }
+        let layout = ChatScrollReadLayout(token: "chat:437", sequence: 437, epoch: 1)
+        func metrics(at offset: CGFloat) -> ChatScrollMetricsSnapshot {
+            layout.metrics(for: ScrollGeometry(
+                contentOffset: CGPoint(x: 0, y: offset),
+                contentSize: CGSize(width: 402, height: 4055),
+                contentInsets: EdgeInsets(top: 118, leading: 0, bottom: 0, trailing: 0),
+                containerSize: CGSize(width: 402, height: 658)
+            ))
+        }
+        let visibleRow = ChatIncomingRowGeometry(
+            token: "chat:437", frame: CGRect(x: 10, y: 542, width: 180, height: 80), epoch: 1
+        )
+
+        let top = metrics(at: -118)
+        XCTAssertTrue(chatScrollVisibility(metrics: top).isNearHistoryBoundary)
+        XCTAssertFalse(chatScrollVisibility(metrics: top).isAtBottom)
+
+        let bottom = metrics(at: 3278)
+        XCTAssertTrue(chatScrollVisibility(metrics: bottom).isAtBottom)
+        XCTAssertEqual(chatVisibleIncomingReadSequence(metrics: bottom, row: visibleRow,
+            expectedToken: "chat:437", epoch: 1, isActive: true, scopeMatches: true), 437)
+
+        let beforeTrailingSpacer = metrics(at: 3266)
+        XCTAssertTrue(chatScrollVisibility(metrics: beforeTrailingSpacer).isAtBottom)
+        XCTAssertNil(chatVisibleIncomingReadSequence(metrics: beforeTrailingSpacer, row: visibleRow,
+            expectedToken: "chat:437", epoch: 1, isActive: true, scopeMatches: true))
+    }
+
     func testReadObservationAdvancesWhenBottomBooleanStaysUnchanged() {
         let visibleRow = ChatIncomingRowGeometry(token: "chat:21", frame: CGRect(x: 0, y: 500, width: 300, height: 80), epoch: 4)
         let first = ChatScrollMetricsSnapshot(viewportHeight: 600, contentMinY: -400, contentMaxY: 600,
@@ -4772,6 +4814,24 @@ final class DomainStoreTests: XCTestCase {
         XCTAssertEqual(store.metrics, .zero)
         XCTAssertEqual(viewInvalidationCount, 0)
         withExtendedLifetime(cancellable) {}
+    }
+
+    func testChatTranscriptSkipsMidScrollChecksButProcessesEdgesAndLayoutChanges() {
+        func metrics(offset: CGFloat, height: CGFloat = 1_600,
+                     viewport: CGFloat = 600, readSeq: Int64 = 50) -> ChatScrollMetricsSnapshot {
+            ChatScrollMetricsSnapshot(viewportHeight: viewport, contentMinY: -offset,
+                                      contentMaxY: height - offset,
+                                      renderedReadToken: "chat:\(readSeq)", renderedReadSeq: readSeq)
+        }
+
+        XCTAssertFalse(chatNeedsTranscriptLayoutUpdate(from: metrics(offset: 300), to: metrics(offset: 700)))
+        XCTAssertTrue(chatNeedsTranscriptLayoutUpdate(from: metrics(offset: 300), to: metrics(offset: 140)))
+        XCTAssertTrue(chatNeedsTranscriptLayoutUpdate(from: metrics(offset: 900), to: metrics(offset: 950)))
+        // Both positions are close enough to follow the bottom, but only one can acknowledge reads.
+        XCTAssertTrue(chatNeedsTranscriptLayoutUpdate(from: metrics(offset: 995), to: metrics(offset: 999)))
+        XCTAssertTrue(chatNeedsTranscriptLayoutUpdate(from: metrics(offset: 300), to: metrics(offset: 300, height: 1_760)))
+        XCTAssertTrue(chatNeedsTranscriptLayoutUpdate(from: metrics(offset: 300), to: metrics(offset: 300, viewport: 520)))
+        XCTAssertTrue(chatNeedsTranscriptLayoutUpdate(from: metrics(offset: 300), to: metrics(offset: 300, readSeq: 51)))
     }
 
     func testChatOlderHistoryLoadAllowsPassiveScrollMetricsAtTop() {
@@ -8624,7 +8684,7 @@ final class DomainStoreTests: XCTestCase {
         XCTAssertTrue(confirmed.isFavorited)
         XCTAssertEqual(confirmed.replyContext?.messageID, "source")
         XCTAssertEqual(store.conversations[0].messages.map(\.id), ["remote-1"])
-        XCTAssertEqual(store.conversations[0].lastMessage, "[PDF] report.pdf")
+        XCTAssertEqual(store.conversations[0].lastMessage, "文件")
         XCTAssertEqual(store.conversations[0].time, "10:01")
     }
 
@@ -12598,6 +12658,110 @@ final class DomainStoreTests: XCTestCase {
     }
 
     @MainActor
+    func testLoginRTCPollAcknowledgesClosedVideoCallWithoutShowingIt() async throws {
+        for reversed in [false, true] {
+            let ringing = loginRTCPollEvent(id: "old-video", status: "ringing", revision: 1)
+            let canceled = loginRTCPollEvent(id: "old-video", status: "canceled", revision: 2)
+            let batch = try loginRTCPollResponse(reversed ? [canceled, ringing] : [ringing, canceled])
+            let transport = FakeHTTPTransport(results: [
+                batch, successfulEmptyAPIResponse(), batch, successfulEmptyAPIResponse()
+            ])
+            let state = makeLoginRTCPollState(transport: transport)
+            var presented: [String] = []
+            let observation = state.callStore.$incomingVoiceCall.sink {
+                if let callID = $0?.callID { presented.append(callID) }
+            }
+            defer { observation.cancel() }
+
+            await state.refreshRTCCallEventsForTesting()
+            await state.refreshRTCCallEventsForTesting()
+
+            XCTAssertTrue(presented.isEmpty, "an old ringing event must never briefly present")
+            XCTAssertNil(state.incomingVoiceCall)
+            XCTAssertNil(state.activeVoiceCall)
+            XCTAssertNil(state.videoCallTerminalResult)
+            XCTAssertNil(state.toast)
+            XCTAssertEqual(state.calls.map(\.callID), ["old-video"])
+            XCTAssertEqual(state.calls.first?.status, "已取消")
+            XCTAssertEqual(state.calls.first?.direction, .incoming)
+            XCTAssertEqual(state.calls.first?.stateVersion, 2)
+            XCTAssertEqual(state.calls.first?.endedAt, RTCCallRecordTimeProjection.parseServerTimestamp("2026-11-07T10:11:02Z"))
+
+            let acknowledgements = transport.requests().filter { $0.url?.path == "/api/rtc/calls/events/ack" }
+            XCTAssertEqual(acknowledgements.count, 2)
+            for ack in acknowledgements {
+                let body = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(ack.httpBody)) as? [String: Any])
+                XCTAssertEqual(Set(body["notification_ids"] as? [String] ?? []), ["old-video-ringing", "old-video-canceled"])
+            }
+        }
+    }
+
+    @MainActor
+    func testLoginRTCPollStillShowsDistinctLiveVideoCallAndKeepsItsRecordIfCanceled() async throws {
+        let transport = FakeHTTPTransport(results: [
+            try loginRTCPollResponse([
+                loginRTCPollEvent(id: "old-video", status: "ringing", revision: 1),
+                loginRTCPollEvent(id: "old-video", status: "canceled", revision: 2),
+                loginRTCPollEvent(id: "new-video", status: "ringing", revision: 3)
+            ]),
+            successfulEmptyAPIResponse()
+        ])
+        let state = makeLoginRTCPollState(transport: transport)
+        var presented: [String] = []
+        let observation = state.callStore.$incomingVoiceCall.sink {
+            if let callID = $0?.callID { presented.append(callID) }
+        }
+        defer { observation.cancel() }
+
+        await state.refreshRTCCallEventsForTesting()
+        XCTAssertEqual(Set(presented), ["new-video"])
+        XCTAssertEqual(state.incomingVoiceCall?.callID, "new-video")
+        XCTAssertEqual(state.incomingVoiceCall?.isVideo, true)
+        XCTAssertNil(state.videoCallTerminalResult)
+
+        let cancellation = loginRTCPollEvent(id: "new-video", status: "canceled", revision: 4)
+        let event = try JSONDecoder().decode(RemoteRTCCallEvent.self, from: JSONSerialization.data(withJSONObject: cancellation))
+        XCTAssertTrue(state.handleRTCCallEvent(RealtimeEnvelope(type: event.type, requestID: nil, payload: event.payload)))
+        XCTAssertNil(state.incomingVoiceCall)
+        XCTAssertNil(state.videoCallTerminalResult, "an unanswered incoming call should not open a result screen")
+        XCTAssertEqual(state.calls.first?.callID, "new-video")
+        XCTAssertEqual(state.calls.first?.status, "已取消")
+    }
+
+    private func makeLoginRTCPollState(transport: HTTPTransport) -> AppState {
+        let state = AppState(
+            api: makeCallEndingAPI(transport: transport), voiceMediaClient: NoopVoiceMediaClient(),
+            videoMediaClient: TestVideoMediaClient(),
+            apiContextOverride: makeAuthenticatedAPIContext(accountID: "rtc-login-\(UUID())")
+        )
+        state.currentUser = makeUser(id: "uid-1", name: "Me")
+        state.contacts = [makeUser(id: "friend-1", name: "Friend")]
+        state.voiceMediaClientAvailableOverride = true
+        state.fileUploadConfig = FileUploadConfig(
+            maxBytes: 20 * 1024 * 1024, maxMB: 20, source: "test", messageRecallMaxMinutes: 120,
+            voiceCallEnabled: true, videoCallEnabled: true, readReceiptsEnabled: true, groupAdminDeleteMessageEnabled: false
+        )
+        return state
+    }
+
+    private func loginRTCPollEvent(id: String, status: String, revision: Int) -> [String: Any] {
+        var call: [String: Any] = [
+            "call_id": id, "status": status, "state_version": revision, "room_id": "room-\(id)",
+            "caller_uid": "friend-1", "callee_uid": "uid-1", "channel_id": "uid-1:friend-1",
+            "call_type": "video", "requested_media_mode": "video", "started_at": "2026-11-07T10:11:00Z"
+        ]
+        if status == "canceled" { call["ended_at"] = "2026-11-07T10:11:02Z" }
+        return ["type": "rtc.call.\(status)", "notification_id": "\(id)-\(status)", "payload": ["call": call]]
+    }
+
+    private func loginRTCPollResponse(_ events: [[String: Any]]) throws -> HTTPTransportResult {
+        HTTPTransportResult(
+            data: try JSONSerialization.data(withJSONObject: ["ok": true, "data": ["events": events]]),
+            isHTTPResponse: true, statusCode: 200
+        )
+    }
+
+    @MainActor
     func testAppStateRTCCallsReconcileShowsRingingWhenTerminalCallIsAlsoReturned() throws {
         let state = AppState(apiContextOverride: makeIsolatedAPIContext())
         let currentUser = makeUser(id: "WXT00000002", name: "陈星")
@@ -15942,7 +16106,7 @@ final class DomainStoreTests: XCTestCase {
 
         store.updateConversationLatestFromMessages(at: 0)
 
-        XCTAssertEqual(store.conversations[0].lastMessage, "[PDF] report.pdf")
+        XCTAssertEqual(store.conversations[0].lastMessage, "文件")
         XCTAssertEqual(store.conversations[0].time, "10:00")
         XCTAssertEqual(store.conversations[0].sortTimestamp, 100)
     }
@@ -15979,6 +16143,104 @@ final class DomainStoreTests: XCTestCase {
         XCTAssertEqual(store.conversations[0].messages[0].status, .recalled)
         XCTAssertEqual(store.conversations[0].messages[0].text, "你撤回了一条消息")
         XCTAssertEqual(store.conversations[0].lastMessage, "你撤回了一条消息")
+    }
+
+    func testReopeningChatCannotRestoreRecalledOutgoingMessageFromHistoryOrReceipts() throws {
+        let state = AppState(voiceMediaClient: NoopVoiceMediaClient(), apiContextOverride: makeIsolatedAPIContext())
+        let store = state.conversationStore
+        func history(status: String) throws -> RemoteMessage {
+            try decodeRemoteMessage("""
+            {
+              "message_id": "m1", "channel_id": "c1", "channel_type": "group",
+              "channel_seq": 1, "from_uid": "u1", "content_type": "image",
+              "payload": {"file_id": "private-image", "file_name": "original.jpg",
+                          "thumbnail_url": "https://example.com/original.jpg"},
+              "status": "\(status)", "read_status": "read", "read_count": 1
+            }
+            """)
+        }
+        let stale = try history(status: "normal")
+        var chat = makeConversation(id: "c1", kind: .group, unread: 0, lastMsgSeq: 1, lastReadSeq: 1)
+        chat.messages = [state.chatMessage(from: stale, forceOutgoing: true)]
+        store.conversations = [chat]
+        XCTAssertTrue(store.applyRecall(messageID: "m1", conversationID: "c1"))
+
+        let receipt = try decodeRemoteReceipt("""
+        {"message_id":"m1","channel_id":"c1","channel_type":"group","im_uid":"reader","receipt_type":"read","channel_seq":1}
+        """)
+        for remote in [stale, try history(status: "recalled")] {
+            chat = try XCTUnwrap(store.conversation(id: "c1"))
+            let mapped = state.chatMessage(from: remote, forceOutgoing: true)
+            let merged = store.mergeMappedRemoteMessages(
+                previous: chat,
+                mappedRemoteMessages: [.init(remote: remote, message: mapped, clientMessageIDs: [],
+                                             isRemoteFromCurrentUser: true, matchedLocalID: nil)],
+                readReceiptsEnabled: true,
+                fromRealtime: false
+            )
+            chat.messages = merged.messages
+            store.conversations = [chat]
+            XCTAssertFalse(store.applyRemoteReadReceipts(
+                [receipt], channelID: "c1", readReceiptsEnabled: true,
+                channelIDForConversation: { $0.id }, makeReadReceipt: makeReadReceipt(from:conversation:)
+            ))
+            let messages = try XCTUnwrap(store.conversation(id: "c1")).messages
+            let message = try XCTUnwrap(messages.first)
+            XCTAssertEqual(message.status, .recalled)
+            XCTAssertEqual(message.text, "你撤回了一条消息")
+            XCTAssertNil(message.attachmentFileID)
+            XCTAssertTrue(message.attachmentThumbnailURL.isEmpty)
+            XCTAssertNil(message.readCount)
+            XCTAssertTrue(chatTimelineMessagesForRendering(messages, showsProcessingNotices: false).isEmpty)
+        }
+    }
+
+    func testConversationListAttachmentPreviewUsesMessageTypeForExistingSummaries() {
+        let state = AppState(voiceMediaClient: NoopVoiceMediaClient(), apiContextOverride: makeIsolatedAPIContext())
+        var conversation = makeConversation(id: "preview-group", kind: .group, unread: 0, lastMsgSeq: 5, lastReadSeq: 5)
+        let examples: [(MessageKind, String, String, String)] = [
+            (.file, "股市百科全书.pdf", "[PDF] ", "文件"), (.file, "report.docx", "[文件] ", "文件"),
+            (.file, "backup.7z", "[文件] ", "文件"), (.file, "README", "[文件] ", "文件"),
+            (.image, "photo.jpg", "[图片] ", "图片"), (.file, "video.mp4", "[视频] ", "视频"),
+            (.file, "song.mp3", "[文件] ", "音频"), (.voice, "00:10", "[语音] ", "音频"),
+            (.text, "股市百科全书.pdf", "", "股市百科全书.pdf")
+        ]
+        for (kind, original, legacyPrefix, expected) in examples {
+            let message = makeMessage(id: "m5", seq: 5, text: original, kind: kind)
+            conversation.messages = [message]
+            XCTAssertEqual(message.conversationListPreview, expected)
+            for summary in [original, legacyPrefix + original] {
+                conversation.lastMessage = summary
+                let restored = CachedConversation(conversation: conversation, messageLimit: 1).model
+                XCTAssertEqual(state.visibleConversationLastMessage(restored), expected)
+                XCTAssertEqual(restored.messages.last?.text, original)
+            }
+        }
+    }
+
+    func testRemoteConversationListAttachmentPreviewDoesNotDependOnLoadedHistory() throws {
+        let state = AppState(voiceMediaClient: NoopVoiceMediaClient(), apiContextOverride: makeIsolatedAPIContext())
+        var previous = makeConversation(id: "preview-group", kind: .group, unread: 0, lastMsgSeq: 4, lastReadSeq: 4)
+        previous.messages = [makeMessage(id: "m4", seq: 4, text: "previous")]
+        state.conversationStore.conversations = [previous]
+        let remote = try JSONDecoder().decode(RemoteConversation.self, from: Data("""
+        {
+          "channel_id": "preview-group", "channel_type": "group", "last_msg_seq": 5,
+          "last_message": {
+            "message_id": "m5", "channel_id": "preview-group", "channel_type": "group",
+            "channel_seq": 5, "content_type": "attachment", "from_uid": "peer-1",
+            "payload": {"file_name": "backup.7z", "mime_type": "application/x-7z-compressed"}
+          }
+        }
+        """.utf8))
+
+        state.debugApplyRemoteConversationsForTesting([remote])
+
+        let conversation = try XCTUnwrap(state.conversationStore.conversation(id: previous.id))
+        XCTAssertEqual(conversation.messages.last?.id, "m4")
+        XCTAssertEqual(state.visibleConversationLastMessage(conversation), "文件")
+        let restoredWithoutMessages = CachedConversation(conversation: conversation, messageLimit: 0).model
+        XCTAssertEqual(state.visibleConversationLastMessage(restoredWithoutMessages), "文件")
     }
 
     func testConversationStoreRealtimeRecallMatchesRemoteChannelAndHidesOriginalText() {
@@ -16074,6 +16336,47 @@ final class DomainStoreTests: XCTestCase {
         XCTAssertFalse(deleted.readStateKnown)
         XCTAssertFalse(deleted.canViewReadDetails)
         XCTAssertEqual(store.conversations[0].lastMessage, "older")
+    }
+
+    func testOwnMessageDeletionUsesSenderRouteAndKeepsMessageWhenRejected() async throws {
+        for accepted in [true, false] {
+            let json = accepted ? #"{"ok":true,"data":{"extra":{"extra_type":"delete"}}}"#
+                : #"{"ok":false,"error":{"code":"permission_denied","message":"denied"}}"#
+            let transport = FakeHTTPTransport(results: [
+                HTTPTransportResult(data: Data(json.utf8), isHTTPResponse: true, statusCode: accepted ? 200 : 403)
+            ])
+            let context = makeAuthenticatedAPIContext()
+            let sender = try XCTUnwrap(context.imUID)
+            let state = AppState(api: makeCallEndingAPI(transport: transport), voiceMediaClient: NoopVoiceMediaClient(), apiContextOverride: context)
+            var conversation = makeConversation(id: "delete-group", kind: .group, unread: 0, lastMsgSeq: 5, lastReadSeq: 5)
+            let own = makeMessage(id: "m5", senderId: sender, seq: 5, isOutgoing: true, text: "original")
+            conversation.messages = [own]
+            conversation.lastMessage = own.text
+            state.conversationStore.conversations = [conversation]
+
+            await state.deleteOwnMessage(messageID: own.id, in: conversation.id, as: .sent)
+
+            let request = try XCTUnwrap(transport.requests().first { $0.url?.path.hasSuffix("/messages/m5/delete") == true })
+            XCTAssertEqual(request.httpMethod, "POST")
+            XCTAssertEqual(request.url?.path, "/api/im/messages/m5/delete")
+            let body = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(request.httpBody)) as? [String: String])
+            XCTAssertEqual(body["im_uid"], sender)
+            XCTAssertEqual(body["tenant_id"], context.tenantID)
+            XCTAssertEqual(body["device_id"], context.deviceID)
+            let updated = try XCTUnwrap(state.conversationStore.conversation(id: conversation.id))
+            XCTAssertEqual(updated.messages.first?.isDeletedLocally, accepted)
+            XCTAssertEqual(updated.lastMessage, accepted ? "" : "original")
+        }
+    }
+
+    func testOwnMessageDeletionRequiresSenderAndSeparatesFailedFromSynced() {
+        var message = makeMessage(id: "remote", seq: 1, status: .sent, isOutgoing: true)
+        XCTAssertEqual(OwnMessageDeletion.available(for: message, isCurrentSender: true), .sent)
+        XCTAssertNil(OwnMessageDeletion.available(for: message, isCurrentSender: false))
+        message.status = .recalled
+        XCTAssertNil(OwnMessageDeletion.available(for: message, isCurrentSender: true))
+        let failed = makeMessage(id: "local_1", seq: 0, status: .failed, isOutgoing: true)
+        XCTAssertEqual(OwnMessageDeletion.available(for: failed, isCurrentSender: true), .failed)
     }
 
     func testConversationStoreRestoredDeletedOnlySnapshotIsNotUsableRemoteHistory() {
@@ -17389,7 +17692,7 @@ final class DomainStoreTests: XCTestCase {
         let updated = store.appendLocalOutgoingMessage(fileMessage, to: "c1")
 
         XCTAssertEqual(updated?.messages.map(\.id), ["local_file"])
-        XCTAssertEqual(store.conversations[0].lastMessage, "[PDF] report.pdf")
+        XCTAssertEqual(store.conversations[0].lastMessage, "文件")
         XCTAssertEqual(store.conversations[0].time, "刚刚")
         XCTAssertEqual(store.conversations[0].sortTimestamp, 2_468)
     }
@@ -17715,7 +18018,7 @@ final class DomainStoreTests: XCTestCase {
         XCTAssertEqual(result.attachmentHeight, 720)
         XCTAssertEqual(result.attachmentDurationSeconds, 12.5)
         XCTAssertEqual(result.attachmentUploadStatus, "uploaded")
-        XCTAssertEqual(store.conversations[0].lastMessage, "[视频] demo.mp4")
+        XCTAssertEqual(store.conversations[0].lastMessage, "视频")
     }
 
     func testConversationStoreAttachmentMetadataStateSkipsInvalidOrMissingTargets() {
@@ -17795,6 +18098,7 @@ final class DomainStoreTests: XCTestCase {
         XCTAssertEqual(descriptors.last?.title, "举报此消息")
         XCTAssertEqual(descriptors.last?.tone, .danger)
         XCTAssertEqual(descriptors.last?.showsDividerBefore, true)
+        XCTAssertFalse(descriptors.contains { $0.kind == .delete })
 
         let ownDescriptors = messageActionMenuDescriptors(
             message: makeMessage(id: "remote-2", seq: 2, status: .sent, isOutgoing: true),
@@ -17808,6 +18112,7 @@ final class DomainStoreTests: XCTestCase {
             recallDisabledReason: nil
         )
         XCTAssertFalse(ownDescriptors.contains { $0.kind == .report })
+        XCTAssertEqual(ownDescriptors.first { $0.kind == .delete }?.title, "删除该消息")
     }
 
     func testMessageActionMenuShowsFavoriteImmediatelyAfterPinForAssets() {
@@ -18726,6 +19031,12 @@ final class DomainStoreTests: XCTestCase {
             cachedMessages: cached.lazy.map { $0 },
             messages: prepended.dropFirst(older.count)
         ))
+        prepended[3].status = .recalled
+        XCTAssertFalse(chatMessageDeletionStateMatches(
+            cachedMessages: cached.lazy.map { $0 },
+            messages: prepended.dropFirst(older.count)
+        ))
+        prepended[3].status = cached[1].status
         prepended[3].isDeletedLocally = true
         XCTAssertFalse(chatMessageDeletionStateMatches(
             cachedMessages: cached.lazy.map { $0 },
