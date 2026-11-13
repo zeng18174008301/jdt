@@ -5494,3 +5494,13 @@ AttachmentDetailSheet 使用 App 注入的附件观察和值，保留 FileStore 
 - 验证记录：备份内容校验通过，导入文件校验通过，原 `.git` 的 HEAD/config/main 引用字节一致。替换后索引缓存发生刷新，经 `git ls-files --stage` 对比备份确认全部索引条目一致，`git diff --cached` 为空；未改动任何暂存内容。未在本轮安装、启动、重新编译或上传 App；编译结果沿用源包上一步的 Debug 验证，不扩大为签名归档结论。
 - 回退定位：可按上述备份恢复旧工作区内容，但应保留回退时现有 `.git`，不要覆盖替换之后新增的 Git 操作。业务源码没有新增此标识；以本节、备份和 `.gitignore` 标识定位本次整包替换。
 <!-- WDT_IOS1_JDT_SOURCE_REPLACEMENT_20261113_END -->
+
+<!-- WDT_IOS1_ATTACHMENT_UPLOAD_ACTOR_20261113_BEGIN -->
+## WDT_IOS1_ATTACHMENT_UPLOAD_ACTOR_20261113
+
+- 目的：修复 Codemagic Xcode 26.6 Release 编译中 `AppState+AttachmentUpload.swift` 原 174、183、193、359 行的 `sending 'pending' risks causing data races`。这四处位于两个局部异步函数向 `captureUploadStep` 的 MainActor 闭包捕获上传状态的位置。
+- 文件和范围：`WenDaTong/Core/AppSupport/AppState+AttachmentUpload.swift` 159–162、351–354 行，仅为 `putAttachment`、`confirmVideo` 补充显式 `@MainActor`，与 AppState、FileStore、现有网络接口和诊断闭包的隔离保持一致。函数体、请求参数、取消检查、进度、断点恢复、视频确认及备用线路时序不变。
+- 不修改 `PendingAttachmentUpload` 的 Sendable 合约，不使用 `@unchecked Sendable`，不关闭并发检查，不修改 Codemagic、签名、版本、UI 或其他业务。`requiresAcceptedDeviceBeforeJoin` 未修改变量的警告不属于本次修复。
+- 验证：独立 reviewer 静态审查通过。本地 Xcode 26.4 / Swift 6.3 的 Release 无签名设备编译待完成；云端 Xcode 26.6 尚未重跑。未安装、启动、签名或上传。
+- 合并与回退：基于当前 `jdt` 提交 `b71f8a2`，未创建新提交。按两个同名标识定位；回退只移除这两处 `@MainActor` 及对应标识，并删除本索引项，保留原函数体及其他历史修改。
+<!-- WDT_IOS1_ATTACHMENT_UPLOAD_ACTOR_20261113_END -->

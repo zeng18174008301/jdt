@@ -156,6 +156,9 @@ extension AppState {
                 var finalizedFileID = checkpoint?.fileID ?? ""
                 var preparedFile: RemoteAvatarFile?
 
+                // WDT_IOS1_ATTACHMENT_UPLOAD_ACTOR_20261113_BEGIN
+                @MainActor // Keep captured upload state on the same actor as captureUploadStep.
+                // WDT_IOS1_ATTACHMENT_UPLOAD_ACTOR_20261113_END
                 func putAttachment(_ upload: RemoteSignedUpload) async throws {
                     guard ownsOperation() else { throw CancellationError() }
                     currentPhase = .put
@@ -345,6 +348,9 @@ extension AppState {
                         )
                     }
                 } else if let videoAPI, let videoSource {
+                    // WDT_IOS1_ATTACHMENT_UPLOAD_ACTOR_20261113_BEGIN
+                    @MainActor // Keep captured upload state on the same actor as captureUploadStep.
+                    // WDT_IOS1_ATTACHMENT_UPLOAD_ACTOR_20261113_END
                     func confirmVideo() async throws -> RemoteAvatarFile {
                         guard ownsOperation(),
                               let checkpoint = fileStore.attachmentUploadCheckpoint(messageID: messageID) else {
