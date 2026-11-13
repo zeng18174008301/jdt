@@ -24,7 +24,7 @@ run_subject() {
     PLISTBUDDY_TOOL="$temp_dir/bin/PlistBuddy" \
     VERIFY_KEYCHAIN_CONTRACT="$temp_dir/bin/verify-keychain" \
     FAKE_DEVICES_JSON="${FAKE_DEVICES_JSON-}" \
-    FAKE_BUNDLE_ID="${FAKE_BUNDLE_ID-com.wendatongqiye.app}" \
+    FAKE_BUNDLE_ID="${FAKE_BUNDLE_ID-app.xltest.com}" \
     "$script_dir/run-simulator.sh" "$@"
 }
 
@@ -49,8 +49,8 @@ printf '%s\n' '#!/usr/bin/env bash' 'set -euo pipefail' \
   '  if [[ "$1" == "-derivedDataPath" ]]; then derived="$2"; shift 2; continue; fi' \
   '  shift' \
   'done' \
-  'mkdir -p "$derived/Build/Products/Debug-iphonesimulator/BlueStoneIM.app"' \
-  'printf "plist\\n" >"$derived/Build/Products/Debug-iphonesimulator/BlueStoneIM.app/Info.plist"' \
+  'mkdir -p "$derived/Build/Products/Debug-iphonesimulator/WenDaTong.app"' \
+  'printf "plist\\n" >"$derived/Build/Products/Debug-iphonesimulator/WenDaTong.app/Info.plist"' \
   >"$temp_dir/bin/xcodebuild"
 printf '%s\n' '#!/usr/bin/env bash' 'set -euo pipefail' \
   'printf "%s\\n" "${FAKE_BUNDLE_ID:?}"' >"$temp_dir/bin/PlistBuddy"
@@ -89,13 +89,13 @@ fi
 
 : >"$command_log"
 SIMULATOR_UDID="$selected_udid" FAKE_DEVICES_JSON="$valid_inventory" \
-  FAKE_BUNDLE_ID="com.wendatongqiye.app" run_subject >"$temp_dir/success.log"
+  FAKE_BUNDLE_ID="app.xltest.com" run_subject >"$temp_dir/success.log"
 
-grep -Fq "simctl terminate $selected_udid com.wendatongqiye.app" "$command_log" ||
+grep -Fq "simctl terminate $selected_udid app.xltest.com" "$command_log" ||
   fail "terminate did not use exact UDID and bundle readback"
-grep -Fq "simctl install $selected_udid $temp_dir/derived/Build/Products/Debug-iphonesimulator/BlueStoneIM.app" "$command_log" ||
+grep -Fq "simctl install $selected_udid $temp_dir/derived/Build/Products/Debug-iphonesimulator/WenDaTong.app" "$command_log" ||
   fail "install did not use exact UDID and built app path"
-grep -Fq "simctl launch $selected_udid com.wendatongqiye.app" "$command_log" ||
+grep -Fq "simctl launch $selected_udid app.xltest.com" "$command_log" ||
   fail "launch did not use exact UDID and bundle readback"
 if grep -Eq 'simctl (boot|bootstatus|erase|uninstall|delete|shutdown)' "$command_log"; then
   fail "runner attempted a prohibited simulator lifecycle or data operation"

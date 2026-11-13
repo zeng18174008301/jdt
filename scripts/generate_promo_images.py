@@ -10,7 +10,7 @@ from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT_DIR = ROOT / "promo_exports" / "app-faithful"
-APP_ICON = ROOT / "BlueStoneIM" / "Assets.xcassets" / "AppIcon.appiconset" / "Icon-1024.png"
+APP_ICON = ROOT / "WenDaTong" / "WDTResources" / "Assets.xcassets" / "AppIcon.appiconset" / "AppStore-1024.png"
 
 W, H = 1242, 2688
 
@@ -558,7 +558,7 @@ def render(locale: PromoLocale, index: int) -> Image.Image:
 
     _, active, screen = SCREENS[index]
     app_shell(base, active, screen)
-    footer = "BlueStoneIM" if locale.lang == "en" else "BlueStoneIM · 问达通"
+    footer = "WenDaTong" if locale.lang == "en" else "WenDaTong · 问达通"
     draw.text((W // 2, H - 58), footer, font=promo_font(locale, 22, True), fill=(92, 104, 132), anchor="mm")
     return base.convert("RGB")
 

@@ -53,7 +53,7 @@ def create_archive(root: Path) -> Path:
     (archive / "Info.plist").write_bytes(
         plistlib.dumps(
             {
-                "SchemeName": "BlueStoneIM-App2",
+                "SchemeName": "WenDaTong-App2",
                 "ApplicationProperties": {
                     "ApplicationPath": "Applications/WenxintongApp2.app"
                 },

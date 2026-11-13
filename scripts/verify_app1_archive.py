@@ -13,8 +13,11 @@ import tempfile
 from pathlib import Path
 
 
-EXPECTED_BUNDLE_ID = "com.wendatongqiye.app"
-EXPECTED_TEAM_ID = "A3PN7W63G3"
+# WDT_IOS1_CODEMAGIC_JDT_RELEASE_20261113_BEGIN
+# CI supplies the expected release identity; local archive defaults stay intact.
+EXPECTED_BUNDLE_ID = os.environ.get("APP1_VERIFY_BUNDLE_ID", "app.xltest.com")
+EXPECTED_TEAM_ID = os.environ.get("APP1_VERIFY_TEAM_ID", "A3PN7W63G3")
+# WDT_IOS1_CODEMAGIC_JDT_RELEASE_20261113_END
 EXPECTED_APS_ENVIRONMENT = "production"
 EXPECTED_ORDINARY_TOPIC = EXPECTED_BUNDLE_ID
 EXPECTED_VOIP_TOPIC = f"{EXPECTED_BUNDLE_ID}.voip"
@@ -186,8 +189,7 @@ def verify_archive(app_path: Path, mode: str = FORMAL_MODE) -> None:
             [
                 str(codesign_tool),
                 "-d",
-                "--extract-certificates",
-                str(certificate_prefix),
+                f"--extract-certificates={certificate_prefix}",
                 str(app_path),
             ],
             "cannot extract the final signing certificate",

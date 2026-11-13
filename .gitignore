@@ -15,6 +15,9 @@ DerivedData/
 # Swift Package Manager
 .build/
 Package.resolved
+# WDT_IOS1_JDT_SOURCE_REPLACEMENT_20261113_BEGIN
+!WenDaTong.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved
+# WDT_IOS1_JDT_SOURCE_REPLACEMENT_20261113_END
 
 # Local secrets and Apple signing files
 .env

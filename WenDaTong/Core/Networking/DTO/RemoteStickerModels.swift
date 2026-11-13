@@ -1,0 +1,10 @@
+// WDT_IOS1_DATA_NETWORK_DTO_20261110_BEGIN
+import IM4Data
+
+typealias RemoteStickerVariant = IM4Data.RemoteStickerVariant
+typealias RemoteUserSticker = IM4Data.RemoteUserSticker
+typealias RemoteStickerPack = IM4Data.RemoteStickerPack
+typealias RemoteSticker = IM4Data.RemoteSticker
+typealias RemoteStickerProcessingTask = IM4Data.RemoteStickerProcessingTask
+typealias RemoteUserStickerCommitResult = IM4Data.RemoteUserStickerCommitResult
+// WDT_IOS1_DATA_NETWORK_DTO_20261110_END

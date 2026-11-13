@@ -9,7 +9,7 @@ usage() {
   cat <<'USAGE'
 Usage: collect-perf-logs.sh [--seconds N] [--udid UDID] [--output FILE]
 
-Collect BlueStoneIM simulator performance logs without changing app behavior.
+Collect WenDaTong simulator performance logs without changing app behavior.
 The script listens for existing [JHT Perf] / [JHT Sync] print logs and prints a
 short summary for startup, cache restore, reconnect recovery, and sync failures.
 
@@ -61,9 +61,9 @@ if [ -z "$OUTPUT_FILE" ]; then
   OUTPUT_FILE="$(mktemp "${TMPDIR:-/tmp}/im2-ios-perf.XXXXXX.log")"
 fi
 
-PREDICATE='process == "BlueStoneIM" AND (eventMessage CONTAINS "[JHT Perf]" OR eventMessage CONTAINS "[JHT Sync]" OR eventMessage CONTAINS "实时连接中断" OR eventMessage CONTAINS "聊天记录同步失败")'
+PREDICATE='process == "WenDaTong" AND (eventMessage CONTAINS "[JHT Perf]" OR eventMessage CONTAINS "[JHT Sync]" OR eventMessage CONTAINS "实时连接中断" OR eventMessage CONTAINS "聊天记录同步失败")'
 
-printf 'Collecting BlueStoneIM performance logs for %ss from simulator %s...\n' "$SECONDS_TO_CAPTURE" "$UDID"
+printf 'Collecting WenDaTong performance logs for %ss from simulator %s...\n' "$SECONDS_TO_CAPTURE" "$UDID"
 printf 'Raw log: %s\n' "$OUTPUT_FILE"
 
 set +e

@@ -5,7 +5,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 IOS_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-ruby - "$IOS_DIR/BlueStoneIM/FilesRTCViews.swift" <<'RUBY'
+ruby - "$IOS_DIR/WenDaTong/WDTFeatures/Files/WDTFilesRTCViews.swift" <<'RUBY'
 source_path = ARGV.fetch(0)
 source = File.read(source_path)
 

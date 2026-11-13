@@ -1,0 +1,6 @@
+// WDT_IOS1_FEATURES_CONTACTS_UI_20261111_BEGIN
+import IM4Features
+typealias DebouncedContactsSearchField = IM4Features.DebouncedContactsSearchField
+typealias ContactRoute = IM4Features.ContactRoute
+typealias ContactEntryCard = IM4Features.ContactEntryCard
+// WDT_IOS1_FEATURES_CONTACTS_UI_20261111_END

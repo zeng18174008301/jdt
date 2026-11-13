@@ -1,0 +1,8 @@
+// WDT_IOS1_FILESTORE_COMPLETE_FAMILY_20261111
+import IM4Domain
+
+typealias FavoriteAssetCategory = IM4Domain.FavoriteAssetCategory
+typealias FavoriteAssetItem = IM4Domain.FavoriteAssetItem
+typealias FavoriteAssetsPageResult = IM4Domain.FavoriteAssetsPageResult
+typealias FavoriteAssetsPageRequestIdentity = IM4Domain.FavoriteAssetsPageRequestIdentity
+typealias FavoriteAssetsCollectionState = IM4Domain.FavoriteAssetsCollectionState

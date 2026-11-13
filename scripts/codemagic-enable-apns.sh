@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# WDT_IOS1_CODEMAGIC_JDT_RELEASE_20261113_BEGIN
 set -euo pipefail
 
 fail() {
@@ -98,3 +99,4 @@ app-store-connect bundle-ids capabilities "$bundle_id_resource_id" --json \
 verify_push_capability "$capabilities_json"
 
 printf 'PASS: Push Notifications capability is enabled for %s.\n' "$bundle_id"
+# WDT_IOS1_CODEMAGIC_JDT_RELEASE_20261113_END

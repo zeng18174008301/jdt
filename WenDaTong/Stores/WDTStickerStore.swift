@@ -1,0 +1,6 @@
+// WDT_IOS1_STICKER_STATE_FAMILY_20261110_BEGIN
+import IM4Stores
+
+typealias StickerStore = IM4Stores.StickerStore
+typealias StickerMessageAssetStore = IM4Stores.StickerMessageAssetStore
+// WDT_IOS1_STICKER_STATE_FAMILY_20261110_END

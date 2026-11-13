@@ -1,0 +1,9 @@
+// WDT_IOS1_STORES_CONTACT_ACTUAL_20261110_BEGIN
+import IM4Stores
+
+typealias ContactStore = IM4Stores.ContactStore
+typealias GroupSelfProfileStore = IM4Stores.GroupSelfProfileStore
+typealias ProfileContactReadStamp = IM4Stores.ProfileContactReadStamp
+typealias ProfileContactMutationTicket = IM4Stores.ProfileContactMutationTicket
+typealias ProfileContactRevisionFence = IM4Stores.ProfileContactRevisionFence
+// WDT_IOS1_STORES_CONTACT_ACTUAL_20261110_END

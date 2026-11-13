@@ -8,43 +8,62 @@ install, or runtime target while validating iOS1.
 
 ## Build
 
-Open `BlueStoneIM.xcodeproj` or build the `BlueStoneIM` scheme with a dedicated
+Open `WenDaTong.xcodeproj` or build the `WenDaTong` scheme with a dedicated
 DerivedData directory. Package resolution must use `Package.resolved`; validation
 must not rewrite the source tree or shared Xcode caches.
 
-The active app uses only `Debug` (development) and `Release` (distribution).
+The app uses `Debug` for local development and `Release` for optimized local
+validation. An ordinary unsigned Release build does not establish a signed
+distribution artifact.
 The unconfigured App2 build configurations and scheme have been removed.
 Historical `scripts/*app2*` release tooling remains for reference and is not
 part of the current app build; it requires restoring an App2 scheme/configuration.
 
-## Codemagic
+## App identity and distribution
 
-The `codemagic.yaml` workflow builds the first shared Xcode scheme,
-`BlueStoneIM`, with the `Release` configuration and bundle ID
-`com.wendatongqiye.app`.
-Keep signing material in Codemagic, not in this source tree.
+The current unpublished iOS1 app target uses `app.xltest.com` in Debug and
+Release with the existing team `A3PN7W63G3`. Shared archive schemes use the same
+App target and Release configuration. Local unsigned builds do not establish a
+signed distribution artifact.
 
-Required Codemagic signing setup:
+<!-- WDT_IOS1_CODEMAGIC_JDT_RELEASE_20261113_BEGIN -->
+`codemagic.yaml` now adapts the existing `jdt` release workflow for this project.
+It builds `WenDaTong.xcodeproj` / `WenDaTong` in Release, using the production
+Bundle ID `com.wendatongqiye.app` from `jdt`. `APP_VERSION` is currently `1.0.6`,
+matching the user's updated project version.
+Only the disposable CI checkout's app Release settings are changed; local
+Debug/Release defaults above remain unchanged. Backend App IDs, bootstrap URLs,
+and business configuration are not changed by this workflow.
 
-- Create a Codemagic environment group named `appstore_credentials`.
-- Add `APP_STORE_CONNECT_PRIVATE_KEY`,
-  `APP_STORE_CONNECT_KEY_IDENTIFIER`, and `APP_STORE_CONNECT_ISSUER_ID`.
-- The API key must be allowed to manage Bundle IDs, capabilities,
-  certificates, and provisioning profiles.
-- If Codemagic needs to create a distribution certificate, also add
-  `CERTIFICATE_PRIVATE_KEY`; if that key is encrypted, add
-  `CERTIFICATE_PRIVATE_KEY_PASSWORD`.
-- The workflow enables the `Push Notifications` capability for
-  `com.wendatongqiye.app`, fetches or creates an App Store provisioning
-  profile, installs signing certificates into a temporary keychain, and builds
-  the signed IPA without opening Xcode.
-- Optional App Store Connect/TestFlight publishing is left as a commented
-  block in `codemagic.yaml`; enable it only when the App Store app record is
-  ready.
+Reuse the existing Codemagic `appstore_credentials` environment group with
+`APP_STORE_CONNECT_PRIVATE_KEY`, `APP_STORE_CONNECT_KEY_IDENTIFIER`,
+`APP_STORE_CONNECT_ISSUER_ID`, `APPLE_TEAM_ID`, and `CERTIFICATE_PRIVATE_KEY`.
+The optional `APPLE_BUNDLE_ID_RESOURCE_ID` has the same meaning as in `jdt`.
+No private keys are stored in the repository. Uploads target the existing app by
+its Bundle ID; a numeric App Store Apple ID is not required by this workflow.
+
+The workflow ID, main/master push triggers, M2 machine, signing/APNs steps and
+upload-only publishing policy are retained. Both automatic review flags remain
+false. `BUILD_NUMBER` still supplies the build version, as in `jdt`: when adding
+a new Codemagic application instead of reusing the existing one, ensure its next
+build number exceeds the build already uploaded for the chosen version. Increase
+`APP_VERSION` if App Store Connect requires a new marketing version.
+
+The workflow requires the APNs helper, the verifier and the project's existing
+`Package.resolved` alongside `codemagic.yaml` to keep package versions locked.
+This local setup does not initialize or modify a Git repository. If the files
+are later moved to Git, include this lockfile explicitly: the existing
+`.gitignore` ignores `Package.resolved` and is intentionally unchanged.
+The signed archive verifier accepts the explicit CI
+expectations `APP1_VERIFY_BUNDLE_ID` and `APP1_VERIFY_TEAM_ID`; all existing
+signature, certificate, profile, APS and diagnostics checks remain strict.
+Without those variables its original local identity defaults remain in force.
+The local configuration work does not trigger a build or upload on Codemagic.
+<!-- WDT_IOS1_CODEMAGIC_JDT_RELEASE_20261113_END -->
 
 ## Privacy Manifest
 
-`BlueStoneIM/PrivacyInfo.xcprivacy` is included in the app target resources. It
+`WenDaTong/WDTResources/PrivacyInfo.xcprivacy` is included in the app target resources. It
 declares the required reason API categories used by this source tree:
 `FileTimestamp`, `SystemBootTime`, and `UserDefaults`. The current third-party
 dependencies are `WebRTC`, `GRDB.swift`, and vendored `Wuffs`; they are not on
@@ -69,7 +88,7 @@ navigation reset activation. The authenticated entry is the Logo under
 `我的 → 关于 问达通`.
 
 The prelogin bootstrap test vectors are vendored under
-`BlueStoneIMTests/Resources/` so this subtree can build for testing without
+`WenDaTongTests/Resources/` so this subtree can build for testing without
 reaching outside the isolated source tree.
 
 ## Dedicated simulator
@@ -77,7 +96,7 @@ reaching outside the isolated source tree.
 `scripts/run-simulator.sh` requires `SIMULATOR_UDID` to identify one existing,
 available, already-booted dedicated simulator. It never chooses, creates, boots,
 erases, shuts down, or uninstalls a device. It reads the built app's bundle ID,
-requires `com.wendatongqiye.app`, and installs over the existing app so app
+requires `app.xltest.com`, and installs over the existing app so app
 data is preserved.
 
 Example, using placeholders only:

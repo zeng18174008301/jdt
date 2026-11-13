@@ -1,0 +1,10 @@
+// WDT_IOS1_DATA_NETWORK_DTO_20261110_BEGIN
+import IM4Data
+
+typealias RemoteAvatarUploadData = IM4Data.RemoteAvatarUploadData
+typealias RemoteUploadedFileResponse = IM4Data.RemoteUploadedFileResponse
+typealias RemoteAvatarFile = IM4Data.RemoteAvatarFile
+typealias RemoteSignedUpload = IM4Data.RemoteSignedUpload
+typealias RemoteAvatarCommitData = IM4Data.RemoteAvatarCommitData
+typealias RemoteAvatarProfile = IM4Data.RemoteAvatarProfile
+// WDT_IOS1_DATA_NETWORK_DTO_20261110_END

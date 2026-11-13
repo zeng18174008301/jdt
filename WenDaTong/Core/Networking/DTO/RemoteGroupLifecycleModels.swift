@@ -1,0 +1,32 @@
+import Foundation
+// WDT_IOS1_DATA_GROUP_PROFILE_MEMBERSHIP_DTO_20261110_BEGIN
+import IM4Data
+// WDT_IOS1_DATA_GROUP_PROFILE_MEMBERSHIP_DTO_20261110_END
+
+// WDT_IOS1_DATA_GROUP_LIFECYCLE_MUTATION_DTO_20261110_BEGIN
+typealias RemoteGroupLeaveResult = IM4Data.RemoteGroupLeaveResult
+// WDT_IOS1_DATA_GROUP_LIFECYCLE_MUTATION_DTO_20261110_END
+
+// WDT_IOS1_DATA_GROUP_LIFECYCLE_MUTATION_DTO_20261110_BEGIN
+typealias RemoteGroupDissolvePreview = IM4Data.RemoteGroupDissolvePreview
+// WDT_IOS1_DATA_GROUP_LIFECYCLE_MUTATION_DTO_20261110_END
+
+// WDT_IOS1_DATA_GROUP_LIFECYCLE_MUTATION_DTO_20261110_BEGIN
+typealias RemoteGroupDissolveResult = IM4Data.RemoteGroupDissolveResult
+// WDT_IOS1_DATA_GROUP_LIFECYCLE_MUTATION_DTO_20261110_END
+
+// WDT_IOS1_DATA_GROUP_PROFILE_MEMBERSHIP_DTO_20261110_BEGIN
+typealias RemoteGroupSettings = IM4Data.RemoteGroupSettings
+// WDT_IOS1_DATA_GROUP_PROFILE_MEMBERSHIP_DTO_20261110_END
+
+struct RemoteGroupHistoryVisibilitySettingsRequest: Encodable {
+    let historyVisible: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case historyVisible = "history_visible"
+    }
+}
+
+// WDT_IOS1_DATA_GROUP_LIFECYCLE_MUTATION_DTO_20261110_BEGIN
+typealias RemoteGroupMuteListItem = IM4Data.RemoteGroupMuteListItem
+// WDT_IOS1_DATA_GROUP_LIFECYCLE_MUTATION_DTO_20261110_END

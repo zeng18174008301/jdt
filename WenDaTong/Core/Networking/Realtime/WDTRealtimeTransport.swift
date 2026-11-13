@@ -1,0 +1,23 @@
+// WDT_IOS1_DATA17_NATIVE_REALTIME_20261111_BEGIN
+import IM4Data
+
+typealias RealtimeWebSocketTasking = IM4Data.RealtimeWebSocketTasking
+typealias RealtimeWebSocketTransporting = IM4Data.RealtimeWebSocketTransporting
+typealias URLSessionRealtimeTransport = IM4Data.URLSessionRealtimeTransport
+typealias RealtimeQUICConnectAttempt = IM4Data.RealtimeQUICConnectAttempt
+typealias RealtimeQUICConnectAttemptProviding = IM4Data.RealtimeQUICConnectAttemptProviding
+typealias RealtimeEndpointURLSanitizer = IM4Data.RealtimeEndpointURLSanitizer
+typealias RealtimeEndpointAddressValidator = IM4Data.RealtimeEndpointAddressValidator
+typealias NWRealtimeWebSocketError = IM4Data.NWRealtimeWebSocketError
+typealias NWRealtimeWebSocketTask = IM4Data.NWRealtimeWebSocketTask
+typealias RealtimeQUICConnectionRequest = IM4Data.RealtimeQUICConnectionRequest
+typealias RealtimeQUICError = IM4Data.RealtimeQUICError
+typealias RealtimeQUICConnectioning = IM4Data.RealtimeQUICConnectioning
+typealias RealtimeQUICTransporting = IM4Data.RealtimeQUICTransporting
+typealias NWRealtimeQUICTransport = IM4Data.NWRealtimeQUICTransport
+typealias RealtimeConnectionRequest = IM4Data.RealtimeConnectionRequest
+typealias RealtimeWebSocketDialMetadata = IM4Data.RealtimeWebSocketDialMetadata
+typealias RealtimeNetworkPathStatus = IM4Data.RealtimeNetworkPathStatus
+typealias RealtimeNetworkMonitoring = IM4Data.RealtimeNetworkMonitoring
+typealias NWPathRealtimeNetworkMonitor = IM4Data.NWPathRealtimeNetworkMonitor
+// WDT_IOS1_DATA17_NATIVE_REALTIME_20261111_END

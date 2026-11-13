@@ -3,12 +3,12 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-PROJECT="$APP_DIR/BlueStoneIM.xcodeproj"
-SCHEME="BlueStoneIM-InternalValidation"
+PROJECT="$APP_DIR/WenDaTong.xcodeproj"
+SCHEME="WenDaTong-InternalValidation"
 CONFIGURATION="Release"
 RUN_ID="${RUN_ID:-$(date +%Y%m%d-%H%M%S)}"
 OUTPUT_DIR="${OUTPUT_DIR:-$APP_DIR/build/internal-validation-$RUN_ID}"
-ARCHIVE_PATH="${ARCHIVE_PATH:-$OUTPUT_DIR/BlueStoneIM-internal-validation.xcarchive}"
+ARCHIVE_PATH="${ARCHIVE_PATH:-$OUTPUT_DIR/WenDaTong-internal-validation.xcarchive}"
 EXPORT_PATH="${EXPORT_PATH:-$OUTPUT_DIR/export}"
 EXPORT_OPTIONS_PLIST="${EXPORT_OPTIONS_PLIST:-}"
 # The floating access-diagnostics capability and marker are present in every
@@ -50,7 +50,7 @@ cleanup() {
 }
 trap cleanup EXIT
 INTERNAL_INFO_PLIST="$INTERNAL_INFO_DIR/Info.plist"
-cp "$APP_DIR/BlueStoneIM/Info.plist" "$INTERNAL_INFO_PLIST"
+cp "$APP_DIR/WenDaTong/WDTConfiguration/Info.plist" "$INTERNAL_INFO_PLIST"
 /usr/libexec/PlistBuddy \
   -c 'Set :WXTAccessDiagnosticsOverlayCompiled YES' \
   "$INTERNAL_INFO_PLIST"
@@ -73,7 +73,7 @@ xcodebuild archive \
   WXT_SOURCE_COMMIT="$SOURCE_COMMIT" \
   WXT_BUILD_IDENTITY="$BUILD_IDENTITY"
 
-ARCHIVE_INFO_PLIST="$ARCHIVE_PATH/Products/Applications/BlueStoneIM.app/Info.plist"
+ARCHIVE_INFO_PLIST="$ARCHIVE_PATH/Products/Applications/WenDaTong.app/Info.plist"
 if [[ ! -f "$ARCHIVE_INFO_PLIST" ]]; then
   echo "Archived app Info.plist was not found" >&2
   exit 1

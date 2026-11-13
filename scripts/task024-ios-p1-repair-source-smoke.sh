@@ -5,7 +5,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 IOS_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-ruby - "$IOS_DIR/BlueStoneIM/ChatViews.swift" "$IOS_DIR/BlueStoneIM/AppState.swift" <<'RUBY'
+# WDT_IOS1_REFACTOR_CHAT_COMPOSER_20261109_BEGIN
+ruby - "$IOS_DIR/WenDaTong/WDTFeatures/Chat/ChatComposerActions.swift" "$IOS_DIR/WenDaTong/App/WDTAppState.swift" <<'RUBY'
+# WDT_IOS1_REFACTOR_CHAT_COMPOSER_20261109_END
 chat_path, app_state_path = ARGV
 chat = File.read(chat_path)
 app_state = File.read(app_state_path)
@@ -40,7 +42,9 @@ def require_absent(body, signature, tokens)
   end
 end
 
-mention = function_body(chat, "private func insertMention(_ user: IMUser)")
+# WDT_IOS1_REFACTOR_CHAT_COMPOSER_20261109_BEGIN
+mention = function_body(chat, "func insertMention(_ user: IMUser)")
+# WDT_IOS1_REFACTOR_CHAT_COMPOSER_20261109_END
 require_order(
   mention,
   "insertMention",
@@ -52,7 +56,9 @@ require_order(
   ]
 )
 
-mention_all = function_body(chat, "private func insertMentionAll()")
+# WDT_IOS1_REFACTOR_CHAT_COMPOSER_20261109_BEGIN
+mention_all = function_body(chat, "func insertMentionAll()")
+# WDT_IOS1_REFACTOR_CHAT_COMPOSER_20261109_END
 require_order(
   mention_all,
   "insertMentionAll",

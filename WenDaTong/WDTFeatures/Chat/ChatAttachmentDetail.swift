@@ -1,0 +1,13 @@
+// WDT_IOS1_FEATURES_ATTACHMENT_ADMISSION_MODULE_20261110_BEGIN
+import SwiftUI
+import IM4Features
+
+typealias AttachmentDownloadProgressView = IM4Features.AttachmentDownloadProgressView
+typealias AttachmentDetailInput = IM4Features.AttachmentDetailInput
+typealias AttachmentDetailActions = IM4Features.AttachmentDetailActions
+typealias AttachmentDetailContent<Thumbnail: View> = IM4Features.AttachmentDetailContent<Thumbnail>
+typealias AttachmentQuickLookPreview = IM4Features.AttachmentQuickLookPreview
+typealias AttachmentDetailSummaryIcon = IM4Features.AttachmentDetailSummaryIcon
+
+typealias AttachmentLocalPreviewDocument = IM4Features.AttachmentLocalPreviewDocument
+// WDT_IOS1_FEATURES_ATTACHMENT_ADMISSION_MODULE_20261110_END

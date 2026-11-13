@@ -76,8 +76,8 @@ archive_app2_release_main() {
     fail "candidate archive parent must exist and must not be linked"
 
   local -a build_arguments=(
-    -project "$project_dir/BlueStoneIM.xcodeproj"
-    -scheme BlueStoneIM-App2
+    -project "$project_dir/WenDaTong.xcodeproj"
+    -scheme WenDaTong-App2
     -configuration Release-App2
     OTHER_SWIFT_FLAGS=""
     SWIFT_ACTIVE_COMPILATION_CONDITIONS="APP_VARIANT_APP2"

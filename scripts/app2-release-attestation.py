@@ -27,7 +27,7 @@ ATTESTATION_NAME = "APP2_RELEASE_ATTESTATION.json"
 CANDIDATE_NAME = "APP2_RELEASE_CANDIDATE.json"
 APP_RELATIVE_PATH = "Products/Applications/WenxintongApp2.app"
 ARCHIVE_METADATA_APP_PATH = "Applications/WenxintongApp2.app"
-ARCHIVE_SCHEME_NAME = "BlueStoneIM-App2"
+ARCHIVE_SCHEME_NAME = "WenDaTong-App2"
 SCHEMA_VERSION = 5
 CANDIDATE_SCHEMA_VERSION = 1
 # Freeze this only after the release owner commits the reviewed manifest that

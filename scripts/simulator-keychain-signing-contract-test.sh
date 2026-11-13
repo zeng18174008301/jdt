@@ -57,13 +57,13 @@ while [[ $# -gt 0 ]]; do
   fi
   shift
 done
-mkdir -p "$derived/Build/Products/Debug-iphonesimulator/BlueStoneIM.app"
-printf 'synthetic plist\n' >"$derived/Build/Products/Debug-iphonesimulator/BlueStoneIM.app/Info.plist"
+mkdir -p "$derived/Build/Products/Debug-iphonesimulator/WenDaTong.app"
+printf 'synthetic plist\n' >"$derived/Build/Products/Debug-iphonesimulator/WenDaTong.app/Info.plist"
 SH
 cat >"$temp_dir/bin/PlistBuddy" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
-printf '%s\n' 'com.wendatongqiye.app'
+printf '%s\n' 'app.xltest.com'
 SH
 cat >"$temp_dir/bin/verify-keychain" <<'SH'
 #!/usr/bin/env bash
@@ -75,7 +75,7 @@ chmod 700 "$temp_dir/bin/xcrun" "$temp_dir/bin/xcodebuild" \
   "$temp_dir/bin/PlistBuddy" "$temp_dir/bin/verify-keychain"
 
 devices_json="{\"devices\":{\"runtime\":[{\"udid\":\"$selected_udid\",\"state\":\"Booted\",\"isAvailable\":true},{\"udid\":\"$other_udid\",\"state\":\"Booted\",\"isAvailable\":true}]}}"
-app_path="$temp_dir/derived/Build/Products/Debug-iphonesimulator/BlueStoneIM.app"
+app_path="$temp_dir/derived/Build/Products/Debug-iphonesimulator/WenDaTong.app"
 
 run_subject() {
   COMMAND_LOG="$command_log" \
@@ -112,11 +112,11 @@ install_line="$(grep -n '^xcrun simctl install ' "$command_log" | cut -d: -f1)"
   fail "Keychain verifier did not execute exactly once"
 [[ "$(grep -c '^xcrun simctl install ' "$command_log")" == "1" ]] ||
   fail "successful runner did not install exactly once"
-grep -Fq "xcrun simctl terminate $selected_udid com.wendatongqiye.app" "$command_log" ||
+grep -Fq "xcrun simctl terminate $selected_udid app.xltest.com" "$command_log" ||
   fail "terminate escaped the exact UDID/bundle boundary"
 grep -Fq "xcrun simctl install $selected_udid $app_path" "$command_log" ||
   fail "install escaped the exact UDID/app boundary"
-grep -Fq "xcrun simctl launch $selected_udid com.wendatongqiye.app" "$command_log" ||
+grep -Fq "xcrun simctl launch $selected_udid app.xltest.com" "$command_log" ||
   fail "launch escaped the exact UDID/bundle boundary"
 if grep -F "$other_udid" "$command_log" | grep -Ev '^xcrun simctl list devices available -j$' >/dev/null; then
   fail "runner operated on a simulator other than SIMULATOR_UDID"

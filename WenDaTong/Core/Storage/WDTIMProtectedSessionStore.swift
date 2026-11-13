@@ -1,0 +1,9 @@
+// WDT_IOS1_DATA_PROTECTED_SESSION_MECHANISM_20261111_BEGIN
+import IM4Data
+
+typealias IMProtectedSessionStoring = IM4Data.IMProtectedSessionStoring
+typealias IMKeychainSessionStore = IM4Data.IMKeychainSessionStore
+#if targetEnvironment(simulator)
+typealias IMSimulatorProtectedSessionStore = IM4Data.IMSimulatorProtectedSessionStore
+#endif
+// WDT_IOS1_DATA_PROTECTED_SESSION_MECHANISM_20261111_END
