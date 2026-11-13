@@ -5495,12 +5495,12 @@ AttachmentDetailSheet 使用 App 注入的附件观察和值，保留 FileStore 
 - 回退定位：可按上述备份恢复旧工作区内容，但应保留回退时现有 `.git`，不要覆盖替换之后新增的 Git 操作。业务源码没有新增此标识；以本节、备份和 `.gitignore` 标识定位本次整包替换。
 <!-- WDT_IOS1_JDT_SOURCE_REPLACEMENT_20261113_END -->
 
-<!-- WDT_IOS1_ATTACHMENT_UPLOAD_ACTOR_20261113_BEGIN -->
-## WDT_IOS1_ATTACHMENT_UPLOAD_ACTOR_20261113
+<!-- WDT_IOS1_ATTACHMENT_UPLOAD_CAPTURE_20261113_BEGIN -->
+## WDT_IOS1_ATTACHMENT_UPLOAD_CAPTURE_20261113
 
 - 目的：修复 Codemagic Xcode 26.6 Release 编译中 `AppState+AttachmentUpload.swift` 原 174、183、193、359 行的 `sending 'pending' risks causing data races`。这四处位于两个局部异步函数向 `captureUploadStep` 的 MainActor 闭包捕获上传状态的位置。
-- 文件和范围：`WenDaTong/Core/AppSupport/AppState+AttachmentUpload.swift` 159–162、351–354 行，仅为 `putAttachment`、`confirmVideo` 补充显式 `@MainActor`，与 AppState、FileStore、现有网络接口和诊断闭包的隔离保持一致。函数体、请求参数、取消检查、进度、断点恢复、视频确认及备用线路时序不变。
+- 文件和范围：`WenDaTong/Core/AppSupport/AppState+AttachmentUpload.swift` 172–179、181–191、193–202、362–377 行四处同名标识区块。在 `putAttachment` 的视频、文件 URL、Data 三个分支及 `confirmVideo` 中，诊断闭包显式捕获 `pending.mimeType`（String）和需要时的 `pending.sizeBytes`（Int64），不再捕获整个非 Sendable 的 `pending`。两字段原本为不可变 let，取值不变。请求参数、取消检查、进度、断点恢复、视频确认及备用线路时序保持原样。
 - 不修改 `PendingAttachmentUpload` 的 Sendable 合约，不使用 `@unchecked Sendable`，不关闭并发检查，不修改 Codemagic、签名、版本、UI 或其他业务。`requiresAcceptedDeviceBeforeJoin` 未修改变量的警告不属于本次修复。
-- 验证：独立 reviewer 静态审查通过。本地 Xcode 26.4 / Swift 6.3 的 Release 无签名设备编译待完成；云端 Xcode 26.6 尚未重跑。未安装、启动、签名或上传。
-- 合并与回退：基于当前 `jdt` 提交 `b71f8a2`，未创建新提交。按两个同名标识定位；回退只移除这两处 `@MainActor` 及对应标识，并删除本索引项，保留原函数体及其他历史修改。
-<!-- WDT_IOS1_ATTACHMENT_UPLOAD_ACTOR_20261113_END -->
+- 验证：本地 Xcode 26.4 / Swift 6.3 Release 无签名设备编译已复现相同四处错误；仅加局部函数 `@MainActor` 的试验不解决问题，已撤回且不保留。最终值捕获方案经独立 reviewer 静态复核通过；四处差分逆向恢复后与原始 `b71f8a2` 源文件逐字一致。最终完整 `WenDaTong` Release / generic iOS / arm64 编译通过（`CODE_SIGNING_ALLOWED=NO`、`CODE_SIGNING_REQUIRED=NO`、锁定依赖），退出码 0，`BUILD SUCCEEDED`；日志 `/private/tmp/wdt-upload-release-20261113.log`，上述四处错误消失，原有无关警告保留。失败试验日志 `/private/tmp/wdt-upload-release-20261113-actor-only-failed.log`。云端 Xcode 26.6 尚未重跑，未执行签名 Archive、安装、启动、上传或运行时上传测试。
+- 合并与回退：原始基线为 `jdt` 的 `b71f8a2`；验证期间用户侧新增 `9e9abc6`，包含不生效的 actor-only 试验，最终工作区已移除该试验，未改写其提交历史。助手未暂存、提交或推送。按四个同名标识定位；回退将闭包参数中的 `mimeType` / `sizeBytes` 恢复为 `pending.mimeType` / `pending.sizeBytes`，移除对应捕获列表、标识及本索引项，保留其他历史修改。
+<!-- WDT_IOS1_ATTACHMENT_UPLOAD_CAPTURE_20261113_END -->

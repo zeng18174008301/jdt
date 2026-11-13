@@ -156,9 +156,6 @@ extension AppState {
                 var finalizedFileID = checkpoint?.fileID ?? ""
                 var preparedFile: RemoteAvatarFile?
 
-                // WDT_IOS1_ATTACHMENT_UPLOAD_ACTOR_20261113_BEGIN
-                @MainActor // Keep captured upload state on the same actor as captureUploadStep.
-                // WDT_IOS1_ATTACHMENT_UPLOAD_ACTOR_20261113_END
                 func putAttachment(_ upload: RemoteSignedUpload) async throws {
                     guard ownsOperation() else { throw CancellationError() }
                     currentPhase = .put
@@ -172,31 +169,37 @@ extension AppState {
                         }
                     }
                     if let videoAPI, let videoSource {
-                        try await uploadDiagnostic.captureUploadStep {
+                        // WDT_IOS1_ATTACHMENT_UPLOAD_CAPTURE_20261113_BEGIN
+                        try await uploadDiagnostic.captureUploadStep { [mimeType = pending.mimeType, sizeBytes = pending.sizeBytes] in
                             try await videoAPI.uploadVideoAttachmentBinary(
-                                context: context, upload: upload, fileURL: videoSource.url, mimeType: pending.mimeType,
-                                sizeBytes: pending.sizeBytes, progress: progress
+                                context: context, upload: upload, fileURL: videoSource.url, mimeType: mimeType,
+                                sizeBytes: sizeBytes, progress: progress
                             )
                         }
+                        // WDT_IOS1_ATTACHMENT_UPLOAD_CAPTURE_20261113_END
                     } else if let fileURL = pending.fileURL {
-                        try await uploadDiagnostic.captureUploadStep {
+                        // WDT_IOS1_ATTACHMENT_UPLOAD_CAPTURE_20261113_BEGIN
+                        try await uploadDiagnostic.captureUploadStep { [mimeType = pending.mimeType, sizeBytes = pending.sizeBytes] in
                             try await api.uploadFileBinary(
                                 upload: upload,
                                 fileURL: fileURL,
-                                mimeType: pending.mimeType,
-                                sizeBytes: pending.sizeBytes,
+                                mimeType: mimeType,
+                                sizeBytes: sizeBytes,
                                 progress: progress
                             )
                         }
+                        // WDT_IOS1_ATTACHMENT_UPLOAD_CAPTURE_20261113_END
                     } else if let data = pending.data {
-                        try await uploadDiagnostic.captureUploadStep {
+                        // WDT_IOS1_ATTACHMENT_UPLOAD_CAPTURE_20261113_BEGIN
+                        try await uploadDiagnostic.captureUploadStep { [mimeType = pending.mimeType] in
                             try await api.uploadFileBinary(
                                 upload: upload,
                                 data: data,
-                                mimeType: pending.mimeType,
+                                mimeType: mimeType,
                                 progress: progress
                             )
                         }
+                        // WDT_IOS1_ATTACHMENT_UPLOAD_CAPTURE_20261113_END
                     } else {
                         throw CocoaError(.fileReadNoSuchFile)
                     }
@@ -348,9 +351,6 @@ extension AppState {
                         )
                     }
                 } else if let videoAPI, let videoSource {
-                    // WDT_IOS1_ATTACHMENT_UPLOAD_ACTOR_20261113_BEGIN
-                    @MainActor // Keep captured upload state on the same actor as captureUploadStep.
-                    // WDT_IOS1_ATTACHMENT_UPLOAD_ACTOR_20261113_END
                     func confirmVideo() async throws -> RemoteAvatarFile {
                         guard ownsOperation(),
                               let checkpoint = fileStore.attachmentUploadCheckpoint(messageID: messageID) else {
@@ -359,10 +359,11 @@ extension AppState {
                         currentPhase = .finalize
                         updateAttachmentUploadPhase(.finalize, messageID: messageID, in: conversationID)
                         updateAttachmentProgress(nil, messageID: messageID, in: conversationID)
-                        return try await uploadDiagnostic.captureUploadStep {
+                        // WDT_IOS1_ATTACHMENT_UPLOAD_CAPTURE_20261113_BEGIN
+                        return try await uploadDiagnostic.captureUploadStep { [mimeType = pending.mimeType, sizeBytes = pending.sizeBytes] in
                             try await videoAPI.confirmRoutedVideoAttachmentUpload(
                                 context: context, conversation: conversation, channelID: channelID, clientMessageID: messageID,
-                                fileID: finalizedFileID, sizeBytes: pending.sizeBytes, mimeType: pending.mimeType,
+                                fileID: finalizedFileID, sizeBytes: sizeBytes, mimeType: mimeType,
                                 checksum: videoSource.checksum, preparedFile: preparedFile,
                                 verificationSelected: checkpoint.videoVerificationSelected
                             ) {
@@ -373,6 +374,7 @@ extension AppState {
                                 fileStore.recordVideoUploadVerificationSelected(messageID: messageID)
                             }
                         }
+                        // WDT_IOS1_ATTACHMENT_UPLOAD_CAPTURE_20261113_END
                     }
                     do {
                         uploadedFile = try await confirmVideo()
